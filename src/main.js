@@ -202,8 +202,26 @@ function panelSpot(prefW, prefH) {
   return { x: Math.round(x), y: Math.round(y), w, h, display: disp };
 }
 
+/**
+ * 面板给终端让个位。
+ *
+ * 面板是 alwaysOnTop 的 —— 这保证你随时找得到它，但也意味着**任何普通窗口
+ * 都压不过它**：你点「调到最前」，终端确实到了普通窗口的最前面，却还是被
+ * 置顶的面板盖着，看起来就是「点了没反应」。
+ *
+ * 所以每次把终端送到你面前时，面板临时放弃置顶（终端自然盖上来）；
+ * 你再点一下面板（focus 事件）它就恢复置顶。不藏、不最小化 ——
+ * 你多半还要对照着面板看终端，它只是退到旁边，不是消失。
+ */
+function panelYield() {
+  if (panelWin && !panelWin.isDestroyed() && panelWin.isVisible()) {
+    panelWin.setAlwaysOnTop(false);
+  }
+}
+
 function createPanel() {
   if (panelWin && !panelWin.isDestroyed()) {
+    panelWin.setAlwaysOnTop(true); // 让过位的话，唤起时拿回置顶
     // 缩到任务栏的必须先 restore。show() 在 Windows 上就是个 SW_SHOW，
     // 对已经最小化的窗口什么也不干 —— 表现出来就是「双击角色没反应」
     if (panelWin.isMinimized()) panelWin.restore();
@@ -251,6 +269,10 @@ function createPanel() {
   panelWin.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
   panelWin.once('ready-to-show', () => { panelWin.show(); panelWin.moveTop(); });
   panelWin.on('closed', () => { panelWin = null; });
+  // 给终端让过位之后，你点回面板它就重新置顶 —— 「让位」只让到你回来为止
+  panelWin.on('focus', () => {
+    if (panelWin && !panelWin.isDestroyed()) panelWin.setAlwaysOnTop(true);
+  });
 
   // 面板平时不占任务栏的位置（skipTaskbar: true），但**缩下去的时候必须占**，
   // 不然它就消失得无影无踪，你还是得回去双击角色 —— 那还不如直接关掉。
@@ -1274,6 +1296,7 @@ const TERM_STATUS_WORD = {
  */
 function focusTerminal(id) {
   if (!terminals) return;
+  panelYield(); // 终端要上来了，置顶的面板先让开，不然盖着它像没反应
   terminals.focus(id).then((r) => {
     if (r && !r.ok && r.error) {
       send('session:say', { name: '', text: r.error });
@@ -1706,6 +1729,7 @@ function wireIpc() {
     try {
       // 会话身份归 sessions 管（主线 / 分线 / 回到老线都在那边算），
       // 窗口和监督归 terminals 管
+      panelYield(); // 你点了「开终端我看着」，那个窗口就该出现在最上面
       const r = openLaneTerminal({ ...opts, model }, { minimized: false });
       mood.onInteract('talk');
       return { ok: true, ...r };
@@ -1737,6 +1761,7 @@ function wireIpc() {
   ipcMain.handle('term:focus', async (_e, id) => {
     if (!terminals) return { ok: false, error: '终端管理还没起来' };
     try {
+      panelYield(); // 你在面板上点的这一下，就是要看终端 —— 面板让开
       return await terminals.focus(id);
     } catch (err) {
       log('[term] 置顶失败: ' + err.message);
