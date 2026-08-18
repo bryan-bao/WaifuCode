@@ -1,0 +1,32 @@
+{
+  "Type": "Live2D Expression",
+  "FadeInTime": 0.45,
+  "FadeOutTime": 0.45,
+  "Parameters": [
+    {
+      "Id": "ParamEyeLOpen",
+      "Value": -0.88,
+      "Blend": "Add"
+    },
+    {
+      "Id": "ParamEyeROpen",
+      "Value": -0.88,
+      "Blend": "Add"
+    },
+    {
+      "Id": "ParamJawOpen",
+      "Value": 0.4,
+      "Blend": "Add"
+    },
+    {
+      "Id": "ParamBrowLY",
+      "Value": -0.5,
+      "Blend": "Add"
+    },
+    {
+      "Id": "ParamBrowRY",
+      "Value": -0.5,
+      "Blend": "Add"
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "Wanko.moc3",
+    "Textures": [
+      "Wanko.1024/texture_00.png"
+    ],
+    "Physics": "Wanko.physics3.json",
+    "DisplayInfo": "Wanko.cdi3.json",
+    "Motions": {
+      "Idle": [
+        {
+          "File": "motions/idle_01.motion3.json"
+        },
+        {
+          "File": "motions/idle_03.motion3.json"
+        },
+        {
+          "File": "motions/idle_04.motion3.json"
+        }
+      ],
+      "TapBody": [
+        {
+          "File": "motions/touch_02.motion3.json"
+        },
+        {
+          "File": "motions/touch_04.motion3.json"
+        }
+      ]
+    },
+    "Expressions": [
+      {
+        "Name": "normal",
+        "File": "expressions/normal.exp3.json"
+      },
+      {
+        "Name": "working",
+        "File": "expressions/working.exp3.json"
+      },
+      {
+        "Name": "happy",
+        "File": "expressions/happy.exp3.json"
+      },
+      {
+        "Name": "proud",
+        "File": "expressions/proud.exp3.json"
+      },
+      {
+        "Name": "frustrated",
+        "File": "expressions/frustrated.exp3.json"
+      },
+      {
+        "Name": "sad",
+        "File": "expressions/sad.exp3.json"
+      },
+      {
+        "Name": "shy",
+        "File": "expressions/shy.exp3.json"
+      },
+      {
+        "Name": "lonely",
+        "File": "expressions/lonely.exp3.json"
+      },
+      {
+        "Name": "tired",
+        "File": "expressions/tired.exp3.json"
+      },
+      {
+        "Name": "sleepy",
+        "File": "expressions/sleepy.exp3.json"
+      },
+      {
+        "Name": "surprised",
+        "File": "expressions/surprised.exp3.json"
+      },
+      {
+        "Name": "excited",
+        "File": "expressions/excited.exp3.json"
+      }
+    ]
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": [
+        "PARAM_EYE_L_OPEN",
+        "PARAM_EYE_R_OPEN"
+      ]
+    },
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": [
+        "PARAM_MOUTH_OPEN_Y"
+      ]
+    }
+  ],
+  "HitAreas": [
+    {
+      "Id": "HitArea",
+      "Name": "Body"
+    }
+  ]
+}

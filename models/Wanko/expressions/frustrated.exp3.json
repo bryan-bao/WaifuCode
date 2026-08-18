@@ -1,0 +1,32 @@
+{
+  "Type": "Live2D Expression",
+  "FadeInTime": 0.45,
+  "FadeOutTime": 0.45,
+  "Parameters": [
+    {
+      "Id": "PARAM_EAR_L",
+      "Value": -1,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_EAR_R",
+      "Value": -1,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_MOUTH_OPEN_Y",
+      "Value": 0.7,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_EYE_L_OPEN",
+      "Value": -0.3,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_EYE_R_OPEN",
+      "Value": -0.3,
+      "Blend": "Add"
+    }
+  ]
+}

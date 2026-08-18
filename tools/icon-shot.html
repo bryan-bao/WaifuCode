@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>生成图标</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  #stage { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <script src="../vendor/live2dcubismcore.min.js"></script>
+  <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
+  <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>
+  <script>
+  'use strict';
+
+  // 只干一件事：把模型渲染出来，把她的头裁成方图交出去。
+  //
+  // 为什么不用 Electron 的 capturePage：透明窗口截出来的图 alpha 通道
+  // 不一定保得住，托盘图标要是带了一圈黑底就很难看。
+  // 直接从 canvas 上 drawImage 到另一块 canvas 再 toDataURL，
+  // 透明度是实打实跟着走的。
+
+  const { Application, Ticker } = PIXI;
+  const { Live2DModel } = PIXI.live2d;
+  Live2DModel.registerTicker(Ticker);
+
+  window.__ready = false;
+  window.__error = null;
+
+  const params = new URLSearchParams(location.search);
+  const modelUrl = params.get('model');
+  const headRatio = parseFloat(params.get('headRatio') || '0.34');
+
+  const app = new Application({
+    view: document.getElementById('stage'),
+    width: 1024,
+    height: 1024,
+    backgroundAlpha: 0, // 关键：0 才有透明底
+    antialias: true,
+    autoDensity: false, // 图标要的是确定的像素尺寸，别让 DPR 掺和进来
+    resolution: 1,
+    // 必须开。WebGL 画布默认画完就把缓冲区清掉，
+    // 不开的话 toDataURL 拿到的是一张全透明的空图 —— 踩过，
+    // 生成出来的 32×32 图标只有 102 字节，一看就知道啥也没有。
+    preserveDrawingBuffer: true,
+  });
+
+  let model = null;
+
+  (async () => {
+    try {
+      model = await Live2DModel.from(modelUrl, { autoInteract: false });
+      app.stage.addChild(model);
+
+      // 铺满画布，居中
+      const scale = Math.min(
+        app.renderer.width / model.internalModel.width,
+        app.renderer.height / model.internalModel.height
+      ) * 0.95;
+      model.scale.set(scale);
+      model.anchor.set(0.5, 0.5);
+      model.position.set(app.renderer.width / 2, app.renderer.height / 2);
+
+      // 让她正脸看镜头、别歪头，图标才端正
+      try {
+        model.internalModel.coreModel.setParameterValueById('ParamAngleX', 0);
+        model.internalModel.coreModel.setParameterValueById('ParamAngleY', 0);
+        model.internalModel.coreModel.setParameterValueById('ParamAngleZ', 0);
+        model.internalModel.coreModel.setParameterValueById('ParamBodyAngleX', 0);
+      } catch (_) { /* 参数名对不上就算了 */ }
+
+      // 挑一张好看的脸。找不到就用默认表情。
+      for (const want of ['happy', 'normal']) {
+        try {
+          const ok = await model.expression(want);
+          if (ok) break;
+        } catch (_) { /* 试下一个 */ }
+      }
+
+      // 等几帧，让物理和表情都稳定下来再截 —— 刚加载那一瞬间头发还在飘
+      await new Promise((r) => setTimeout(r, 900));
+
+      window.__ready = true;
+    } catch (err) {
+      window.__error = (err && err.message) || String(err);
+      window.__ready = true;
+    }
+  })();
+
+  /**
+   * 把头裁出来，缩到指定大小，返回 PNG 的 dataURL。
+   *
+   * 模型自带的 HitArea 一般只框了身体，所以头的位置是几何算出来的：
+   * 外接框顶上那一段（headRatio）就是头。取正方形，稍微留点边，
+   * 免得呆毛和下巴被切掉。
+   */
+  window.__makeIcon = function (size) {
+    app.renderer.render(app.stage); // 再画一次，保证缓冲区里是最新的一帧
+    const b = model.getBounds();
+    const headH = b.height * headRatio;
+    // 裁得紧一点。托盘图标实际只显示到 16~20 像素，多裁进来一点衣服，
+    // 脸就小一圈，缩下去只剩一团糊的色块 —— 让脸占满才认得出是谁。
+    const side = Math.min(headH * 0.92, b.width * 1.05);
+    const cx = b.x + b.width / 2;
+    const cy = b.y + headH * 0.44;
+
+    const sx = Math.max(0, cx - side / 2);
+    const sy = Math.max(0, cy - side / 2);
+
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const ctx = c.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(app.view, sx, sy, side, side, 0, 0, size, size);
+    return c.toDataURL('image/png');
+  };
+
+  // 整张图（调试用，能看出裁的位置对不对）
+  window.__fullShot = function () {
+    app.renderer.render(app.stage);
+    return app.view.toDataURL('image/png');
+  };
+
+  window.__headBox = function () {
+    const b = model.getBounds();
+    return { x: b.x, y: b.y, w: b.width, h: b.height, headRatio };
+  };
+  </script>
+</body>
+</html>

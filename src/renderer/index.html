@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>WaifuCode</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  #stage {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* 说话气泡。
+     从她嘴边冒出来，大小贴着内容走 —— 一句短的就是个小圆块，
+     话长了才撑到最大宽度换行。位置每帧跟着嘴巴，她跳舞时气泡也跟着晃。
+     具体坐标由 stage.js 的 positionBubble() 算。 */
+  #bubble {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: max-content;          /* 关键：宽度贴着内容，不再横铺一整条 */
+    min-width: 56px;
+    max-width: min(300px, 84vw);
+    padding: 9px 13px;
+    border-radius: 14px;
+    background: rgba(24, 24, 32, 0.9);
+    color: #f2f2f5;
+    font: 13px/1.62 "Microsoft YaHei", "PingFang SC", sans-serif;
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.42);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    opacity: 0;
+    transform: translateY(6px) scale(.95);
+    transform-origin: bottom center;
+    transition: opacity .2s ease, transform .2s cubic-bezier(.34, 1.35, .64, 1);
+    pointer-events: none;
+    word-break: break-word;
+    max-height: 46vh;
+    overflow: hidden;
+    z-index: 3;
+  }
+
+  /* pre-wrap 只能加在装文字的这一层上。
+     加在外面那层 #bubble 上会出事：HTML 源码里子元素之间的换行和缩进
+     也是文本节点，pre-wrap 会把它们当成真实空行渲染 ——
+     一句五个字的话，气泡能被撑到 146px 高，里面全是空的。 */
+  #bubble-text {
+    white-space: pre-wrap;
+  }
+
+  /* 有按钮的时候太窄不好看，两个按钮会挤成一团 */
+  #bubble.has-offer { min-width: 186px; }
+  /* 游戏出题时是三四个中文选项，一行铺不下，得给它更宽的地方并且允许换行 */
+  #bubble.many { min-width: 230px; }
+
+  #bubble.show {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    /* 说着话的时候气泡是可以点的 —— 点一下就跳到私聊窗口接着聊。
+       只在这几秒里收事件，收起来之后立刻恢复穿透，不会长期挡住桌面图标。
+       （stage.js 的 hitBubble() 里有一模一样的判据，两边必须一致。） */
+    pointer-events: auto;
+    cursor: pointer;
+  }
+
+  #bubble.show:hover {
+    background: rgba(34, 34, 46, 0.95);
+    border-color: rgba(94, 234, 212, 0.42);
+  }
+  #bubble.show:hover::after { border-top-color: rgba(34, 34, 46, 0.95); }
+  #bubble.show.below:hover::after {
+    border-top-color: transparent;
+    border-bottom-color: rgba(34, 34, 46, 0.95);
+  }
+
+  /* 鼠标压上去时在右下角提示一句「点我能接着聊」，不然没人知道气泡可以点 */
+  #bubble.show:hover #bubble-text::after {
+    content: ' 　💬';
+    opacity: .6;
+    font-size: 11px;
+  }
+
+  /* 她在汇报干活的事时，点气泡是**调出那个终端看现场**，不是接着聊 ——
+     两件事差得远，提示图标必须分开，不然你点下去得到的东西跟预期不一样 */
+  #bubble.show.linked:hover #bubble-text::after { content: ' 　🖥 ↗'; }
+  #bubble.show.linked {
+    border-color: rgba(94, 234, 212, 0.34);
+  }
+
+  /* 她还在想的时候（三个点转着）别收事件 —— 那会儿没话可带过去，
+     点了只会开出一个空窗口 */
+  #bubble.thinking {
+    pointer-events: none;
+    cursor: default;
+  }
+
+  /* 指向嘴巴的小尖角。--tail-x 由 JS 算 ——
+     气泡被窗口边缘顶住时，尖角还得继续对准嘴。 */
+  #bubble::after {
+    content: '';
+    position: absolute;
+    left: var(--tail-x, 50%);
+    top: 100%;
+    margin-left: -7px;
+    border: 7px solid transparent;
+    border-top-color: rgba(24, 24, 32, 0.9);
+  }
+
+  /* 上面放不下就翻到嘴巴下边，尖角跟着掉个头 */
+  #bubble.below { transform-origin: top center; }
+  #bubble.below::after {
+    top: auto;
+    bottom: 100%;
+    border-top-color: transparent;
+    border-bottom-color: rgba(24, 24, 32, 0.9);
+  }
+
+  /* 她想事情的时候先摆三个点，不然戳一下要愣两秒才有反应 */
+  #bubble.thinking #bubble-text::after {
+    content: '';
+    animation: dots 1.2s steps(4) infinite;
+  }
+  @keyframes dots {
+    0% { content: '·'; } 25% { content: '··'; }
+    50% { content: '···'; } 75% { content: '··'; }
+  }
+
+  /* 她提议做点什么时冒出来的按钮。
+     气泡本身是穿透的（不能挡住桌面），只有按钮这一小块收事件。 */
+  #bubble-offer {
+    display: none;
+    gap: 6px;
+    /* 四个中文选项一行绝对铺不下，必须允许换行 —— 不加这条，
+       按钮会被挤成一条条竖着的字 */
+    flex-wrap: wrap;
+    margin-top: 9px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  #bubble.has-offer #bubble-offer { display: flex; }
+
+  /* 三个以上选项时两个一行，宽度平分，看着像个正经的选择题 */
+  #bubble.many #bubble-offer button {
+    flex: 1 1 calc(50% - 3px);
+    min-width: 0;
+  }
+
+  #bubble-offer button {
+    pointer-events: auto;
+    flex: 1;
+    background: rgba(94, 234, 212, 0.14);
+    border: 1px solid rgba(94, 234, 212, 0.45);
+    color: #b8fff2;
+    border-radius: 9px;
+    padding: 6px 10px;
+    font: 12px/1.4 "Microsoft YaHei", sans-serif;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  #bubble-offer button:hover { background: rgba(94, 234, 212, 0.28); }
+  #bubble-offer button.no {
+    flex: 0 0 auto;
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.55);
+  }
+  #bubble-offer button.no:hover { background: rgba(255, 255, 255, 0.14); }
+
+  /* 心情标签，贴在气泡右下角，调试和日常都能一眼看到她什么状态 */
+  #mood {
+    position: absolute;
+    right: 14px;
+    bottom: 8px;
+    font: 11px/1 "Microsoft YaHei", sans-serif;
+    color: rgba(255, 255, 255, 0.55);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .3s ease;
+  }
+
+  #mood.show { opacity: 1; }
+
+  /* 右下角的设置齿轮。
+     平时藏着 —— 桌宠窗口是块透明画布，常驻一个按钮在桌面上很碍眼。
+     鼠标够到她身上（或者够到按钮自己）才浮出来。 */
+  #gear {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: rgba(24, 24, 32, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.72);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    cursor: pointer;
+    opacity: 0;
+    transform: scale(.8);
+    transition: opacity .18s ease, transform .18s cubic-bezier(.34,1.4,.64,1), background .15s;
+    pointer-events: auto;
+    z-index: 4;
+  }
+  #gear.show { opacity: 1; transform: scale(1); }
+  #gear:hover { background: rgba(44, 48, 64, 0.95); color: #fff; }
+  #gear:active { transform: scale(.92); }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="bubble">
+    <div id="bubble-text"></div>
+    <div id="bubble-offer"></div>
+  </div>
+  <div id="mood"></div>
+  <div id="gear" title="设置">⚙</div>
+
+  <!-- 顺序不能改：Cubism Core 是闭源 runtime，必须先于 pixi-live2d-display 加载，
+       否则 Live2DModel.from() 会在解析 .moc3 时直接抛错。 -->
+  <script src="../../vendor/live2dcubismcore.min.js"></script>
+  <script src="../../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
+  <script src="../../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>
+  <!-- 编舞、测拍子、外观都要先于 stage.js 加载 -->
+  <script src="dance.js"></script>
+  <script src="bpm.js"></script>
+  <script src="look.js"></script>
+  <script src="stage.js"></script>
+</body>
+</html>

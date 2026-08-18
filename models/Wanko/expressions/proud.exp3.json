@@ -1,0 +1,22 @@
+{
+  "Type": "Live2D Expression",
+  "FadeInTime": 0.45,
+  "FadeOutTime": 0.45,
+  "Parameters": [
+    {
+      "Id": "PARAM_FACE_01",
+      "Value": 1,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_EAR_L",
+      "Value": 0.6,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_EAR_R",
+      "Value": 0.6,
+      "Blend": "Add"
+    }
+  ]
+}

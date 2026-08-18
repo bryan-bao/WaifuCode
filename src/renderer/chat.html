@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>私聊</title>
+<style>
+  :root {
+    --bg: #0d0f16;
+    --card: #161a24;
+    --card2: #1c2231;
+    --line: #272e3f;
+    --fg: #e6e8f0;
+    --dim: #8b93a7;
+    --acc: #5eead4;
+    --acc2: #818cf8;
+    --pink: #f472b6;
+    --bad: #f87171;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.7 "Microsoft YaHei", "PingFang SC", sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  /* ---- 标题栏 ---- */
+  header {
+    -webkit-app-region: drag;
+    display: flex; align-items: center; gap: 8px;
+    height: 42px; padding: 0 8px 0 14px;
+    background: linear-gradient(180deg, #171c28, #12161f);
+    border-bottom: 1px solid var(--line);
+  }
+  header .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--pink); box-shadow: 0 0 10px var(--pink); flex: none;
+  }
+  header strong { font-size: 13px; font-weight: 600; letter-spacing: .3px; }
+  header .who { color: var(--dim); font-size: 11px; font-weight: 400; }
+  header .spacer { flex: 1; }
+  header button {
+    -webkit-app-region: no-drag;
+    background: transparent; border: 0; color: var(--dim);
+    font-size: 12px; cursor: pointer; padding: 5px 9px; border-radius: 6px;
+  }
+  header button:hover { background: #232a3a; color: var(--fg); }
+  header button.on { color: var(--acc); background: #1b2432; }
+
+  /* ---- 消息区 ---- */
+  #log {
+    height: calc(100% - 42px - 92px);
+    overflow-y: auto;
+    padding: 14px 14px 4px;
+    user-select: text;
+  }
+
+  .turn { display: flex; margin-bottom: 12px; }
+  .turn.me { justify-content: flex-end; }
+
+  .bub {
+    max-width: 78%;
+    padding: 9px 13px;
+    border-radius: 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13px;
+    line-height: 1.75;
+  }
+  .turn.her .bub {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-top-left-radius: 4px;
+  }
+  .turn.me .bub {
+    background: linear-gradient(135deg, #1e3a8a55, #4c1d9555);
+    border: 1px solid #3b4a7a;
+    border-top-right-radius: 4px;
+  }
+  .turn.sys .bub {
+    background: transparent; border: 0; color: var(--dim);
+    font-size: 11px; text-align: center; max-width: 100%;
+  }
+  .turn.sys { justify-content: center; }
+  .turn.err .bub { border-color: var(--bad); color: #ffd8d8; }
+
+  /* 打字光标 */
+  .bub.typing::after {
+    content: '▍';
+    color: var(--acc);
+    animation: blink .9s steps(2) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .empty { color: #59617a; font-size: 12px; text-align: center; padding: 40px 20px; line-height: 2; }
+
+  /* ---- 输入区 ---- */
+  #compose {
+    height: 92px;
+    border-top: 1px solid var(--line);
+    background: #10141d;
+    padding: 8px 10px;
+    display: flex; gap: 8px; align-items: flex-end;
+  }
+  #input {
+    flex: 1; height: 100%;
+    background: var(--card); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 11px; font: inherit; outline: none; resize: none;
+    user-select: text;
+  }
+  #input:focus { border-color: var(--acc2); }
+  #send {
+    background: linear-gradient(135deg, #be185d, #9d174d);
+    border: 1px solid var(--pink); color: #ffe4f1;
+    border-radius: 10px; padding: 0 16px; height: 100%;
+    font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  #send:hover { background: linear-gradient(135deg, #db2777, #be185d); }
+  #send:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* ---- 性格面板（从右滑出）---- */
+  #persona {
+    position: absolute; top: 42px; right: 0; bottom: 0; width: 100%;
+    background: var(--bg);
+    border-left: 1px solid var(--line);
+    transform: translateX(100%);
+    transition: transform .22s ease;
+    padding: 14px;
+    overflow-y: auto;
+  }
+  #persona.show { transform: translateX(0); }
+  #persona h3 { margin: 0 0 4px; font-size: 13px; }
+  #persona p.tip { margin: 0 0 12px; font-size: 11px; color: var(--dim); line-height: 1.8; }
+
+  #persona label { display: block; font-size: 11px; color: var(--dim); margin: 14px 0 5px; }
+  #ptext {
+    width: 100%; height: 190px;
+    background: var(--card); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 12px; font: inherit; outline: none; resize: none;
+    user-select: text; line-height: 1.8;
+  }
+  #ptext:focus { border-color: var(--acc2); }
+
+  #pname {
+    width: 100%;
+    background: var(--card); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 11px; font: inherit; outline: none; user-select: text;
+  }
+  #pname:focus { border-color: var(--acc2); }
+
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .preset {
+    background: var(--card); border: 1px solid var(--line); border-radius: 20px;
+    padding: 4px 12px; font-size: 11px; color: var(--dim); cursor: pointer;
+  }
+  .preset:hover { border-color: var(--acc); color: var(--fg); }
+
+  .prow { display: flex; gap: 8px; margin-top: 16px; }
+  .prow button {
+    flex: 1; background: var(--card2); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 9px;
+    padding: 9px; font: inherit; cursor: pointer;
+  }
+  .prow button:hover { border-color: var(--acc2); }
+  .prow button.primary {
+    background: linear-gradient(135deg, #0f766e, #115e59);
+    border-color: #14b8a6; color: #d6fff8; font-weight: 600;
+  }
+  #pmsg { margin-top: 10px; font-size: 11px; min-height: 16px; color: var(--acc); }
+  #pmsg.err { color: var(--bad); }
+
+  .warn {
+    margin-top: 14px; padding: 9px 11px; border-radius: 9px;
+    background: #1a1520; border: 1px solid #3a2a3a;
+    font-size: 11px; color: var(--dim); line-height: 1.8;
+  }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #262c3b; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="dot"></span>
+    <strong id="title">私聊</strong>
+    <span class="who" id="who"></span>
+    <span class="spacer"></span>
+    <button id="clear" title="重开一段对话，之前聊的她就不记得了">重开</button>
+    <button id="tog-persona" title="定制她的性格">性格</button>
+    <button id="close" title="关闭">✕</button>
+  </header>
+
+  <div id="log">
+    <div class="empty" id="empty">
+      跟她随便聊点什么吧。<br />
+      这条对话跟派活是分开的，她在这儿不会去动你的代码。
+    </div>
+  </div>
+
+  <div id="compose">
+    <textarea id="input" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+    <button id="send">发送</button>
+  </div>
+
+  <!-- 性格定制 -->
+  <div id="persona">
+    <h3>她是个什么样的人</h3>
+    <p class="tip">
+      下面这段会作为她的人设塞进每次对话。改完点保存，<b>下一段对话</b>才会用新性格
+      —— 已经聊起来的这段不会中途变性子。
+    </p>
+
+    <label>她叫什么</label>
+    <input id="pname" spellcheck="false" placeholder="小依" />
+
+    <label>性格设定</label>
+    <textarea id="ptext" spellcheck="false"
+      placeholder="比如：你是我的桌面助手，说话简短、有点毒舌但其实很关心我…"></textarea>
+
+    <label>懒得写？挑一个改改</label>
+    <div class="presets" id="presets"></div>
+
+    <div class="prow">
+      <button class="primary" id="psave">保存</button>
+      <button id="pback">返回</button>
+    </div>
+    <div id="pmsg"></div>
+
+    <div class="warn">
+      聊天这条会话是<b>只读</b>的：她能看文件、能搜索，但改不了你的代码，
+      也跑不了命令。要她真干活请用「派个活」面板。
+    </div>
+  </div>
+
+  <script src="chat.js"></script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+{
+  "name": "waifu-code",
+  "version": "0.1.0",
+  "description": "二次元 Claude Code 桌面助手 —— 有心情、能派活、独立会话",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "shot": "electron . --shot",
+    "test": "node test-mood.js",
+    "test:dispatch": "node test-dispatch.js",
+    "test:voice": "node tools/test-voice.js",
+    "test:chat": "node tools/test-chat.js",
+    "test:terminal": "node tools/test-terminal.js",
+    "test:termlife": "node tools/test-termlife.js",
+    "test:dance": "node tools/test-dance.js",
+    "test:music": "node tools/test-music.js",
+    "test:actions": "node tools/test-actions.js",
+    "test:greet": "node tools/test-greet.js",
+    "demo-song": "node tools/make-demo-song.js",
+    "make-icon": "electron tools/make-icon.js",
+    "test:supervise": "node tools/test-supervise.js",
+    "install-hooks": "node hooks/install.js",
+    "uninstall-hooks": "node hooks/install.js --remove",
+    "preview-bubble": "electron tools/bubble-preview.js",
+    "test:smooth": "node tools/test-smooth.js",
+    "test:posture": "node tools/test-posture.js",
+    "test:look": "node tools/test-look.js",
+    "test:play": "node tools/test-play.js",
+    "test:context": "node tools/test-context.js",
+    "sessions": "node tools/check-sessions.js",
+    "test:physics": "electron tools/test-physics.js",
+    "test:stage": "electron tools/test-stage.js",
+    "probe-parts": "electron tools/probe-parts.js",
+    "preview-settings": "electron tools/preview-settings.js",
+    "test:gear": "electron tools/test-gear.js",
+    "probe-params": "electron tools/probe-params.js",
+    "probe-uv": "electron tools/probe-uv.js",
+    "preview-fx": "electron tools/preview-fx.js",
+    "test:wiring": "node tools/test-wiring.js",
+    "test:lanes": "node tools/test-lanes.js",
+    "test:journal": "node tools/test-journal.js",
+    "test:notes": "node tools/test-notes.js",
+    "test:milestone": "node tools/test-milestone.js",
+    "test:profiles": "node tools/test-profiles.js",
+    "test:cost": "node tools/test-cost.js",
+    "scan-chcp": "node tools/scan-chcp.js",
+    "pack": "node tools/pack.js",
+    "faces": "electron tools/expression-sheet.js",
+    "make-faces": "node tools/make-expressions.js"
+  },
+  "author": "WaifuCode",
+  "license": "MIT",
+  "build": {
+    "appId": "com.waifucode.desktop",
+    "productName": "WaifuCode",
+    "copyright": "MIT",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "extraMetadata": {
+      "productName": "WaifuCode"
+    },
+    "asar": false,
+    "files": [
+      "**/*",
+      "!.cache",
+      "!dist",
+      "!build",
+      "!.testproj",
+      "!.waifu-probe",
+      "!换装实测",
+      "!sessions",
+      "!music",
+      "!vendor/pylibs",
+      "!tools/*.js",
+      "!test-*.js",
+      "!*.log",
+      "!config.json",
+      "!package-lock.json",
+      "!workPosture",
+      "!*.png",
+      "!*.html",
+      "!*.bat",
+      "!README.md",
+      "!CLAUDE.md",
+      "!**/*.map"
+    ],
+    "extraFiles": [
+      {
+        "from": "build/给使用者看.txt",
+        "to": "给使用者看.txt"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "requestedExecutionLevel": "asInvoker",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WaifuCode 小依",
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052",
+      "artifactName": "WaifuCode-${version}-安装版.${ext}"
+    },
+    "artifactName": "WaifuCode-${version}-免安装.${ext}"
+  },
+  "dependencies": {
+    "msedge-tts": "^2.0.7",
+    "pixi-live2d-display": "0.4.0",
+    "pixi.js": "6.5.10"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  }
+}
