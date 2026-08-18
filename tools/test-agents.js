@@ -342,6 +342,139 @@ console.log('\n[10] 认领的规矩（_codexPeek 那一层）');
   }
 }
 
+console.log('\n[11] 读档案（增量）：她靠这个知道 codex 这一段干了什么');
+{
+  const L = (type, payload) => JSON.stringify({ timestamp: 'x', type, payload });
+  const rf = path.join(TMP, 'glance.jsonl');
+  const half = '{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"半行'; // 没写完，没换行
+  fs.writeFileSync(rf, [
+    L('event_msg', { type: 'user_message', message: '把校验修好' }),
+    L('response_item', { type: 'function_call', name: 'shell', arguments: '{"command":["rg","x"]}' }),
+    // 工具的**输出**不算一次工具（字符串粗筛必须靠右引号区分 function_call 和 …_output）
+    L('response_item', { type: 'function_call_output', call_id: 'c', output: '{"type":"task_complete"}' }),
+    L('response_item', { type: 'custom_tool_call', name: 'apply_patch',
+      input: '*** Begin Patch\n*** Update File: src/a.js\n@@\n-x\n+y\n*** Add File: src/b.js\n*** End Patch' }),
+    // function_call 形态的 apply_patch：arguments 是没解码的内层 JSON —— 得先 parse 再抠
+    L('response_item', { type: 'function_call', name: 'apply_patch',
+      arguments: JSON.stringify({ input: '*** Begin Patch\n*** Update File: src/c.js\n*** End Patch' }) }),
+    L('event_msg', { type: 'error', message: '断了一下' }),
+    L('event_msg', { type: 'task_complete', turn_id: 't1', last_agent_message: '修好了，跑过自检' }),
+    L('event_msg', { type: 'task_complete', turn_id: 't2', last_agent_message: null }),
+  ].join('\n') + '\n' + half, 'utf8');
+
+  const g = agents.codexGlance(rf, 0);
+  check(g.turns === 2, '两轮（task_complete ×2，半行那条不算）');
+  check(g.toolCount === 3, '三次工具（shell + 两种形态的 apply_patch；工具输出不算）');
+  check(g.errors === 1, '一次报错');
+  check(g.lastSaid === '修好了，跑过自检', '她要念的原话（出错那轮是 null，不覆盖）');
+  check(g.lastPrompt === '把校验修好', '这轮用户要的是什么（老版 user_message 形状）');
+  check(g.files['src/a.js'] === 1 && g.files['src/b.js'] === 1, '补丁里抠出动过的文件');
+  check(g.files['src/c.js'] === 1 && !Object.keys(g.files).some((k) => k.includes('@@')),
+        '**function_call 形态先解码再抠** —— 不在带转义的原文上跑正则（评审抓的）');
+  check(g.nextOffset === fs.statSync(rf).size - Buffer.byteLength(half, 'utf8'),
+        '**偏移停在半行前面** —— 正写到一半的那行留给下一拍');
+
+  // 把半行补完，从上次的偏移接着读：只看到新完成的这一轮
+  fs.appendFileSync(rf, '"}}\n' +
+    L('response_item', { type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: '<environment_context>machine stuff</environment_context>' }] }) + '\n' +
+    L('response_item', { type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: '再把样式改改' }] }) + '\n' +
+    L('event_msg', { type: 'task_complete', turn_id: 't3', last_agent_message: '样式改好了' }) + '\n');
+  const g2 = agents.codexGlance(rf, g.nextOffset);
+  check(g2.turns === 2 && g2.lastSaid === '样式改好了',
+        '**增量接着读**：半行补完算一轮，新一轮也算，前面读过的不重算');
+  check(g2.lastPrompt === '再把样式改改',
+        '新版用户输入（response_item/message role=user）也认，<environment_context> 那坨跳过');
+  check(agents.codexGlance(rf, fs.statSync(rf).size).turns === 0, '偏移在末尾 → 这一段什么都没有');
+  check(agents.codexGlance(rf, 99999999).nextOffset === fs.statSync(rf).size,
+        '档案变短（偏移比文件还大）→ 跳到末尾重新跟，不重放');
+  check(agents.codexGlance(path.join(TMP, '没有.jsonl'), 0) === null, '读不出来 → null');
+}
+
+console.log('\n[12] 盯档案 → 汇报：跟 claude 同一个下游，一个字段都不差');
+{
+  const L = (type, payload) => JSON.stringify({ timestamp: 'x', type, payload });
+  const rf = path.join(TMP, 'watch.jsonl');
+  const tm = new TerminalManager({ storeDir: TMP, getConfig: () => ({}), log: () => {} });
+  const reports = [];
+  const turns = [];
+  tm.on('report', (e) => reports.push(e));
+  tm.on('turn', (e) => turns.push(e));
+  const specOf = (id, extra) => ({
+    id, name: 'x', dir: TMP, task: '修校验', sessionId: 's-' + id,
+    windowName: 'waifu-' + id, title: 'WaifuCode · x', agent: 'codex',
+    codexFile: rf, codexSessionId: 'id-' + id, codexClaimed: true, codexOffset: 0, ...extra,
+  });
+  // _codexPersist 要往 spec 文件里写进度，先落一份
+  const specFileOf = (id) => path.join(TMP, 'terminals', id + '.json');
+  fs.writeFileSync(specFileOf('wa'), JSON.stringify(specOf('wa')), 'utf8');
+
+  fs.writeFileSync(rf, L('response_item', { type: 'function_call', name: 'shell', arguments: '{}' }) + '\n', 'utf8');
+  const rec = tm._makeRecord(specOf('wa'), { pid: 1, status: 'running' });
+  tm.items.set('wa', rec);
+  tm._codexWatch(rec);
+  check(reports.length === 0 && turns.length === 0, '只动了工具、一轮没干完 → 先攒着不报');
+
+  fs.appendFileSync(rf,
+    L('event_msg', { type: 'user_message', message: '把校验修好' }) + '\n' +
+    L('response_item', { type: 'custom_tool_call', name: 'apply_patch',
+      input: '*** Begin Patch\n*** Update File: src/x.js\n*** End Patch' }) + '\n' +
+    L('event_msg', { type: 'task_complete', turn_id: 't1', last_agent_message: '搞定了' }) + '\n');
+  tm._codexWatch(rec);
+  check(reports.length === 1, '**一轮干完 → 汇报来了**（跟 claude 的 Stop 一个待遇）');
+  const r1 = reports[0] || {};
+  check(r1.text === '搞定了' && r1.quiet === false && r1.speak === true,
+        '原话、开口、要念 —— 形状跟 claude 的 report 一致');
+  check((r1.files || []).includes('x.js') && r1.toolCount === 2,
+        '攒的工具和文件跟着这一轮一起报（面板和气泡都要用）');
+  check(r1.task === '把校验修好', 'task 是这轮用户要的（小抄按它记）');
+  check(turns.length === 1 && turns[0].tools === 2,
+        '**turn 事件也发**（流水的按轮统计原来永远数不到 codex，评审抓的）');
+
+  tm._codexWatch(rec);
+  check(reports.length === 1, '文件没长 → 不重读不重报');
+
+  fs.appendFileSync(rf, L('event_msg', { type: 'task_complete', turn_id: 't2', last_agent_message: '又一段' }) + '\n');
+  tm._codexWatch(rec);
+  check(reports.length === 2 && reports[1].quiet === true,
+        '20 秒内第二轮 → 照记账但**闭嘴**（quiet，跟 claude 的碎碎念闸一样）');
+  check(reports[1].toolCount === 0,
+        '**报的是「这一段」的量**不是开线以来累计 —— 这一轮没动工具就是 0（评审抓的）');
+
+  // 出错的轮：last_agent_message 是 null → 概要兜底，别一声不吭
+  fs.appendFileSync(rf,
+    L('event_msg', { type: 'error', message: 'x' }) + '\n' +
+    L('event_msg', { type: 'task_complete', turn_id: 't3', last_agent_message: null }) + '\n');
+  rec.lastReportAt = 0;
+  tm._codexWatch(rec);
+  check(reports.length === 3 && /报了 1 次错/.test(reports[2].text),
+        '出错的轮没有原话 → 概要兜底（这一段没动工具就只说报错，不说「动了 0 次」）');
+
+  // 桌宠重启认回来：进度从 spec 里的 codexSeen 恢复 —— 刚报过的那轮不许重播
+  const seenSpec = JSON.parse(fs.readFileSync(specFileOf('wa'), 'utf8'));
+  check(seenSpec.codexSeen && seenSpec.codexSeen.turns === 3 && seenSpec.codexSeen.offset > 0,
+        '**进度落了盘**（codexSeen：偏移 + 报到第几轮 + 最后那句）');
+  const rec2 = tm._makeRecord(seenSpec, { pid: 1, status: 'running' });
+  tm.items.set('wa2', rec2);
+  tm._codexWatch(rec2);
+  check(reports.length === 3 && rec2.turns === 3,
+        '**重启认回来不重播** —— 评审抓的 high：原来气泡+语音+小抄+流水各重一份');
+  check(rec2.lastReport !== '' && rec2.costPaid === (seenSpec.costPaid || 0),
+        '最后那句和已入账的钱也一起回来了（钱不落盘会在流水里翻倍）');
+
+  // 接着聊续写同一份文件：从文件末尾跟起，旧轮次不重报
+  const rec3 = tm._makeRecord(specOf('wb', { codexOffset: fs.statSync(rf).size }), { pid: 1, status: 'running' });
+  tm.items.set('wb', rec3);
+  tm._codexWatch(rec3);
+  check(reports.length === 3, '**偏移挡住了历史** —— 上一窗干的三轮不会在新窗口再报一遍');
+  fs.appendFileSync(rf, L('event_msg', { type: 'task_complete', turn_id: 't4', last_agent_message: '新窗口的活' }) + '\n');
+  tm._codexWatch(rec3);
+  check(reports.length === 4 && reports[3].text === '新窗口的活', '新窗口只报自己干的');
+
+  tm.dispose();
+}
+
 console.log('');
 if (failed) {
   console.log('\x1b[31m✗ ' + failed + ' 条没过\x1b[0m');

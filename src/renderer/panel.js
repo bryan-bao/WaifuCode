@@ -268,16 +268,16 @@ async function refreshTerms() {
       (t.toolCount ? ' · 动了 ' + t.toolCount + ' 次工具' : '') +
       (t.errorCount ? ' · 报错 ' + t.errorCount + ' 次' : '');
 
-    // codex 的线打个小牌：她不盯细节（汇报、护栏在 claude 的 hook 上）。
-    // 钱现在算得了 —— 从 codex 自己的会话记录里读，按 OpenAI 单价折算
+    // codex 的线打个小牌。汇报、金额、接着聊都有了（靠读它的会话档案）；
+    // 还缺的只有护栏 —— 那要在她动手**之前**报警，档案是干完才写的，拦不了
     if (t.agent === 'codex') {
       const b = document.createElement('span');
       b.className = 'cost';
       b.textContent = 'codex';
-      b.title = 'Codex 开的线：她只管开关窗口，汇报和护栏这条线上没有。\n' +
+      b.title = 'Codex 开的线：做完一段她会来汇报，金额按 OpenAI 官方单价折算。\n' +
         (t.codexSessionId || t.costUsd > 0
-          ? '金额按 OpenAI 官方单价折算（包月订阅不会真扣这笔钱）'
-          : '这条线没认领到 Codex 的会话档案：金额算不了，「接着聊」会开新的一条');
+          ? '护栏（动手前的报警）只有 Claude 线有 —— 档案是干完才写的，拦不了'
+          : '这条线还没认领到 Codex 的会话档案：汇报和金额都要等认领到才有');
       meta.appendChild(b);
     }
 

@@ -277,7 +277,127 @@ function codexUsage(file, base) {
   return { usd, model, totals };
 }
 
+/** apply_patch 的补丁文本里抠出动过的文件（*** Add/Update/Delete File: 路径） */
+function collectPatchFiles(patch, files) {
+  const re = /\*\*\* (?:Add|Update|Delete) File: (.+)/g;
+  let m;
+  while ((m = re.exec(patch))) {
+    const p = m[1].trim();
+    if (p) files[p] = (files[p] || 0) + 1;
+  }
+}
+
+/**
+ * 从 fromOffset 往后读一段档案：这段时间里她干了什么。
+ *
+ * claude 的监督靠 hook 推事件；codex 没有 hook，但它的会话档案是**实时**写的，
+ * 每一轮都有现成的记号：
+ *   · task_complete —— 一轮干完，**last_agent_message 就是她这轮最后说的话**
+ *     （出错的轮可能是 null）
+ *   · function_call / custom_tool_call —— 动了一次工具；apply_patch 的补丁
+ *     文本里写着动了哪些文件（function_call 形态的 arguments 是**还没解码的
+ *     内层 JSON**，得先 parse 再取 input —— 直接跑正则会把整段补丁吞成一个
+ *     「文件名」，评审抓过）
+ *   · error —— 报错（登录失效、断网之类）
+ *   · 用户这轮说了什么 —— 老版本是 event_msg/user_message，新版本（0.147）
+ *     改成了 response_item/message 里 role=user，两种都认
+ *
+ * 【为什么是增量而不是整读】整读出来的是累计值，跟基线相减的口径在文件
+ * 超过 8MB 被截尾时会塌掉（计数不再单调，汇报从此永久停摆 —— 评审抓的）。
+ * 增量读没有这个问题：每次只看新长出来的字节，量出来的天然就是「这一段」。
+ * 【半行保护】只吃到最后一个换行为止，正写到一半的那行留给下一拍
+ * （nextOffset 停在它前面）。偏移永远落在行首，所以多字节字符切不坏。
+ *
+ * 返回 { nextOffset, turns, toolCount, errors, lastSaid, lastPrompt, files }；
+ * **读不出来返回 null**（跟「这段里什么都没有」分开）。
+ */
+function codexGlance(file, fromOffset) {
+  const start = Math.max(0, Number(fromOffset) || 0);
+  const empty = (off) => ({ nextOffset: off, turns: 0, toolCount: 0, errors: 0, lastSaid: '', lastPrompt: '', files: {} });
+  let buf = null;
+  let got = 0;
+  try {
+    const st = fs.statSync(file);
+    // 档案变短了（被换掉/清掉再建）：跳到末尾重新跟 —— 宁可漏一段也别把
+    // 旧内容当新动静重放一遍
+    if (st.size < start) return empty(st.size);
+    if (st.size === start) return empty(start);
+    const fd = fs.openSync(file, 'r');
+    try {
+      const n = st.size - start;
+      buf = Buffer.alloc(n);
+      got = fs.readSync(fd, buf, 0, n, start);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (_) {
+    return null; // 读不出来 ≠ 没动静（杀毒/备份短暂锁文件是真事）
+  }
+
+  // 按**字节**找最后一个换行：偏移必须落在行首，字符串长度做不了这个数
+  let lastNl = -1;
+  for (let i = got - 1; i >= 0; i--) {
+    if (buf[i] === 0x0a) { lastNl = i; break; }
+  }
+  if (lastNl < 0) return empty(start); // 一行都没写完，下一拍再来
+
+  const out = empty(start + lastNl + 1);
+  const text = buf.slice(0, lastNl + 1).toString('utf8');
+
+  for (const ln of text.split('\n')) {
+    // 先字符串粗筛再 parse —— 工具输出的行动辄几十 KB。粗筛的串带右引号
+    // （"type":"function_call" 撞不上 …_output），嵌在工具输出里的同款文字
+    // 是转义过的（\"type\"）也撞不上；parse 完再核对 payload.type，双保险
+    if (!ln.includes('"type":"task_complete"') &&
+        !ln.includes('"type":"function_call"') &&
+        !ln.includes('"type":"custom_tool_call"') &&
+        !ln.includes('"type":"error"') &&
+        !ln.includes('"type":"user_message"') &&
+        !ln.includes('"role":"user"')) continue;
+    let j;
+    try { j = JSON.parse(ln); } catch (_) { continue; }
+    if (j.type !== 'event_msg' && j.type !== 'response_item') continue;
+    const p = j.payload || {};
+    if (p.type === 'task_complete') {
+      out.turns++;
+      if (p.last_agent_message) out.lastSaid = String(p.last_agent_message);
+    } else if (p.type === 'function_call' || p.type === 'custom_tool_call') {
+      out.toolCount++;
+      if (p.name === 'apply_patch') {
+        if (typeof p.input === 'string') collectPatchFiles(p.input, out.files);
+        else if (typeof p.arguments === 'string') {
+          // function_call 形态：arguments 是序列化的 {"input":"…补丁…"}，
+          // 先解码再抠 —— 解不开就算了，别在带转义的原文上跑正则
+          try {
+            const a = JSON.parse(p.arguments);
+            if (a && typeof a.input === 'string') collectPatchFiles(a.input, out.files);
+          } catch (_) { /* 不是合法 JSON 就当没看见 */ }
+        }
+      }
+    } else if (p.type === 'error') {
+      out.errors++;
+    } else if (p.type === 'user_message' && p.message) {
+      out.lastPrompt = pickPrompt(p.message) || out.lastPrompt;
+    } else if (p.type === 'message' && p.role === 'user' && Array.isArray(p.content)) {
+      // 新版（0.147 起）用户输入长这样。开局那条是 <environment_context>，
+      // IDE 驱动的带一坨「# Context from my IDE」—— 都不是人话，跳过
+      const t = p.content
+        .filter((c) => c && typeof c.text === 'string')
+        .map((c) => c.text).join(' ');
+      out.lastPrompt = pickPrompt(t) || out.lastPrompt;
+    }
+  }
+  return out;
+}
+
+/** 用户输入里挑出「人说的那句」：环境注入和 IDE 前缀那坨不算 */
+function pickPrompt(t) {
+  const s = String(t || '').trim();
+  if (!s || s.startsWith('<') || s.startsWith('# Context from my IDE')) return '';
+  return s;
+}
+
 module.exports = {
   onPath, resolveCodexBin, codexInstalled, codexArgs, PERM,
-  codexSessionsRoot, findCodexSession, codexUsage, codexPriceFor,
+  codexSessionsRoot, findCodexSession, codexUsage, codexPriceFor, codexGlance, pickPrompt,
 };

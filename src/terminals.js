@@ -618,6 +618,12 @@ class TerminalManager extends EventEmitter {
         const u = agents.codexUsage(codexFile);
         return u && u.totals ? u.totals : undefined;
       })(),
+      // 汇报从哪个字节起跟：接着聊续写同一份文件时，文件里已有的都是上一窗的，
+      // 从当前末尾开始 —— 增量读的「基线」就这一个数
+      codexOffset: (() => {
+        if (!codexFile) return undefined;
+        try { return fs.statSync(codexFile).size; } catch (_) { return null; }
+      })(),
       name: label, project, port, claudeBin: this.claudeBin, windowName, title,
       runtimeFile: this.runtimeFile,
       permissionMode: permissionMode || (this.getConfig().terminal || {}).permissionMode || 'auto',
@@ -685,6 +691,12 @@ class TerminalManager extends EventEmitter {
       codexSessionId: spec.codexSessionId || null,
       codexFile: spec.codexFile || null,
       codexBase: spec.codexBase || null,
+      // 盯档案的进度。codexSeen 是每报完一轮落进 spec 的（偏移、报到第几轮、
+      // 最后那句）—— 不落的话桌宠重启认回来会把刚报过的那轮**原样重播一遍**
+      // （气泡+语音+小抄+流水各来一份，评审抓的）
+      codexOffset: spec.codexSeen ? spec.codexSeen.offset
+                 : (spec.codexOffset != null ? spec.codexOffset : null),
+      codexCarry: null, // 这一轮攒到一半的工具/报错/文件（轮没完先存着）
       // 认领状态**要落盘**（_codexPeek 回写 spec 时置 true）：不落的话桌宠
       // 重启 _adopt 认回来会重新开抢 90 秒，能把已经对的绑定改成别人的会话
       codexClaimed: Boolean(spec.codexClaimed),
@@ -694,7 +706,8 @@ class TerminalManager extends EventEmitter {
       pid: null,
       startedAt: now,
       lastSeen: now,
-      turns: 0,
+      // codex 线重启认回来要接着上次的数（claude 的 spec 没有 codexSeen，还是 0）
+      turns: (spec.codexSeen && spec.codexSeen.turns) || 0,
       toolCount: 0,
       errorCount: 0,
       files: new Set(), // 这一轮她动过的文件（每轮清空，拼汇报那句话用）
@@ -706,7 +719,9 @@ class TerminalManager extends EventEmitter {
       // 这条线烧了多少钱（美元，按官方 API 单价折算，见 cost.js）。
       // paid 是已经记进流水账的部分，差额就是还没记的
       costUsd: 0,
-      costPaid: 0,
+      // codex 线每轮结账后落盘（_codexPersist）：不落的话重启认回来 costPaid
+      // 归零，整条线的钱在流水里**再记一遍**（评审抓的，撞「不许重复计钱」那条）
+      costPaid: spec.costPaid || 0,
       // 「她干的事对不对」用的三个。**必须在这儿初始化** ——
       // _adopt（桌宠重启后认回终端）也走这个函数，漏了的话 warned.has() 直接抛，
       // 而这行跑在 hook 处理路径上，抛出去就是整条 hook 链断掉
@@ -715,7 +730,7 @@ class TerminalManager extends EventEmitter {
       alarmUntil: 0,         // 喊完之后转过来看着你，到这个时刻为止
       lastBeat: 0,           // 上一次心跳。_sweep 拿它兜 pid 被复用的底
       staleBeats: 0,         // 心跳断了之后连着几拍没缓过来
-      lastReport: '',
+      lastReport: (spec.codexSeen && spec.codexSeen.lastReport) || '',
       lastReportAt: 0,
       // 这条线是「她被派出去的活」还是「你自己开的终端」。干完时的反应不一样：
       // 前者算她自己的成败（按一个活结算心情），后者她只是在旁边盯着 ——
@@ -879,6 +894,9 @@ class TerminalManager extends EventEmitter {
 
       case 'close':
         if (rec.status === 'closed') break; // gone 先到过了，窗口都没了别再翻成 done
+        // codex 退出前最后扫一眼档案 —— 收尾那轮的 task_complete 可能刚落盘，
+        // 等下一个 3 秒节拍就晚了（status 马上翻 done，汇报还是要给的）
+        if (rec.agent === 'codex') { try { this._codexWatch(rec); } catch (_) { /* 汇报丢了也不拦收尾 */ } }
         // 注意：这是 **claude 干完退出了**，不是窗口关了 ——
         // term-shell 还停在「按回车关掉」那一步等你看结果。
         // 所以这条继续留在列表里（灰的），你还能点它把窗口调到前面。
@@ -1218,8 +1236,15 @@ class TerminalManager extends EventEmitter {
 
     rec.codexSessionId = hit.sessionId;
     rec.codexFile = hit.file;
-    rec.codexBase = null;   // 新落盘的文件，从零算起
+    rec.codexBase = null;   // 新落盘的文件，钱从零算起（token_count 是本次运行的）
     rec.codexReadAt = 0;
+    // 汇报从哪儿跟起：新认的文件整份都是这一窗的，从 0 —— 认领前就干完的
+    // 快轮也不会丢。接着聊（expectId）认到的新文件可能抄了旧对话进去，
+    // 从当前末尾跟起，抄进来的历史不重报
+    rec.codexOffset = expectId
+      ? (() => { try { return fs.statSync(hit.file).size; } catch (_) { return null; } })()
+      : 0;
+    rec.codexCarry = null;
     rec.codexClaimed = true;
 
     // 回写 spec：桌宠重启 _adopt 认回这个窗口时，钱才接得上、线才接得回。
@@ -1230,6 +1255,8 @@ class TerminalManager extends EventEmitter {
       spec.codexSessionId = hit.sessionId;
       spec.codexFile = hit.file;
       spec.codexClaimed = true;
+      spec.codexOffset = rec.codexOffset != null ? rec.codexOffset : undefined;
+      delete spec.codexGlanceBase;
       delete spec.codexBase;
       fs.writeFileSync(specFile, JSON.stringify(spec, null, 2), 'utf8');
     } catch (_) { /* 写不回就只是重启后这条线的钱变暗，不拦认领 */ }
@@ -1294,6 +1321,140 @@ class TerminalManager extends EventEmitter {
           })),
         fileCount: (t.filesAll || new Map()).size,
       }));
+  }
+
+  /**
+   * 盯 codex 的会话档案：一轮干完（task_complete 落盘）就走跟 claude 一模一样
+   * 的汇报路 —— 先 emit('turn')（流水的按轮统计靠它），再 emit('report')
+   * （形状字段对字段照抄 _report），main 那头的语音、气泡、小抄、流水、心情
+   * **一行都不用改**就全接上了。
+   *
+   * 【增量读】记住上次读到第几个字节（codexOffset），每拍只解析新长出来的
+   * 那段 —— 工具数、报错数、动过的文件量出来的天然就是「这一段」的
+   * （claude 每轮 UserPromptSubmit 清零是同一个语义），而且跟文件多大无关。
+   * 轮没完先攒在 codexCarry 里，task_complete 一到连攒的一起报。
+   *
+   * 【进度要落盘】每报完一轮把 codexSeen（偏移/轮数/最后那句）和 costPaid
+   * 写回 spec —— 桌宠重启认回来才不会把刚报过的那轮重播一遍、把已入账的钱
+   * 再记一遍（评审抓的两条 high 都在这儿）。
+   *
+   * claude 靠 hook 推、这儿靠 3 秒一拍拉，慢个几秒，别的没差。
+   * 护栏（动手**之前**报警）例外 —— 档案是干完才写的，拦不了，那条仍是
+   * claude 线独有。
+   */
+  _codexWatch(rec) {
+    if (rec.agent !== 'codex' || !rec.codexFile || rec.status === 'closed') return;
+    let size = 0;
+    try { size = fs.statSync(rec.codexFile).size; } catch (_) { return; }
+    if (rec.codexOffset == null) {
+      // 起点一直没定下来（open 时文件读不到）：从现在开始跟，旧的不追
+      rec.codexOffset = size;
+      return;
+    }
+    if (size === rec.codexOffset) return; // 没长，不重读
+
+    const g = agents.codexGlance(rec.codexFile, rec.codexOffset);
+    if (!g) return; // 读失败（锁文件那类）：偏移不动，下一拍再试
+    rec.codexOffset = g.nextOffset;
+
+    // 轮内的动静先攒着（工具是干活时就落盘的，task_complete 要等轮尾）
+    const carry = rec.codexCarry || (rec.codexCarry = { toolCount: 0, errors: 0, files: {} });
+    carry.toolCount += g.toolCount;
+    carry.errors += g.errors;
+    for (const [p, n] of Object.entries(g.files || {})) {
+      carry.files[p] = (carry.files[p] || 0) + n;
+    }
+    if (g.lastPrompt) rec.lastPrompt = String(g.lastPrompt).slice(0, 500);
+    if (!g.turns) return; // 轮还没完
+
+    // ≥1 轮完成：把攒的一起结
+    rec.turns += g.turns;
+    rec.toolCount = carry.toolCount;   // 「这一段」的量，跟 claude 每轮清零同义
+    rec.errorCount = carry.errors;
+    const fresh = [];
+    for (const [p, n] of Object.entries(carry.files)) {
+      const abs = path.isAbsolute(p) ? p : path.join(rec.dir, p);
+      fresh.push(path.basename(p));
+      if (!rec.filesAll) rec.filesAll = new Map();
+      rec.filesAll.set(abs, (rec.filesAll.get(abs) || 0) + n);
+    }
+    rec.files = new Set(fresh);
+    rec.codexCarry = { toolCount: 0, errors: 0, files: {} };
+
+    // 流水的按轮统计（当天干了几轮/动了几次工具/错了几次）靠这个事件 ——
+    // 不发的话 codex 线在日/月摘要里永远是 0（评审抓的）
+    this.emit('turn', {
+      id: rec.id,
+      project: rec.project,
+      laneName: rec.laneName,
+      turns: rec.turns,
+      tools: rec.toolCount,
+      errors: rec.errorCount,
+    });
+
+    // ——汇报，照抄 _report 的规矩：原话拿不到用概要兜底、同一句不报两遍、
+    //   20 秒内不碎碎念（只管嘴，账照记）——
+    const cfg = this.getConfig().supervise || {};
+    const silent = cfg.enabled === false;
+
+    let text = String(g.lastSaid || '').trim();
+    if (text && text === rec.lastReport) text = ''; // 这轮没有新话
+    if (!text) {
+      if (rec.toolCount) {
+        text = '动了 ' + rec.toolCount + ' 次工具' +
+               (rec.errorCount ? '，其中 ' + rec.errorCount + ' 次报错' : '，一路顺利') + '。';
+      } else if (rec.errorCount) {
+        text = '这一段报了 ' + rec.errorCount + ' 次错。';
+      }
+      if (text === rec.lastReport) text = '';
+    }
+
+    if (text) {
+      const gap = (cfg.minGapSec || 20) * 1000;
+      const tooSoon = Boolean(rec.lastReportAt && Date.now() - rec.lastReportAt < gap);
+      rec.lastReport = text;
+      if (!tooSoon) rec.lastReportAt = Date.now();
+
+      this.emit('report', {
+        quiet: silent || tooSoon,
+        id: rec.id,
+        name: rec.name,
+        project: rec.project,
+        laneName: rec.laneName,
+        dir: rec.dir,
+        text,
+        task: rec.lastPrompt || rec.task,
+        files: Array.from(rec.files || []).slice(0, 8),
+        toolCount: rec.toolCount,
+        errorCount: rec.errorCount,
+        speak: cfg.speak !== false,
+      });
+    }
+
+    // 一轮干完把这轮的钱记进流水（有没有开口都记，跟 claude 同拍），
+    // 然后把进度落盘 —— 顺序要紧：settle 先更新 costPaid，落盘才带得上
+    this._settleCost(rec);
+    this._codexPersist(rec);
+    this.emit('change');
+  }
+
+  /**
+   * 把 codex 线的盯档进度写回 spec。桌宠重启 _adopt 认回窗口时靠它接着数 ——
+   * 不落盘的话：刚报过的那轮重播一遍、已入账的钱再记一遍。
+   * 只在轮结束时写（3 秒一拍的中途不写，spec 不至于被刷成碎账）。
+   */
+  _codexPersist(rec) {
+    try {
+      const specFile = path.join(this.specDir, rec.id + '.json');
+      const spec = JSON.parse(fs.readFileSync(specFile, 'utf8'));
+      spec.codexSeen = {
+        offset: rec.codexOffset || 0,
+        turns: rec.turns || 0,
+        lastReport: rec.lastReport || '',
+      };
+      spec.costPaid = rec.costPaid || 0;
+      fs.writeFileSync(specFile, JSON.stringify(spec, null, 2), 'utf8');
+    } catch (_) { /* 写不上就重启后可能重放一轮 —— 不拦正事 */ }
   }
 
   /** 会话档案还在不在。每 3 秒一次 existsSync 太碎，缓 10 秒 */
@@ -1448,6 +1609,7 @@ class TerminalManager extends EventEmitter {
     for (const rec of this.items.values()) {
       if (rec.status === 'closed') continue;
       this._codexPeek(rec, now);
+      this._codexWatch(rec);
       const alive = pidAlive(rec.pid);
 
       if (alive === false) {
@@ -1592,7 +1754,10 @@ class TerminalManager extends EventEmitter {
     // 用户先退桌宠、窗口还开着的话，这笔就永远进不了流水 —— 走之前结掉
     for (const rec of this.items.values()) {
       if (rec.agent === 'codex' && rec.costUsd - (rec.costPaid || 0) > 1e-6) {
-        try { this._settleCost(rec); } catch (_) { /* 结不上也不能拦退出 */ }
+        try {
+          this._settleCost(rec);
+          this._codexPersist(rec); // 不落盘的话，重启认回来这笔会再记一遍
+        } catch (_) { /* 结不上也不能拦退出 */ }
       }
     }
     clearInterval(this.timer);
