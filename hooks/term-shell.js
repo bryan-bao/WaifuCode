@@ -140,6 +140,15 @@ function claudeArgs(useResume) {
   return args;
 }
 
+// codex 跟 claude 只差参数怎么拼。差异收在 src/agents.js，这儿只分个岔。
+// （打包是 asar:false，src/ 跟 hooks/ 一样躺在真实磁盘上，require 得到。）
+function buildArgs(useResume) {
+  if (spec.agent === 'codex') {
+    return require(path.join(ROOT, 'src', 'agents.js')).codexArgs(spec);
+  }
+  return claudeArgs(useResume);
+}
+
 function banner() {
   const line = '─'.repeat(58);
   console.log('\x1b[36m' + line + '\x1b[0m');
@@ -147,8 +156,13 @@ function banner() {
   if (spec.task && spec.task.trim()) {
     console.log('\x1b[90m  活儿：' + spec.task.replace(/\s+/g, ' ').slice(0, 100) + '\x1b[0m');
   }
-  console.log('\x1b[90m  她在旁边看着，每做完一段会去跟你汇报。\x1b[0m');
-  console.log('\x1b[90m  想让她记住这次聊的，用 /exit 退出，别直接叉窗口。\x1b[0m');
+  if (spec.agent === 'codex') {
+    // codex 没有 claude 那套 hook，她收不到里面的动静 —— 别许诺「会来汇报」
+    console.log('\x1b[90m  这扇窗跑的是 Codex。她只管开关窗口，里面的事不盯。\x1b[0m');
+  } else {
+    console.log('\x1b[90m  她在旁边看着，每做完一段会去跟你汇报。\x1b[0m');
+    console.log('\x1b[90m  想让她记住这次聊的，用 /exit 退出，别直接叉窗口。\x1b[0m');
+  }
   console.log('\x1b[36m' + line + '\x1b[0m');
   console.log('');
 }
@@ -225,16 +239,19 @@ let retried = false;
  * 包进引号之后 cmd 就不解析它们了。
  */
 function quoteArg(a) {
-  const s = String(a);
+  // 换行在 cmd 的命令行里**没有任何转义写法**，包进引号也会被当成第二条命令。
+  // 任务描述和（codex 线拼进 prompt 的）小抄都是多行文本，走 .cmd 安装的
+  // 批处理路时只能折成空格 —— 意思还在，排版没了。.exe 安装（shell:false）不受影响。
+  const s = String(a).replace(/\r?\n/g, ' ');
   return /["\s]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 
 function launch(useResume) {
-  const bin = spec.claudeBin || 'claude';
+  const bin = spec.bin || spec.claudeBin || 'claude'; // codex 的线由 spec.bin 指路
   const isBatch = /\.(cmd|bat)$/i.test(bin); // npm 装的是 .cmd，得靠 shell 才拉得起来
   const startedAt = Date.now();
 
-  const args = claudeArgs(useResume);
+  const args = buildArgs(useResume);
   const child = spawn(bin, isBatch ? args.map(quoteArg) : args, {
     cwd: spec.dir,
     stdio: 'inherit', // 关键：交互界面原样透传，你能随时接管
@@ -250,7 +267,7 @@ function launch(useResume) {
 
   child.on('error', async (err) => {
     console.error('\n\x1b[31m起不来: ' + err.message + '\x1b[0m');
-    console.error('claude 路径: ' + bin);
+    console.error('CLI 路径: ' + bin);
     await tell({ phase: 'close', code: -1, error: err.message });
     hold(1);
   });
@@ -275,7 +292,7 @@ function launch(useResume) {
     console.log(
       code === 0
         ? '\x1b[32m  这个活儿结束了。\x1b[0m'
-        : '\x1b[33m  claude 退出，代码 ' + code + '。\x1b[0m'
+        : '\x1b[33m  ' + (spec.agent === 'codex' ? 'codex' : 'claude') + ' 退出，代码 ' + code + '。\x1b[0m'
     );
     hold(code === 0 ? 0 : 1);
   });

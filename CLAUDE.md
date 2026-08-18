@@ -36,6 +36,7 @@
   node tools/test-milestone.js         # 记日子：老存档不许被当成今天刚认识
   node tools/test-profiles.js          # 角色档案：表情名/动作组名对不上模型就红
   node tools/test-cost.js              # 算钱：单价、增量读不许重复计、半行不许算
+  node tools/test-agents.js            # codex 线：权限映射宁紧勿松、小抄拼 prompt、关窗去留
   npx electron tools/test-stage.js     # 真模型，约 1 分钟
   ```
 
@@ -116,6 +117,11 @@
   不关的话被遮住/失焦时 rAF 会被掐到近乎停止，逐帧的断言就成了随机挂。
 - **别在测试里写死「外接框往下 N%」当点击落点。** 待机动作一直在动她的头，
   用 `waifuStage.hit(x, y)` 扫出一个真命中的点。
+
+- **codex 的权限映射永远不许产出 danger-full-access / --dangerously-bypass。**
+  CLI 差异全收在 `src/agents.js`（term-shell 只按 `spec.agent` 分岔，窗口那套壳
+  与 CLI 无关）；agents.js 只许用 node 自带模块 —— term-shell 是另起的 node
+  进程 require 它的。`node tools/test-agents.js` 第 2 节守着映射。
 
 ## 花钱的边界（改之前先想清楚）
 

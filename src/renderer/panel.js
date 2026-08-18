@@ -154,7 +154,12 @@ async function refreshTerms() {
     el.className = 'term ' + st.cls;
     el.title = t.dir + (t.laneName ? '\n这条线：' + t.laneName : '') + '\n' +
       (t.status === 'closed'
-        ? (t.laneId ? '点一下重开这条线，她还记得你们之前聊到哪儿' : '这条已经结束了')
+        ? (t.laneId
+            ? (t.agent === 'codex'
+                // codex 的旧会话还接不回来（第二期），别许诺「记得」
+                ? '点一下照这条线重开一个 Codex 终端（旧会话接不回来，是新开一条）'
+                : '点一下重开这条线，她还记得你们之前聊到哪儿')
+            : '这条已经结束了')
         : '点一下把这个终端窗口调到最前面');
 
     el.onclick = async () => {
@@ -164,9 +169,15 @@ async function refreshTerms() {
         msg('正在把「' + (t.laneName || t.name) + '」那条线捡回来…');
         const r = await window.waifu.openTerminal({
           projectPath: t.dir, laneId: t.laneId, laneName: t.laneName, task: '',
+          // **必须带这条线自己的 agent**，不带就回落到「记住的全局默认」——
+          // 你切过一次 codex 之后，claude 老线会被当成全新 codex 会话打开，
+          // 明明能 --resume 的记忆就这么丢了（评审抓出来的）
+          agent: t.agent || 'claude',
         });
         if (r && r.ok) {
-          msg('回到「' + (t.laneName || t.name) + '」了，她还记得你们聊到哪儿', 'ok');
+          msg(t.agent === 'codex'
+            ? '照「' + (t.laneName || t.name) + '」重开了一条 Codex 的线（旧会话接不回来，这是新开的）'
+            : '回到「' + (t.laneName || t.name) + '」了，她还记得你们聊到哪儿', 'ok');
           refreshTerms();
         } else {
           msg((r && r.error) || '这条线捡不回来了', 'err');
@@ -228,7 +239,9 @@ async function refreshTerms() {
         const r = await window.waifu.openTerminal({
           projectPath: t.dir, task: t.task, laneName: t.laneName || '',
           permissionMode: $('perm').value || undefined,
-          model: $('model').value,
+          // 不带 model 这个键：主进程回落到记住的默认。带面板此刻的值是错的 ——
+          // 面板停在 codex 档时下拉被清成空，会把记住的模型洗掉（评审抓出来的）
+          agent: t.agent || 'claude',
         });
         if (r && r.ok) {
           msg('照「' + (t.laneName || t.name) + '」又派了一次', 'ok');
@@ -251,9 +264,18 @@ async function refreshTerms() {
       (t.toolCount ? ' · 动了 ' + t.toolCount + ' 次工具' : '') +
       (t.errorCount ? ' · 报错 ' + t.errorCount + ' 次' : '');
 
+    // codex 的线打个小牌：她不盯细节，金额也算不了（钱走的是你 OpenAI 的账）
+    if (t.agent === 'codex') {
+      const b = document.createElement('span');
+      b.className = 'cost';
+      b.textContent = 'codex';
+      b.title = 'Codex 开的线：她只管开关窗口。汇报、护栏、金额都在 claude 那套 hook 上，这条线没有';
+      meta.appendChild(b);
+    }
+
     // 这条线烧了多少钱。以前这里是个黑洞（终端是独立的 claude 进程），
     // 现在从 Claude Code 自己的会话记录里读出来了
-    const cost = money(t.costUsd);
+    const cost = t.agent === 'codex' ? '' : money(t.costUsd);
     if (cost) {
       const c = document.createElement('span');
       c.className = 'cost';
@@ -426,7 +448,27 @@ function readForm() {
     // 模型跟权限不一样：**选一次就记住**（主进程存进 config），
     // 后台干 / 开终端 / 右键菜单派活从此都默认用它
     model: $('model').value,
+    // 用谁来干（claude / codex），同样是选一次就记住
+    agent: $('agent').value,
   };
+}
+
+/**
+ * 「用谁来干」一换，模型下拉跟着变脸：codex 不认 claude 的模型名，
+ * 模型跟它自己的 ~/.codex/config.toml 走 —— 下拉灰掉、第一项换个说法。
+ * 切回来时把你之前选的模型还回去（不然摸一下 codex 就把记住的模型洗没了）。
+ */
+let modelBeforeCodex = '';
+function syncAgentUi() {
+  const codex = $('agent').value === 'codex';
+  const model = $('model');
+  if (codex && !model.disabled) { modelBeforeCodex = model.value; model.value = ''; }
+  if (!codex && model.disabled) model.value = modelBeforeCodex;
+  model.disabled = codex;
+  model.options[0].text = codex
+    ? '跟 Codex 自己的设置走（config.toml 里选）'
+    : '跟 Claude Code 自己的设置走';
+  model.title = codex ? 'Codex 用哪个模型在它自己的配置里选，这儿管不着' : '';
 }
 
 /**
@@ -511,10 +553,13 @@ async function doTerminal() {
     laneName: $('lane').value.trim(),
     permissionMode: $('perm').value || undefined,
     model: $('model').value,
+    agent: $('agent').value,
   });
 
   if (r.ok) {
-    msg('终端开好了，在「' + r.name + '」目录下。她会盯着，做完一段就来告诉你', 'ok');
+    msg($('agent').value === 'codex'
+      ? '终端开好了，在「' + r.name + '」目录下。这条是 Codex 的线，她只管开关窗口'
+      : '终端开好了，在「' + r.name + '」目录下。她会盯着，做完一段就来告诉你', 'ok');
     clearTask();
     refreshRecent();
     refreshTerms();
@@ -577,6 +622,15 @@ window.waifu.on('term:report', (e) => {
     const st = await window.waifu.getSettings();
     const cfg = (st && st.config) || {};
     $('model').value = (cfg.dispatch || {}).model || '';
+    modelBeforeCodex = $('model').value;
+    $('agent').value = (cfg.dispatch || {}).agent === 'codex' ? 'codex' : 'claude';
+    syncAgentUi();
+    $('agent').onchange = () => {
+    syncAgentUi();
+    // 换一下就记住（跟皮肤一个套路，增量合并只碰这一个键）。
+    // 特意不放在派活时记：guard 拦下的失败尝试不该改写记住的默认
+    window.waifu.saveSettings({ dispatch: { agent: $('agent').value } }).catch(() => {});
+  };
     const theme = (cfg.panel || {}).theme;
     if (theme && theme !== 'deep') {
       document.body.dataset.theme = theme;

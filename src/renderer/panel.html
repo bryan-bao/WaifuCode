@@ -454,6 +454,12 @@
       <label>这条线叫什么<span class="sub">自动从上面取，可以改</span></label>
       <input id="lane" spellcheck="false" placeholder="（自动）" />
 
+      <label>用谁来干<span class="sub">没装 Claude 的机器选 Codex 也能派活</span></label>
+      <select id="agent">
+        <option value="claude">Claude Code —— 全套：她盯着、汇报、算钱</option>
+        <option value="codex">Codex —— 只开窗干活，她不盯细节</option>
+      </select>
+
       <label>用哪个模型<span class="sub">选一次就记住，两种派法都用它</span></label>
       <select id="model">
         <option value="">跟 Claude Code 自己的设置走</option>

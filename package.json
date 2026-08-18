@@ -42,6 +42,7 @@
     "test:notes": "node tools/test-notes.js",
     "test:milestone": "node tools/test-milestone.js",
     "test:profiles": "node tools/test-profiles.js",
+    "test:agents": "node tools/test-agents.js",
     "test:cost": "node tools/test-cost.js",
     "scan-chcp": "node tools/scan-chcp.js",
     "pack": "node tools/pack.js",

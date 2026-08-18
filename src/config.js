@@ -47,6 +47,10 @@ const DEFAULTS = {
     // 派活用哪个模型。空 = 跟 Claude Code 自己的设置走。
     // 面板上选一次就记住（后台干 / 开终端两条路都用它）
     model: '',
+    // 派活用哪个 CLI：claude / codex。给没装 Claude、装了 Codex 的机器用的。
+    // codex 的线只有窗口管理（开/关/再来），汇报、护栏、金额那套靠的是
+    // claude 的 hook，codex 没有 —— 面板上会标出来
+    agent: 'claude',
   },
 
   // 派活面板的皮肤。deep 深空（默认）/ mecha 机甲 / moe 软萌 / minimal 简约，

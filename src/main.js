@@ -33,6 +33,8 @@ function iconOr(file, fallback) {
 
 const { Mood, LINES } = require('./mood');
 const { SessionManager, resolveClaudeBin, claudeInstalled } = require('./sessions');
+// codex 那一侧的适配（找 bin、判装没装、拼参数在 term-shell 里用）
+const agents = require('./agents');
 const { startServer } = require('./server');
 const { profileFor } = require('./profiles');
 const { Voice } = require('./voice');
@@ -1162,8 +1164,23 @@ function guardClaude() {
     ok: false,
     error: '这台电脑上没找到 Claude Code —— 「派活」和「私聊」要靠它'
          + '（唱跳、摸头、小游戏都不用）。装好后重启一次桌宠即可。'
-         + '装法见 claude.com/claude-code',
+         + '装法见 claude.com/claude-code。'
+         + '（没有 Claude 的话，面板上「用谁来干」选 Codex 也能派活）',
   };
+}
+
+// 按面板上选的 CLI 拦：选了 codex 就查 codex，别拿 claude 的标准冤枉人
+function guardAgent(agent) {
+  if (agent === 'codex') {
+    if (agents.codexInstalled()) return null;
+    return {
+      ok: false,
+      error: '这台电脑上没找到 Codex CLI，而面板上选了用它派活。'
+           + '装法：npm i -g @openai/codex，装好后重启一次桌宠。'
+           + '（或者把「用谁来干」换回 Claude Code）',
+    };
+  }
+  return guardClaude();
 }
 
 /**
@@ -1234,6 +1251,21 @@ function resolveDispatchModel(raw) {
   return m || undefined;
 }
 
+/**
+ * 面板传来的「用谁来干」：只做白名单归一化，**这里不落盘**。
+ * 「记住」由面板下拉的 onchange 直接 saveSettings —— 原来在这儿 patch 的话，
+ * 没装 codex 的机器上被 guard 拦下的那次尝试也会把 'codex' 写进 config，
+ * 之后所有不带 agent 字段的入口（比如老线的「接着聊」）全撞「没找到 Codex」。
+ * 另外「再来 / 接着聊」带的是**那条线自己的** agent，本来就不该改写全局默认。
+ * 不认识的值一律当 claude —— 老存档、老面板没这个字段，行为必须原样。
+ */
+const DISPATCH_AGENTS = new Set(['claude', 'codex']);
+
+function resolveDispatchAgent(raw) {
+  const a = String(raw == null ? '' : raw).trim();
+  return DISPATCH_AGENTS.has(a) ? a : 'claude';
+}
+
 function openLaneTerminal(opts, { minimized }) {
   const dir = opts.projectPath;
   const wantLane = opts.laneId || null;
@@ -1269,17 +1301,28 @@ function openLaneTerminal(opts, { minimized }) {
     mode: minimized ? 'bg' : 'watch',
   });
 
+  const agent = opts.agent === 'codex' ? 'codex' : 'claude';
+
   return terminals.open({
     ...info,
+    // codex 接不了我们派的会话 id，resume 对它没有意义；万一上游算出 true
+    // （比如某天有人把 laneId 和 agent 配错），也别让 term-shell 走进
+    // claude 专属的「接上次没接上」重试文案
+    resume: agent === 'codex' ? false : info.resume,
     task: opts.task,
     // 面板上这一次选的权限模式（没选就是 undefined，terminals 回落到配置默认值）
     permissionMode: opts.permissionMode || undefined,
-    model: opts.model,
+    // codex 不认 claude 的模型名，这条线上永远不传（模型跟 ~/.codex/config.toml 走）
+    model: agent === 'codex' ? undefined : opts.model,
     port: hookPort,
     minimized,
-    // 这个项目的小抄（没有就是空数组，一个参数都不多传）。
-    // 她因此开局知道上次干到哪儿 —— 但读的是几百字，不是整段旧对话
-    extraArgs: notes.argsFor(dir),
+    agent,
+    bin: agent === 'codex' ? agents.resolveCodexBin() : undefined,
+    // 这个项目的小抄。claude 走 --append-system-prompt-file；codex 没这参数，
+    // 把文件路径给 term-shell，由它把内容拼进开场 prompt（没派活就不拼）。
+    // 两条路都是：没攒下东西就一个字都不多带
+    extraArgs: agent === 'codex' ? undefined : notes.argsFor(dir),
+    notesFile: agent === 'codex' ? notes.fileFor(dir) : undefined,
   });
 }
 
@@ -1695,15 +1738,21 @@ function wireIpc() {
    * 老的无头模式没删，config.json 里 `"dispatch": { "mode": "headless" }` 换回去。
    */
   ipcMain.handle('session:dispatch', (_e, opts) => {
-    const noClaude = guardClaude();
-    if (noClaude) return noClaude;
-
     const cfg = loadConfig().dispatch || {};
-    // 面板传了 model 就用它（并记住）；没这个字段的入口用上次记住的
-    const model = 'model' in (opts || {}) ? resolveDispatchModel(opts.model)
-                                          : resolveDispatchModel(cfg.model);
+    // 面板传了 agent 就用它；没这个字段的老入口用记住的默认（记住这件事在面板侧做）
+    const agent = resolveDispatchAgent('agent' in (opts || {}) ? opts.agent : cfg.agent);
+    const noCli = guardAgent(agent);
+    if (noCli) return noCli;
+
+    // codex 的线不带模型（它不认 claude 的模型名），也**不动**记住的那个 ——
+    // 你切回 claude 时上次选的模型还在
+    const model = agent === 'codex' ? undefined
+      : ('model' in (opts || {}) ? resolveDispatchModel(opts.model)
+                                 : resolveDispatchModel(cfg.model));
     try {
-      if (cfg.mode === 'headless') {
+      // 老的无头模式是 claude 专属（sessions.dispatch 拼的是 claude 参数）。
+      // codex 一律走终端路 —— 反正也是最小化的，行为几乎没差
+      if (cfg.mode === 'headless' && agent !== 'codex') {
         // opts 在后面，所以面板上临时选的那个会盖掉配置里的默认值
         const r = sessions.dispatch({ permissionMode: cfg.permissionMode, ...opts, model });
         return { ok: true, ...r };
@@ -1712,7 +1761,7 @@ function wireIpc() {
       // 会话身份归 sessions 管（主线 / 分线 / 回到老线都在那边算），
       // 窗口和监督归 terminals 管 —— 跟 session:open-terminal 走的是同一套，
       // 唯一的差别就是 minimized
-      const r = openLaneTerminal({ ...opts, model }, { minimized: true });
+      const r = openLaneTerminal({ ...opts, model, agent }, { minimized: true });
       return { ok: true, ...r, terminal: true };
     } catch (err) {
       log('[session] 派活失败: ' + err.message);
@@ -1721,16 +1770,19 @@ function wireIpc() {
   });
 
   ipcMain.handle('session:open-terminal', (_e, opts) => {
-    const noClaude = guardClaude();
-    if (noClaude) return noClaude;
+    const dcfg = loadConfig().dispatch || {};
+    const agent = resolveDispatchAgent('agent' in (opts || {}) ? opts.agent : dcfg.agent);
+    const noCli = guardAgent(agent);
+    if (noCli) return noCli;
 
-    const model = 'model' in (opts || {}) ? resolveDispatchModel(opts.model)
-                                          : resolveDispatchModel((loadConfig().dispatch || {}).model);
+    const model = agent === 'codex' ? undefined
+      : ('model' in (opts || {}) ? resolveDispatchModel(opts.model)
+                                 : resolveDispatchModel(dcfg.model));
     try {
       // 会话身份归 sessions 管（主线 / 分线 / 回到老线都在那边算），
       // 窗口和监督归 terminals 管
       panelYield(); // 你点了「开终端我看着」，那个窗口就该出现在最上面
-      const r = openLaneTerminal({ ...opts, model }, { minimized: false });
+      const r = openLaneTerminal({ ...opts, model, agent }, { minimized: false });
       mood.onInteract('talk');
       return { ok: true, ...r };
     } catch (err) {

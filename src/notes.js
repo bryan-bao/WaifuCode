@@ -173,15 +173,20 @@ function append(dir, entry) {
  * 2.1.225 实测存在（喂空值它会回 "option ... argument missing"）。
  * tools/test-notes.js 里有一条免费探测钉着它，哪天官方拿掉了自检会先红。
  */
-function argsFor(dir) {
+function fileFor(dir) {
   const cur = read(dir);
-  // **只有真攒下东西了才带。** 判据不能是「文件在不在」：点一下面板上那个 📝
+  // **只有真攒下东西了才给。** 判据不能是「文件在不在」：点一下面板上那个 📝
   // 就会给一个从没派过活的项目落出一份只有说明文字的模板 ——
   // 把那段「写给你看的话」塞进她的系统提示，纯属白花钱，对她一点用没有。
   // 你自己在上半段写了规矩的，那当然要带。
-  if (!cur.lines.length && cur.head.trim() === defaultHead(dir).trim()) return [];
-  if (!cur.lines.length && !cur.head.trim()) return [];
-  return ['--append-system-prompt-file', notesFile(dir)];
+  if (!cur.lines.length && cur.head.trim() === defaultHead(dir).trim()) return null;
+  if (!cur.lines.length && !cur.head.trim()) return null;
+  return notesFile(dir);
 }
 
-module.exports = { notesFile, append, argsFor, read, DIR, MARK, KEEP };
+function argsFor(dir) {
+  const f = fileFor(dir);
+  return f ? ['--append-system-prompt-file', f] : [];
+}
+
+module.exports = { notesFile, fileFor, append, argsFor, read, DIR, MARK, KEEP };

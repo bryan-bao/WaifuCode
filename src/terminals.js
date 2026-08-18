@@ -573,6 +573,11 @@ class TerminalManager extends EventEmitter {
     // Claude Code 自己的设置走。**这里不校验** —— 校验挡在 main.js 的入口，
     // 这儿只负责往 spec 里放
     model,
+    // 用哪个 CLI（'claude' 缺省 / 'codex'）。校验同样挡在 main.js。
+    // codex 的可执行文件路径由 bin 带进来（claude 有构造时的 this.claudeBin，
+    // codex 是逐次现解析的）；notesFile 是小抄路径 —— codex 没有
+    // --append-system-prompt-file，term-shell 把内容拼进开场 prompt
+    agent, bin, notesFile,
   }) {
     const dir = path.resolve(projectPath);
     if (!fs.existsSync(dir)) throw new Error('项目目录不存在: ' + dir);
@@ -597,6 +602,9 @@ class TerminalManager extends EventEmitter {
       extraArgs: Array.isArray(extraArgs) && extraArgs.length ? extraArgs : undefined,
       laneId: laneId || null, laneName: lane,
       minimized: Boolean(minimized),
+      agent: agent === 'codex' ? 'codex' : undefined,
+      bin: bin || undefined,
+      notesFile: notesFile || undefined,
       name: label, project, port, claudeBin: this.claudeBin, windowName, title,
       runtimeFile: this.runtimeFile,
       permissionMode: permissionMode || (this.getConfig().terminal || {}).permissionMode || 'auto',
@@ -658,6 +666,7 @@ class TerminalManager extends EventEmitter {
       dir: spec.dir,
       task: spec.task || '',
       sessionId: spec.sessionId,
+      agent: spec.agent || 'claude',
       windowName: spec.windowName,
       title: spec.title,
       status: 'idle',
@@ -1118,6 +1127,9 @@ class TerminalManager extends EventEmitter {
    */
   _refreshCost(rec) {
     if (!rec || !rec.sessionId) return;
+    // codex 的会话不落在 ~/.claude/projects，翻也翻不到 ——
+    // 钱在面板上显示成「—」（宁可空着，不编数）
+    if (rec.agent && rec.agent !== 'claude') return;
     try {
       rec.costUsd = cost.ofSession(rec.sessionId).total;
     } catch (_) { /* 读不到就当没有，绝不能因为算钱把列表搞挂 */ }
@@ -1156,6 +1168,7 @@ class TerminalManager extends EventEmitter {
         toolCount: t.toolCount,
         errorCount: t.errorCount,
         lastReport: t.lastReport,
+        agent: t.agent || 'claude',
         costUsd: t.costUsd || 0,
         // 动过的文件，改得最多的排前面。
         // `path` 是全路径（面板要拿它去打开文件），`name` 是**相对项目目录**的
@@ -1282,7 +1295,15 @@ class TerminalManager extends EventEmitter {
    * pid 探测（3 秒一拍）、心跳断了的兜底（pid 被复用时唯一的出路）。
    */
   _windowGone(rec, how) {
-    if (rec.turns > 0 || rec.lastReport) {
+    // codex 的线收不到 hook 事件，turns 永远是 0 —— 但派了活它就真干过，
+    // 得留下来（不留的话面板上的「再来」对 codex 线永远不出现）。
+    // 没派活的 codex 空终端照旧直接去掉。
+    const worked = rec.turns > 0 || rec.lastReport ||
+                   (rec.agent === 'codex' && rec.task && rec.task.trim() &&
+                    // 还得真起来过：term-shell 报过到（pid）或打过心跳。
+                    // 从没报到的夭折线不算「干过」，别冒充「已完成」骗出「再来」
+                    Boolean(rec.pid || rec.lastBeat));
+    if (worked) {
       if (rec.status === 'closed') return false;
       rec.status = 'closed';
       rec.closedAt = rec.closedAt || Date.now();

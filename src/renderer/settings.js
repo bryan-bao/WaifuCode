@@ -222,7 +222,7 @@ $('save').onclick = async () => {
   // （它随时会往 config 里写）。整份写回去会把你开着设置窗口期间在面板上
   // 选的模型冲回旧值 —— 这一页没有它的控件，摘掉，别替别人做主
   const out = JSON.parse(JSON.stringify(cfg));
-  if (out.dispatch) delete out.dispatch.model;
+  if (out.dispatch) { delete out.dispatch.model; delete out.dispatch.agent; }
   delete out.panel; // 面板皮肤也归面板自己管，同一个理
   const r = await window.waifu.saveSettings(out);
   $('save').disabled = false;
