@@ -144,7 +144,7 @@ function claudeArgs(useResume) {
 // （打包是 asar:false，src/ 跟 hooks/ 一样躺在真实磁盘上，require 得到。）
 function buildArgs(useResume) {
   if (spec.agent === 'codex') {
-    return require(path.join(ROOT, 'src', 'agents.js')).codexArgs(spec);
+    return require(path.join(ROOT, 'src', 'agents.js')).codexArgs(spec, useResume);
   }
   return claudeArgs(useResume);
 }
@@ -279,7 +279,9 @@ function launch(useResume) {
     if (code !== 0 && useResume && !retried && Date.now() - startedAt < 8000) {
       retried = true;
       console.log('');
-      console.log('\x1b[33m  接上次那条会话没接上，上次多半没正常退出、没存下来。\x1b[0m');
+      console.log(spec.agent === 'codex'
+        ? '\x1b[33m  上次那条 Codex 会话找不到了（可能被清理掉了）。\x1b[0m'
+        : '\x1b[33m  接上次那条会话没接上，上次多半没正常退出、没存下来。\x1b[0m');
       console.log('\x1b[33m  这就给你开条新的，重来一遍。\x1b[0m');
       console.log('');
       launch(false);

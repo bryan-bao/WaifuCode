@@ -147,6 +147,201 @@ console.log('\n[6] 关窗去留：codex 的线 turns 恒 0，派过活的必须�
   tm.dispose();
 }
 
+console.log('\n[7] 接着聊：resume 是子命令、排最前，而且只在认领过会话时才接');
+{
+  const uuid = '019a6175-e35e-7dc2-9c43-66285d92da22';
+  const spec = { permissionMode: 'auto', task: '继续干', codexSessionId: uuid };
+  const a = agents.codexArgs(spec, true);
+  check(a[0] === 'resume' && a[1] === uuid, 'resume <uuid> 排在最前（子命令的位置）');
+  check(!agents.codexArgs(spec, false).includes('resume'), '不是接着聊就不带 resume');
+  check(!agents.codexArgs({ permissionMode: 'auto', task: 'x' }, true).includes('resume'),
+        '没认领过会话（没 codexSessionId）→ 就算要 resume 也不带，老实开新的');
+
+  const memoFile = path.join(TMP, 'memo2.md');
+  fs.writeFileSync(memoFile, '- 上次的进度', 'utf8');
+  const b = agents.codexArgs({ permissionMode: 'auto', task: '继续', codexSessionId: uuid, notesFile: memoFile }, true);
+  check(!b.join(' ').includes('上次的进度'),
+        '**接着聊不拼小抄** —— 会话里上下文本来就在，再塞一遍是白花钱');
+}
+
+console.log('\n[8] 捞会话：cwd + 启动时间配对，别人认领过的不抢');
+{
+  const PROJ = path.join(TMP, 'MyProj');
+  fs.mkdirSync(PROJ, { recursive: true });
+  const root = path.join(TMP, 'codex-sessions');
+  const p2 = (n) => String(n).padStart(2, '0');
+  const dayDir = (ms) => {
+    const d = new Date(ms);
+    return path.join(root, String(d.getFullYear()), p2(d.getMonth() + 1), p2(d.getDate()));
+  };
+  const metaLine = (id, cwd, pad) => JSON.stringify({
+    timestamp: 'x', ordinal: 0, type: 'session_meta',
+    payload: { session_id: id, id, cwd, originator: 'codex-tui', pad: pad || '' },
+  });
+  const now = Date.now();
+  const since = now - 1000;
+
+  // 今天目录里一份，cwd 大小写还故意不一样
+  const idA = '019a0000-0000-7000-8000-000000000aaa';
+  fs.mkdirSync(dayDir(since), { recursive: true });
+  fs.writeFileSync(path.join(dayDir(since), 'rollout-x-a.jsonl'),
+    metaLine(idA, PROJ.toUpperCase()) + '\n', 'utf8');
+
+  const hit = agents.findCodexSession({ dir: PROJ.toLowerCase(), sinceMs: since, root });
+  check(hit && hit.sessionId === idA, '按 cwd 配上了（大小写不敏感）');
+
+  check(agents.findCodexSession({ dir: PROJ, sinceMs: since, root, claimed: new Set([idA]) }) === null,
+        '**被别的线认领过的 id 不抢**（同目录并行开两条不会共用一个会话）');
+  check(agents.findCodexSession({ dir: PROJ, sinceMs: now + 60000, root }) === null,
+        '文件比启动时间还早 → 不认（用户自己以前开的翻不出来）');
+  check(agents.findCodexSession({ dir: path.join(TMP, '别的项目'), sinceMs: since, root }) === null,
+        'cwd 对不上 → 不认');
+
+  // 跨零点：文件躺在「昨天」的日期目录里（会话按开始那天归档）
+  const idB = '019a0000-0000-7000-8000-000000000bbb';
+  const yest = dayDir(since - 86400000);
+  fs.mkdirSync(yest, { recursive: true });
+  fs.writeFileSync(path.join(yest, 'rollout-x-b.jsonl'),
+    metaLine(idB, path.join(TMP, '跨零点')) + '\n', 'utf8');
+  const hitB = agents.findCodexSession({ dir: path.join(TMP, '跨零点'), sinceMs: since, root });
+  check(hitB && hitB.sessionId === idB, '跨零点：昨天的日期目录也翻（半夜开的窗口配得上）');
+
+  // 第一行动辄二三十 KB（整份系统提示词嵌在里面）—— 关键字段在头 8KB 就够
+  const idC = '019a0000-0000-7000-8000-000000000ccc';
+  fs.writeFileSync(path.join(dayDir(since), 'rollout-x-c.jsonl'),
+    metaLine(idC, path.join(TMP, '大头'), 'X'.repeat(30000)) + '\n', 'utf8');
+  const hitC = agents.findCodexSession({ dir: path.join(TMP, '大头'), sinceMs: since, root });
+  check(hitC && hitC.sessionId === idC, '第一行超长（30KB 系统提示词）也认得出 —— 只抠头 8KB');
+
+  // 正向跨零点：23:59 派活、codex 零点后落盘 → 文件进「明天」的目录（评审抓的）
+  const idD = '019a0000-0000-7000-8000-000000000ddd';
+  const tomorrow = dayDir(since + 86400000);
+  fs.mkdirSync(tomorrow, { recursive: true });
+  fs.writeFileSync(path.join(tomorrow, 'rollout-x-d.jsonl'),
+    metaLine(idD, path.join(TMP, '贴零点')) + '\n', 'utf8');
+  const hitD = agents.findCodexSession({ dir: path.join(TMP, '贴零点'), sinceMs: since, root });
+  check(hitD && hitD.sessionId === idD,
+        '**「明天」的目录也翻** —— 23:59 派活零点后落盘，不翻就永远认领不到');
+
+  // expectId：接着聊的窗口只认自己那条，别人的（哪怕更早）一概不碰
+  const idE1 = '019a0000-0000-7000-8000-000000000ee1';
+  const idE2 = '019a0000-0000-7000-8000-000000000ee2';
+  const eDir = path.join(TMP, '只认自己');
+  fs.writeFileSync(path.join(dayDir(since), 'rollout-x-e1.jsonl'), metaLine(idE1, eDir) + '\n', 'utf8');
+  fs.writeFileSync(path.join(dayDir(since), 'rollout-x-e2.jsonl'), metaLine(idE2, eDir) + '\n', 'utf8');
+  const hitE = agents.findCodexSession({ dir: eDir, sinceMs: since, root, expectId: idE2 });
+  check(hitE && hitE.sessionId === idE2,
+        '**expectId 只认那一条** —— 接着聊的窗口不许抢同目录新线刚落盘的会话');
+  check(agents.findCodexSession({ dir: eDir, sinceMs: since, root, expectId: '019a0000-0000-7000-8000-00000000none' }) === null,
+        'expectId 对不上任何文件 → 空手而归，不拿别人的凑数');
+}
+
+console.log('\n[9] 算钱：只认最后一条累计值，半行不上账，认不出的模型宁可报高');
+{
+  const tc = (input, cached, output) => JSON.stringify({
+    timestamp: 'x', type: 'event_msg',
+    payload: { type: 'token_count', info: { total_token_usage: {
+      input_tokens: input, cached_input_tokens: cached, cache_write_input_tokens: 0,
+      output_tokens: output, reasoning_output_tokens: 0, total_tokens: input + output,
+    } } },
+  });
+  const ctx = (model) => JSON.stringify({
+    timestamp: 'x', type: 'turn_context', payload: { turn_id: 'x', model },
+  });
+
+  const f1 = path.join(TMP, 'roll1.jsonl');
+  // 两条 token_count：钱 = 只按**最后一条**（累计值），不是两条相加
+  fs.writeFileSync(f1, [ctx('gpt-5.6-sol'), tc(1000, 0, 100), tc(100000, 40000, 2000)].join('\n') + '\n', 'utf8');
+  const u1 = agents.codexUsage(f1);
+  // (60000×$5 + 40000×$0.5 + 2000×$30) / 1e6 = 0.38
+  check(Math.abs(u1.usd - 0.38) < 1e-9, 'gpt-5.6-sol：$' + u1.usd.toFixed(2) + '（缓存命中一折，只认最后一条累计）');
+  check(u1.model === 'gpt-5.6-sol', '模型名从 turn_context 里拿');
+
+  // 结尾一条正写到一半的（半行）：不上账，用上一条完整的
+  fs.appendFileSync(f1, '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":999999999');
+  check(Math.abs(agents.codexUsage(f1).usd - 0.38) < 1e-9, '**半行不上账** —— 接着往上找上一条完整的');
+
+  const f2 = path.join(TMP, 'roll2.jsonl');
+  fs.writeFileSync(f2, [ctx('gpt-9-mystery'), tc(1000000, 0, 0)].join('\n') + '\n', 'utf8');
+  check(Math.abs(agents.codexUsage(f2).usd - 5) < 1e-9, '认不出的模型按旗舰 $5/$30 算 —— 宁可报高');
+
+  const f3 = path.join(TMP, 'roll3.jsonl');
+  fs.writeFileSync(f3, [ctx('gpt-5.4-mini'), tc(1000000, 0, 0)].join('\n') + '\n', 'utf8');
+  check(Math.abs(agents.codexUsage(f3).usd - 0.5) < 1e-9, 'mini 不按主号价冤枉（宽松上限 $0.5/$4）');
+
+  check(agents.codexUsage(path.join(TMP, '没有.jsonl')) === null,
+        '**文件读不出来 → null**，跟「真没花钱」分开（读失败那下不许把算好的抹成 0）');
+  check(agents.codexPriceFor('gpt-5.1-codex').in === 1.25, 'gpt-5.1-codex 走 gpt-5.1 的价（前缀）');
+  check(agents.codexPriceFor('gpt-5.6-luna').out === 1.2, 'gpt-5.6-luna 有自己那档小价');
+
+  // 基线按 token 记：接着聊续写同一份文件、中途换过模型 → 差值按**当前**模型定价。
+  // 基线记美元的话（旧模型贵、新模型便宜），差值会被价目差压成 0 —— 报低，不许
+  const f4 = path.join(TMP, 'roll4.jsonl');
+  fs.writeFileSync(f4, [ctx('gpt-5.4'), tc(2000000, 0, 0)].join('\n') + '\n', 'utf8');
+  const u4 = agents.codexUsage(f4, { input_tokens: 1000000, cached_input_tokens: 0, output_tokens: 0 });
+  check(Math.abs(u4.usd - 2.5) < 1e-9,
+        '**基线按 token 相减、差值按当前模型定价**：多烧的 100 万 token × gpt-5.4 = $2.50');
+  check(u4.totals && u4.totals.input_tokens === 2000000, 'totals 一起带出来（开窗时拿它当基线）');
+
+  // 8MB 尾读那条路（评审抓的零覆盖）：垫 8MB 的废行，token_count 在最后
+  const f5 = path.join(TMP, 'roll5.jsonl');
+  const pad = JSON.stringify({ type: 'event_msg', payload: { type: 'noise', x: 'P'.repeat(4000) } });
+  const w = fs.openSync(f5, 'w');
+  fs.writeSync(w, ctx('gpt-5.6-sol') + '\n');
+  for (let i = 0; i < 2200; i++) fs.writeSync(w, pad + '\n'); // ≈ 8.8MB
+  fs.writeSync(w, tc(100000, 40000, 2000) + '\n');
+  fs.closeSync(w);
+  check(fs.statSync(f5).size > 8 * 1024 * 1024, '（构造出的文件确实超过 8MB）');
+  const u5 = agents.codexUsage(f5);
+  check(u5 && Math.abs(u5.usd - 0.38) < 1e-9, '**超大文件走尾读那条路**，掐头半行后照样算对');
+}
+
+console.log('\n[10] 认领的规矩（_codexPeek 那一层）');
+{
+  const specOf = (id, extra) => ({
+    id, name: 'x', dir: TMP, task: '干活', sessionId: 's-' + id,
+    windowName: 'waifu-' + id, title: 'WaifuCode · x', agent: 'codex', ...extra,
+  });
+  const tm = new TerminalManager({ storeDir: TMP, getConfig: () => ({}), log: () => {} });
+  const realFind = agents.findCodexSession;
+  const calls = [];
+  agents.findCodexSession = (opts) => { calls.push(opts); return null; };
+
+  try {
+    // 接着聊的窗口：只带着自己的 id 去找（expectId），不许摸别人的
+    const rA = tm._makeRecord(specOf('pk1', { codexSessionId: 'old-id', codexFile: 'x' }), { pid: 1 });
+    tm.items.set('pk1', rA);
+    tm._codexPeek(rA, Date.now());
+    check(calls.length === 1 && calls[0].expectId === 'old-id',
+          '接着聊的窗口带 expectId 去找 —— 只认自己那条');
+
+    // 认领过的（spec 里 codexClaimed:true，重启认回来）：一次都不再找
+    calls.length = 0;
+    const rB = tm._makeRecord(specOf('pk2', { codexSessionId: 'done-id', codexFile: 'x', codexClaimed: true }), { pid: 1 });
+    tm.items.set('pk2', rB);
+    tm._codexPeek(rB, Date.now());
+    check(calls.length === 0,
+          '**认领状态落了盘就不再开抢** —— 重启认回来的窗口不许把对的绑定改成别人的');
+
+    // 同目录让先：晚开的新线要等早开的先认（配对按开窗顺序，别倒挂）
+    calls.length = 0;
+    const now = Date.now();
+    const rOld = tm._makeRecord(specOf('pk3'), { pid: 1 });
+    rOld.startedAt = now - 10000;
+    const rNew = tm._makeRecord(specOf('pk4'), { pid: 1 });
+    rNew.startedAt = now - 5000;
+    tm.items.set('pk3', rOld);
+    tm.items.set('pk4', rNew);
+    tm._codexPeek(rNew, now);
+    check(calls.length === 0, '**晚开的让早开的先认** —— 两条新线不许倒挂着配对');
+    tm._codexPeek(rOld, now);
+    check(calls.length === 1, '早开的照常去找');
+  } finally {
+    agents.findCodexSession = realFind;
+    tm.dispose();
+  }
+}
+
 console.log('');
 if (failed) {
   console.log('\x1b[31m✗ ' + failed + ' 条没过\x1b[0m');

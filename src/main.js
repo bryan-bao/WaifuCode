@@ -698,6 +698,11 @@ function wireEvents() {
     });
   });
 
+  // codex 的窗口认领到会话文件了 —— 记到那条线上，「接着聊」从此能真接上
+  terminals.on('codex-session', (e) => {
+    sessions.rememberCodexSession(e.dir, e.laneId, e.sessionId, e.file);
+  });
+
   /**
    * 一条线的活干完了 —— 她脸上得有那一下。
    *
@@ -1305,10 +1310,12 @@ function openLaneTerminal(opts, { minimized }) {
 
   return terminals.open({
     ...info,
-    // codex 接不了我们派的会话 id，resume 对它没有意义；万一上游算出 true
-    // （比如某天有人把 laneId 和 agent 配错），也别让 term-shell 走进
-    // claude 专属的「接上次没接上」重试文案
-    resume: agent === 'codex' ? false : info.resume,
+    // codex 的 resume 只有认领过会话才有意义（prepareTerminal 算好了：
+    // codexSessionId 在，resume 才可能为 true）。agent 配错的防线也在这儿 ——
+    // 没有 codexSessionId 的 codex 线永远当新开
+    resume: agent === 'codex' ? Boolean(info.codexSessionId) : info.resume,
+    codexSessionId: agent === 'codex' ? info.codexSessionId : undefined,
+    codexFile: agent === 'codex' ? info.codexFile : undefined,
     task: opts.task,
     // 面板上这一次选的权限模式（没选就是 undefined，terminals 回落到配置默认值）
     permissionMode: opts.permissionMode || undefined,

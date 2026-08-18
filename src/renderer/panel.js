@@ -156,8 +156,10 @@ async function refreshTerms() {
       (t.status === 'closed'
         ? (t.laneId
             ? (t.agent === 'codex'
-                // codex 的旧会话还接不回来（第二期），别许诺「记得」
-                ? '点一下照这条线重开一个 Codex 终端（旧会话接不回来，是新开一条）'
+                ? (t.codexSessionId
+                    // 认领到会话文件了，codex resume 能真接上
+                    ? '点一下重开这条线（接上上次那条 Codex 会话）'
+                    : '点一下照这条线重开一个 Codex 终端（上次的会话没认领到，是新开一条）')
                 : '点一下重开这条线，她还记得你们之前聊到哪儿')
             : '这条已经结束了')
         : '点一下把这个终端窗口调到最前面');
@@ -176,7 +178,9 @@ async function refreshTerms() {
         });
         if (r && r.ok) {
           msg(t.agent === 'codex'
-            ? '照「' + (t.laneName || t.name) + '」重开了一条 Codex 的线（旧会话接不回来，这是新开的）'
+            ? (t.codexSessionId
+                ? '回到「' + (t.laneName || t.name) + '」了，接上了上次那条 Codex 会话'
+                : '照「' + (t.laneName || t.name) + '」重开了一条 Codex 的线（上次的会话没认领到，这是新开的）')
             : '回到「' + (t.laneName || t.name) + '」了，她还记得你们聊到哪儿', 'ok');
           refreshTerms();
         } else {
@@ -264,18 +268,22 @@ async function refreshTerms() {
       (t.toolCount ? ' · 动了 ' + t.toolCount + ' 次工具' : '') +
       (t.errorCount ? ' · 报错 ' + t.errorCount + ' 次' : '');
 
-    // codex 的线打个小牌：她不盯细节，金额也算不了（钱走的是你 OpenAI 的账）
+    // codex 的线打个小牌：她不盯细节（汇报、护栏在 claude 的 hook 上）。
+    // 钱现在算得了 —— 从 codex 自己的会话记录里读，按 OpenAI 单价折算
     if (t.agent === 'codex') {
       const b = document.createElement('span');
       b.className = 'cost';
       b.textContent = 'codex';
-      b.title = 'Codex 开的线：她只管开关窗口。汇报、护栏、金额都在 claude 那套 hook 上，这条线没有';
+      b.title = 'Codex 开的线：她只管开关窗口，汇报和护栏这条线上没有。\n' +
+        (t.codexSessionId || t.costUsd > 0
+          ? '金额按 OpenAI 官方单价折算（包月订阅不会真扣这笔钱）'
+          : '这条线没认领到 Codex 的会话档案：金额算不了，「接着聊」会开新的一条');
       meta.appendChild(b);
     }
 
-    // 这条线烧了多少钱。以前这里是个黑洞（终端是独立的 claude 进程），
-    // 现在从 Claude Code 自己的会话记录里读出来了
-    const cost = t.agent === 'codex' ? '' : money(t.costUsd);
+    // 这条线烧了多少钱。claude 读它自己的会话记录；codex 读 rollout 里的
+    // 累计 token（认领到文件才有数，认领不到就是 0，不显示 —— 不编数）
+    const cost = money(t.costUsd);
     if (cost) {
       const c = document.createElement('span');
       c.className = 'cost';

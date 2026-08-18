@@ -7,6 +7,7 @@ const { spawn, execFile, execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
 
 const cost = require('./cost');
+const agents = require('./agents'); // codex 那半边：捞会话、按 OpenAI 单价算钱
 
 const ROOT = path.join(__dirname, '..');
 const TERM_SHELL = path.join(ROOT, 'hooks', 'term-shell.js');
@@ -578,6 +579,8 @@ class TerminalManager extends EventEmitter {
     // codex 是逐次现解析的）；notesFile 是小抄路径 —— codex 没有
     // --append-system-prompt-file，term-shell 把内容拼进开场 prompt
     agent, bin, notesFile,
+    // codex 线「接着聊」：上次认领到的会话（resume 用）。新线没有
+    codexSessionId, codexFile,
   }) {
     const dir = path.resolve(projectPath);
     if (!fs.existsSync(dir)) throw new Error('项目目录不存在: ' + dir);
@@ -605,6 +608,16 @@ class TerminalManager extends EventEmitter {
       agent: agent === 'codex' ? 'codex' : undefined,
       bin: bin || undefined,
       notesFile: notesFile || undefined,
+      codexSessionId: codexSessionId || undefined,
+      codexFile: codexFile || undefined,
+      // 起点基线（**token**，不是美元 —— 换模型时差值才不会被价目差抹掉）：
+      // 接着聊落在同一份文件里续写时，这个窗口的钱 = (现在的累计 - 基线) 按
+      // 当前模型定价。新文件基线自然是空
+      codexBase: (() => {
+        if (!codexFile) return undefined;
+        const u = agents.codexUsage(codexFile);
+        return u && u.totals ? u.totals : undefined;
+      })(),
       name: label, project, port, claudeBin: this.claudeBin, windowName, title,
       runtimeFile: this.runtimeFile,
       permissionMode: permissionMode || (this.getConfig().terminal || {}).permissionMode || 'auto',
@@ -667,6 +680,14 @@ class TerminalManager extends EventEmitter {
       task: spec.task || '',
       sessionId: spec.sessionId,
       agent: spec.agent || 'claude',
+      // codex 的钱和「接着聊」全系在这仨上。认领（_codexPeek）会更新它们，
+      // 并回写进 spec 文件 —— 桌宠重启 _adopt 认回窗口时才不丢
+      codexSessionId: spec.codexSessionId || null,
+      codexFile: spec.codexFile || null,
+      codexBase: spec.codexBase || null,
+      // 认领状态**要落盘**（_codexPeek 回写 spec 时置 true）：不落的话桌宠
+      // 重启 _adopt 认回来会重新开抢 90 秒，能把已经对的绑定改成别人的会话
+      codexClaimed: Boolean(spec.codexClaimed),
       windowName: spec.windowName,
       title: spec.title,
       status: 'idle',
@@ -1125,19 +1146,104 @@ class TerminalManager extends EventEmitter {
    * 记账和显示分开：`costUsd` 是当前累计（面板显示），`costPaid` 是已经写进
    * 流水账的部分。差额攒到一轮结束时再报一次，免得流水账被三秒一条的碎账淹了。
    */
-  _refreshCost(rec) {
+  _refreshCost(rec, force) {
     if (!rec || !rec.sessionId) return;
-    // codex 的会话不落在 ~/.claude/projects，翻也翻不到 ——
-    // 钱在面板上显示成「—」（宁可空着，不编数）
-    if (rec.agent && rec.agent !== 'claude') return;
+    // codex 的钱不在 ~/.claude/projects，在它自己的 rollout 里 ——
+    // 认领到文件才算得出（没认领到就保持 0，面板显示小牌，宁可空着不编数）。
+    // token_count 是累计值，整读一遍取最后一条就是全部，天然不怕重复计
+    if (rec.agent && rec.agent !== 'claude') {
+      if (rec.agent === 'codex' && rec.codexFile) {
+        // 关掉的线不再刷新（force 是结算那一次）：这条线的文件可能正被
+        // 「接着聊」开出的新窗口续写 —— 再刷的话钱会挂在两条线上各涨一遍
+        if (rec.status === 'closed' && !force) return;
+        try {
+          // 文件没长就别重读（面板 3 秒问一次，别每次都嚼几百 KB）
+          const mt = fs.statSync(rec.codexFile).mtimeMs;
+          if (mt === rec.codexReadAt && !force) return;
+          const u = agents.codexUsage(rec.codexFile, rec.codexBase);
+          // 读失败（杀毒/备份短暂锁文件）返回 null：**停在上次的数**，
+          // 别把算好的抹成 0 —— 那可能是关窗结算前的最后一次机会
+          if (u) {
+            rec.codexReadAt = mt;
+            rec.costUsd = u.usd;
+          }
+        } catch (_) { /* 文件被清了就停在上次的数 */ }
+      }
+      return;
+    }
     try {
       rec.costUsd = cost.ofSession(rec.sessionId).total;
     } catch (_) { /* 读不到就当没有，绝不能因为算钱把列表搞挂 */ }
   }
 
+  /**
+   * 认领 codex 的会话文件（启动后 90 秒内，跟着 _sweep 的 3 秒节拍试）。
+   *
+   * 认领到手三件事都齐了：算钱（rollout 里的 token_count）、「接着聊」
+   * （codex resume <uuid>）、重启后找回（回写进 spec 文件给 _adopt）。
+   * 已被**别的线**认领的 id 不抢 —— 同目录并行开两条也各认各的；
+   * 自己上次那条（resume 时 spec 带来的）不算抢，认到新文件就换新的
+   * （codex 的 resume 可能另起一份文件，钱和下次接着聊都得跟着新的走）。
+   */
+  _codexPeek(rec, now) {
+    if (rec.agent !== 'codex' || rec.codexClaimed) return;
+    if (now - rec.startedAt > 90000) return;
+
+    // 接着聊的窗口只认自己那条会话（resume 另起新文件时 id 不变）——
+    // 不设这道闸，它会把同目录新开线刚落盘的会话抢走（评审抓的）
+    const expectId = rec.codexSessionId || undefined;
+
+    const claimed = new Set();
+    for (const r of this.items.values()) {
+      if (r !== rec && r.codexSessionId) claimed.add(r.codexSessionId);
+    }
+
+    // 同目录还有比我早开、也在等着认领的新线 → 让它先认。
+    // 配对按开窗顺序来（最早的文件配最早的窗口），别让后开的抢在前面
+    if (!expectId) {
+      const myDir = path.resolve(rec.dir).toLowerCase();
+      for (const r of this.items.values()) {
+        if (r !== rec && r.agent === 'codex' && !r.codexClaimed && !r.codexSessionId &&
+            r.status !== 'closed' && r.startedAt < rec.startedAt &&
+            now - r.startedAt <= 90000 &&
+            path.resolve(r.dir).toLowerCase() === myDir) return;
+      }
+    }
+
+    let hit = null;
+    try {
+      hit = agents.findCodexSession({ dir: rec.dir, sinceMs: rec.startedAt, claimed, expectId });
+    } catch (_) { return; }
+    if (!hit) return;
+
+    rec.codexSessionId = hit.sessionId;
+    rec.codexFile = hit.file;
+    rec.codexBase = null;   // 新落盘的文件，从零算起
+    rec.codexReadAt = 0;
+    rec.codexClaimed = true;
+
+    // 回写 spec：桌宠重启 _adopt 认回这个窗口时，钱才接得上、线才接得回。
+    // codexClaimed 也要落 —— 不落的话认回来会重新开抢 90 秒（评审抓的）
+    try {
+      const specFile = path.join(this.specDir, rec.id + '.json');
+      const spec = JSON.parse(fs.readFileSync(specFile, 'utf8'));
+      spec.codexSessionId = hit.sessionId;
+      spec.codexFile = hit.file;
+      spec.codexClaimed = true;
+      delete spec.codexBase;
+      fs.writeFileSync(specFile, JSON.stringify(spec, null, 2), 'utf8');
+    } catch (_) { /* 写不回就只是重启后这条线的钱变暗，不拦认领 */ }
+
+    this.emit('codex-session', {
+      id: rec.id, dir: rec.dir, laneId: rec.laneId,
+      sessionId: hit.sessionId, file: hit.file,
+    });
+    this.log('[term] ' + rec.id + ' 认领了 codex 会话 ' + hit.sessionId.slice(0, 8) + '…');
+  }
+
   /** 攒下的那点还没记账的钱，报出去写流水 */
   _settleCost(rec) {
-    this._refreshCost(rec);
+    this._refreshCost(rec, true);
     const owed = rec.costUsd - (rec.costPaid || 0);
     if (!(owed > 1e-6)) return;
     rec.costPaid = rec.costUsd;
@@ -1169,6 +1275,11 @@ class TerminalManager extends EventEmitter {
         errorCount: t.errorCount,
         lastReport: t.lastReport,
         agent: t.agent || 'claude',
+        // 面板靠它决定「接着聊」的话术：认领到了、**而且档案还在**才敢说
+        // 「能接上」—— 用户清过 ~/.codex 的话，接过去实际是新开一条，
+        // 话就不能说满（评审抓的）
+        codexSessionId: (t.codexSessionId && t.codexFile && this._codexFileAlive(t))
+          ? t.codexSessionId : null,
         costUsd: t.costUsd || 0,
         // 动过的文件，改得最多的排前面。
         // `path` 是全路径（面板要拿它去打开文件），`name` 是**相对项目目录**的
@@ -1183,6 +1294,16 @@ class TerminalManager extends EventEmitter {
           })),
         fileCount: (t.filesAll || new Map()).size,
       }));
+  }
+
+  /** 会话档案还在不在。每 3 秒一次 existsSync 太碎，缓 10 秒 */
+  _codexFileAlive(rec) {
+    const now = Date.now();
+    if (!rec.codexAliveAt || now - rec.codexAliveAt > 10000) {
+      rec.codexAliveAt = now;
+      try { rec.codexAlive = fs.existsSync(rec.codexFile); } catch (_) { rec.codexAlive = false; }
+    }
+    return Boolean(rec.codexAlive);
   }
 
   liveCount() {
@@ -1326,6 +1447,7 @@ class TerminalManager extends EventEmitter {
 
     for (const rec of this.items.values()) {
       if (rec.status === 'closed') continue;
+      this._codexPeek(rec, now);
       const alive = pidAlive(rec.pid);
 
       if (alive === false) {
@@ -1466,6 +1588,13 @@ class TerminalManager extends EventEmitter {
   }
 
   dispose() {
+    // codex 线的钱只有关窗那一个结算点（claude 每轮汇报都结过）。
+    // 用户先退桌宠、窗口还开着的话，这笔就永远进不了流水 —— 走之前结掉
+    for (const rec of this.items.values()) {
+      if (rec.agent === 'codex' && rec.costUsd - (rec.costPaid || 0) > 1e-6) {
+        try { this._settleCost(rec); } catch (_) { /* 结不上也不能拦退出 */ }
+      }
+    }
     clearInterval(this.timer);
   }
 }

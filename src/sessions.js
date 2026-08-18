@@ -307,6 +307,11 @@ class SessionManager extends EventEmitter {
       rec.lastRun = lane.lastRun;
       this._saveRegistry();
 
+      // codex 的线：会话 id 是事后认领的（rememberCodexSession 记在 lane 上）。
+      // 认领过且文件还在 → 能真接上（codex resume <uuid>）；没有就开新的
+      const canCodex = Boolean(lane.codexSessionId && lane.codexFile &&
+                               fs.existsSync(lane.codexFile));
+
       // 接不上就拿同一个 id 开条新的 —— resume 失败恰恰说明这条会话不在磁盘上
       return {
         projectPath: dir,
@@ -314,7 +319,9 @@ class SessionManager extends EventEmitter {
         laneId: lane.id,
         laneName: lane.name,
         sessionId: lane.sessionId,
-        resume: sessionExists(dir, lane.sessionId),
+        resume: canCodex || sessionExists(dir, lane.sessionId),
+        codexSessionId: canCodex ? lane.codexSessionId : undefined,
+        codexFile: canCodex ? lane.codexFile : undefined,
       };
     }
 
@@ -352,6 +359,23 @@ class SessionManager extends EventEmitter {
       sessionId: lane.sessionId,
       resume: false,   // 新线永远是新会话，-n 该在这时候给
     };
+  }
+
+  /**
+   * codex 的窗口认领到会话了 —— 记到那条线上，「接着聊」和重启找回全靠它。
+   * 找不到线就算了（比如线已经被清了），这不是要紧事。
+   */
+  rememberCodexSession(projectPath, laneId, sessionId, file) {
+    if (!laneId || !sessionId) return;
+    try {
+      const dir = path.resolve(projectPath);
+      const rec = this._recordFor(dir);
+      const lane = this._lanesOf(rec).find((l) => l.id === laneId);
+      if (!lane) return;
+      lane.codexSessionId = sessionId;
+      lane.codexFile = file;
+      this._saveRegistry();
+    } catch (_) { /* 记不上就只是下次接不上，别拦正事 */ }
   }
 
   /**
