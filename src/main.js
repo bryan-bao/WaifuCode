@@ -1180,7 +1180,7 @@ function guardAgent(agent) {
     if (agents.codexInstalled()) return null;
     return {
       ok: false,
-      error: '这台电脑上没找到 Codex CLI，而面板上选了用它派活。'
+      error: '这台电脑上没找到 Codex CLI，而「用谁来干」选的是它。'
            + '装法：npm i -g @openai/codex，装好后重启一次桌宠。'
            + '（或者把「用谁来干」换回 Claude Code）',
     };
@@ -1980,8 +1980,9 @@ function wireIpc() {
 
   ipcMain.handle('chat:send', async (_e, text) => {
     if (!chat) return { ok: false, error: '聊天还没准备好' };
-    const noClaude = guardClaude();
-    if (noClaude) return noClaude;
+    // 陪聊跟着「用谁来干」走：选了 codex 就查 codex，别拿 claude 的标准拦人
+    const noCli = guardAgent((loadConfig().dispatch || {}).agent === 'codex' ? 'codex' : 'claude');
+    if (noCli) return noCli;
     try {
       return await chat.send(text);
     } catch (err) {
@@ -2034,8 +2035,13 @@ function wireIpc() {
       config.patch({ persona });
       if (chat) chat.setPersona(persona);
       log('[chat] 人设改了: ' + persona.name);
-      // 已经聊起来的那段不会中途变性子 —— 得等下一段
-      return { ok: true, willApplyNext: Boolean(chat && chat.hasHistory()) };
+      // claude：已经聊起来的那段不会中途变性子（system prompt 开场定死），得等下一段。
+      // codex：人设是每轮垫在开场白里的，下一句就生效 —— 别谎报要等重开
+      return {
+        ok: true,
+        willApplyNext: Boolean(chat && chat.hasHistory()) &&
+                       (loadConfig().dispatch || {}).agent !== 'codex',
+      };
     } catch (err) {
       return { ok: false, error: err.message };
     }

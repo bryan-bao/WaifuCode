@@ -397,7 +397,86 @@ function pickPrompt(t) {
   return s;
 }
 
+// ═══ 陪聊（私聊 / 主动搭话）那半边 ═══════════════════════════════════════════
+// codex exec 的几件事都是**实测**出来的（2026-08-19，0.147.0）：
+//   · --json 的第一行 thread.started 直接给会话 id —— 陪聊不用去档案里捞
+//   · codex exec resume <id> 真的记得上文
+//   · -c base_instructions=... 被**静默无视** —— 没有 claude --system-prompt
+//     那种整套换底的口子，人设只能每轮垫在开场白里（实测压得住身份）
+//   · exec resume 不认 -s/-C（exit 2），沙箱得走 -c sandbox_mode；TOML 解析
+//     失败会按原样字符串收下（help 明说），所以**不带引号**最稳 ——
+//     引号在 .cmd 的 shell:true 路上会被 cmd 啃掉一层
+//   · prompt 一律走 stdin（参数表最后那个 '-'）：人设+聊天内容是多行自由文本，
+//     绝不过命令行（term-shell 那边同一个坑：shell:true 零转义）
+
+function codexChatArgs({ resumeId } = {}) {
+  if (resumeId) {
+    return ['exec', 'resume', resumeId, '--json', '--skip-git-repo-check',
+            '-c', 'sandbox_mode=read-only', '-'];
+  }
+  return ['exec', '--json', '-s', 'read-only', '--skip-git-repo-check', '-'];
+}
+
+function codexGreetArgs({ schemaFile } = {}) {
+  const a = ['exec', '--json', '-s', 'read-only', '--skip-git-repo-check'];
+  if (schemaFile) a.push('--output-schema', schemaFile);
+  a.push('-');
+  return a;
+}
+
+/** turn.completed 里的用量 → 美元。模型认不出照旧按旗舰报高。 */
+function codexPriceUsage(usage, model) {
+  const u = usage || {};
+  const p = codexPriceFor(model);
+  const inTok = u.input_tokens || 0;
+  const cached = Math.min(u.cached_input_tokens || 0, inTok);
+  return ((inTok - cached) * p.in + cached * p.in * 0.1 + (u.output_tokens || 0) * p.out) / 1e6;
+}
+
+/**
+ * 按会话 id 找它的档案（文件名里带着 uuid，不用读内容）。
+ * 陪聊靠它判断「上次那条还接得上吗」—— 接不上就老实重开，
+ * 不然每说一句都撞一次 resume 报错，她永远爬不出来（claude 那边踩过的坑）。
+ */
+function findRolloutById(id, root) {
+  const needle = String(id || '').toLowerCase();
+  if (!needle) return null;
+  const base = root || codexSessionsRoot();
+  let years = [];
+  try { years = fs.readdirSync(base); } catch (_) { return null; }
+  for (const y of years) {
+    if (!/^\d{4}$/.test(y)) continue;
+    let months = [];
+    try { months = fs.readdirSync(path.join(base, y)); } catch (_) { continue; }
+    for (const mo of months) {
+      if (!/^\d{2}$/.test(mo)) continue;
+      let days = [];
+      try { days = fs.readdirSync(path.join(base, y, mo)); } catch (_) { continue; }
+      for (const d of days) {
+        if (!/^\d{2}$/.test(d)) continue;
+        let names = [];
+        try { names = fs.readdirSync(path.join(base, y, mo, d)); } catch (_) { continue; }
+        for (const f of names) {
+          if (f.toLowerCase().includes(needle)) return path.join(base, y, mo, d, f);
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** 这份档案用的什么模型（给算钱用）。抠头 512KB —— turn_context 不一定紧跟
+ * 第一行：第一轮会把人设、技能说明整段回显进 response_item，实测真档案里
+ * 第一个 model 字段在 68KB 开外（64KB 的头刚好错过，踩过）。session_meta
+ * 里只有 model_provider，正则带着右引号撞不上它。 */
+function codexModelOf(file) {
+  const head = readHead(file, 524288);
+  const m = /"model":"([^"]+)"/.exec(head);
+  return m ? m[1] : '';
+}
+
 module.exports = {
   onPath, resolveCodexBin, codexInstalled, codexArgs, PERM,
   codexSessionsRoot, findCodexSession, codexUsage, codexPriceFor, codexGlance, pickPrompt,
+  codexChatArgs, codexGreetArgs, codexPriceUsage, findRolloutById, codexModelOf,
 };

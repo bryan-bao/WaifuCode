@@ -475,12 +475,172 @@ console.log('\n[12] 盯档案 → 汇报：跟 claude 同一个下游，一个�
   tm.dispose();
 }
 
-console.log('');
-if (failed) {
-  console.log('\x1b[31m✗ ' + failed + ' 条没过\x1b[0m');
-  process.exitCode = 1;
-} else {
-  console.log('\x1b[32m✓ 全过\x1b[0m');
+console.log('\n[13] 陪聊的参数和定价（agents 那半边）');
+{
+  const uuid = '019a6175-e35e-7dc2-9c43-66285d92da22';
+  const a = agents.codexChatArgs({});
+  check(a[0] === 'exec' && a.includes('--json') && a.includes('read-only') && a[a.length - 1] === '-',
+        '新开：exec --json 只读沙箱，prompt 走 stdin（最后那个 -）');
+  const b = agents.codexChatArgs({ resumeId: uuid });
+  check(b[0] === 'exec' && b[1] === 'resume' && b[2] === uuid && b[b.length - 1] === '-',
+        '接着聊：exec resume <uuid>');
+  check(!b.includes('-s') && b.join(' ').includes('sandbox_mode=read-only'),
+        '**resume 不认 -s（实测 exit 2）**，沙箱走 -c sandbox_mode，且不带引号（cmd 会啃）');
+  const g = agents.codexGreetArgs({ schemaFile: 'D:/x/schema.json' });
+  check(g.includes('--output-schema') && g[g.length - 1] === '-', '搭话：--output-schema + stdin');
+  check(!a.join(' ').includes('dangerous') && !b.join(' ').includes('dangerous'),
+        '陪聊永远不碰 dangerous 开关');
+
+  const usd = agents.codexPriceUsage(
+    { input_tokens: 100000, cached_input_tokens: 40000, output_tokens: 2000 }, 'gpt-5.6-sol');
+  check(Math.abs(usd - 0.38) < 1e-9, '定价跟派活同一张表（缓存一折）');
+  check(agents.codexPriceUsage(null, '') === 0, '没用量就是 0');
+
+  // findRolloutById / codexModelOf：造一棵假的 sessions 树
+  const home = path.join(TMP, 'codexhome');
+  const dd = path.join(home, 'sessions', '2026', '08', '19');
+  fs.mkdirSync(dd, { recursive: true });
+  const rid = '01a0aaaa-bbbb-7ccc-8ddd-eeeeffff0001';
+  const rf = path.join(dd, 'rollout-2026-08-19T10-00-00-' + rid + '.jsonl');
+  // pad 垫到 64KB 开外：真档案里第一轮会把人设/技能说明整段回显，实测第一个
+  // model 字段在 68KB 处 —— 64KB 的头刚好错过（踩过的坑，这条测试钉着窗口大小）
+  fs.writeFileSync(rf,
+    JSON.stringify({ type: 'session_meta', payload: { session_id: rid, cwd: 'C:/x', model_provider: 'OpenAI', pad: 'P'.repeat(70000) } }) + '\n' +
+    JSON.stringify({ type: 'turn_context', payload: { turn_id: 't', model: 'gpt-5.4' } }) + '\n', 'utf8');
+  const root = path.join(home, 'sessions');
+  check(agents.findRolloutById(rid, root) === rf, '按 uuid 找到档案（光看文件名，不读内容）');
+  check(agents.findRolloutById('01a0aaaa-bbbb-7ccc-8ddd-eeeeffff9999', root) === null, '没有就是没有');
+  check(agents.codexModelOf(rf) === 'gpt-5.4',
+        '**model 在 68KB 开外也认得出**（64KB 的头踩过一次；session_meta 只有 model_provider，撞不上）');
+
+  // 会话接不上时的真机报错文案：chat.js 的识别正则必须涵盖（评审拿真 codex 试出来的）
+  const chatSrc = fs.readFileSync(path.join(ROOT, 'src', 'chat.js'), 'utf8');
+  check(chatSrc.includes('failed to read thread'),
+        '**resume 报错的识别对着真机文案**（"thread/resume failed: failed to read thread…"），不是猜的');
 }
 
-try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) { /* 临时目录留着也无妨 */ }
+(async () => {
+  const withTimeout = (p, ms, tag) => Promise.race([
+    p, new Promise((_, rej) => setTimeout(() => rej(new Error(tag + ' 超时')), ms)),
+  ]);
+
+  console.log('\n[14] 陪聊走 codex：假 codex 全链路（两轮，含 resume）');
+  {
+    const { Chat } = require(path.join(ROOT, 'src', 'chat.js'));
+    const home = path.join(TMP, 'codexhome');
+    const capDir = path.join(TMP, 'fakechat');
+    fs.mkdirSync(capDir, { recursive: true });
+
+    // 假 codex：抓走 argv 和 stdin，回放 --json 事件流
+    const fakeId = '01a0aaaa-bbbb-7ccc-8ddd-eeeeffff0001'; // 就用 [13] 那份档案的 id，resume 判定才过
+    const fakeJs = path.join(capDir, 'fake-codex.js');
+    fs.writeFileSync(fakeJs, [
+      "const fs=require('fs');const path=require('path');",
+      "const d=" + JSON.stringify(capDir) + ";",
+      "let n=1;while(fs.existsSync(path.join(d,'args-'+n+'.txt')))n++;",
+      "fs.writeFileSync(path.join(d,'args-'+n+'.txt'),JSON.stringify(process.argv.slice(2)));",
+      "let inp='';process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data',(c)=>{inp+=c;});",
+      "process.stdin.on('end',()=>{",
+      "fs.writeFileSync(path.join(d,'prompt-'+n+'.txt'),inp);",
+      "const greet=process.argv.slice(2).includes('--output-schema');",
+      "console.log(JSON.stringify({type:'thread.started',thread_id:'" + fakeId + "'}));",
+      "const text=greet?JSON.stringify({say:'戳我干嘛呀',face:'happy',offer:{kind:'none',label:''}}):('回你第'+n+'句<<M:happy>>');",
+      "console.log(JSON.stringify({type:'item.completed',item:{id:'i1',type:'agent_message',text}}));",
+      "console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:10000,cached_input_tokens:0,output_tokens:100}}));",
+      "process.exit(0);});",
+    ].join('\n'), 'utf8');
+    const fakeCmd = path.join(capDir, 'codex.cmd');
+    fs.writeFileSync(fakeCmd, '@echo off\r\nnode "' + fakeJs + '" %*\r\n', 'utf8');
+
+    const oldBin = process.env.WAIFU_CODEX_BIN;
+    const oldHome = process.env.CODEX_HOME;
+    process.env.WAIFU_CODEX_BIN = fakeCmd;
+    process.env.CODEX_HOME = home;
+
+    try {
+      const chatDir = path.join(TMP, 'chatstore');
+      fs.mkdirSync(chatDir, { recursive: true });
+      const chat = new Chat({
+        storeDir: chatDir,
+        claudeBin: 'claude-不该被用到',
+        getConfig: () => ({ persona: { text: '你是小依，说话要短。' }, dispatch: { agent: 'codex' } }),
+        getMoodDesc: () => '心情很好。',
+        log: () => {},
+      });
+      const say = (t) => withTimeout(new Promise((resolve, reject) => {
+        const deltas = [];
+        const onD = (e) => deltas.push(e.text);
+        const done = (e) => { off(); resolve({ ...e, deltas }); };
+        const fail = (e) => { off(); reject(new Error(e.error)); };
+        const off = () => { chat.off('delta', onD); chat.off('done', done); chat.off('error', fail); };
+        chat.on('delta', onD); chat.on('done', done); chat.on('error', fail);
+        const r = chat.send(t);
+        if (!r.ok) { off(); reject(new Error(r.error)); }
+      }), 20000, '陪聊第一轮');
+
+      const r1 = await say('你好呀');
+      check(r1.text === '回你第1句', '整句回来了（<<M: 心情标记被摘掉）');
+      check(r1.mood === 'happy', '心情标记解出来了（她的脸跟着变）');
+      check(r1.deltas.join('') === '回你第1句', '界面上有字在出（delta）');
+      // [13] 造的那份档案里写着 gpt-5.4 —— 她按 uuid 找到档案、认出模型、按它定价
+      check(Math.abs(r1.costUsd - (10000 * 2.5 + 100 * 15) / 1e6) < 1e-9,
+            '这轮的钱按**她档案里的真实模型**（gpt-5.4）定价，不是瞎按旗舰');
+      const args1 = JSON.parse(fs.readFileSync(path.join(capDir, 'args-1.txt'), 'utf8'));
+      check(args1[0] === 'exec' && args1.includes('--json') && !args1.includes('resume'),
+            '第一轮：新开会话');
+      const p1 = fs.readFileSync(path.join(capDir, 'prompt-1.txt'), 'utf8');
+      check(p1.includes('你是小依') && p1.includes('绝不自称 Codex') && p1.includes('你好呀'),
+            '**人设垫在开场白里**（codex 没有 --system-prompt 的口子，实测 -c 换底被静默无视）');
+      check(p1.includes('心情很好'), '她此刻的心情每轮都带（跟 claude 侧一致）');
+
+      const r2 = await say('第二句');
+      check(r2.text === '回你第2句', '第二轮也通');
+      const args2 = JSON.parse(fs.readFileSync(path.join(capDir, 'args-2.txt'), 'utf8'));
+      check(args2[1] === 'resume' && args2[2] === fakeId,
+            '**第二轮真的 resume 上一条**（thread_id 是从第一轮输出里白捡的）');
+      const saved = JSON.parse(fs.readFileSync(path.join(chatDir, 'chat.json'), 'utf8'));
+      check(saved.codex && saved.codex.threadId === fakeId && saved.codex.turns === 2,
+            'codex 的会话状态落了盘（跟 claude 的 sessionId 各管各）');
+      chat.dispose();
+    } finally {
+      if (oldBin === undefined) delete process.env.WAIFU_CODEX_BIN; else process.env.WAIFU_CODEX_BIN = oldBin;
+      if (oldHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldHome;
+    }
+  }
+
+  console.log('\n[15] 搭话走 codex：假 codex 单发结构化输出');
+  {
+    const { Greeter } = require(path.join(ROOT, 'src', 'greet.js'));
+    const capDir = path.join(TMP, 'fakechat');
+    const oldBin = process.env.WAIFU_CODEX_BIN;
+    process.env.WAIFU_CODEX_BIN = path.join(capDir, 'codex.cmd');
+    try {
+      const greeter = new Greeter({
+        claudeBin: 'claude-不该被用到',
+        getConfig: () => ({ persona: { text: '你是小依' }, dispatch: { agent: 'codex' } }),
+        log: () => {},
+      });
+      const r = await withTimeout(greeter.greet({ kind: 'poke' }), 20000, '搭话');
+      check(r && r.say === '戳我干嘛呀', '搭话的 JSON 解出来了');
+      check(r && r.offer === null, 'offer 是 none → 归一成 null（跟 claude 侧一致）');
+      check(r && r.costUsd > 0, '这次花的钱也带出来了（进当天流水）');
+      const argsG = JSON.parse(fs.readFileSync(path.join(capDir, 'args-3.txt'), 'utf8'));
+      check(argsG.includes('--output-schema'), '带了 --output-schema（结构化输出）');
+      const pG = fs.readFileSync(path.join(capDir, 'prompt-3.txt'), 'utf8');
+      check(pG.includes('他戳了戳你') && pG.includes('绝不自称 Codex'), '情境和人设都在开场白里');
+    } finally {
+      if (oldBin === undefined) delete process.env.WAIFU_CODEX_BIN; else process.env.WAIFU_CODEX_BIN = oldBin;
+    }
+  }
+
+  console.log('');
+  if (failed) {
+    console.log('\x1b[31m✗ ' + failed + ' 条没过\x1b[0m');
+    process.exitCode = 1;
+  } else {
+    console.log('\x1b[32m✓ 全过\x1b[0m');
+  }
+
+  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) { /* 临时目录留着也无妨 */ }
+})();

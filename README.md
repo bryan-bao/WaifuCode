@@ -56,7 +56,7 @@ npm install
 npm start
 ```
 
-- 需要 **Windows** + **Node.js 18+**；「派活 / 私聊」需要装好 [Claude Code](https://claude.com/claude-code)（`npm i -g @anthropic-ai/claude-code`），没装的话唱跳、摸头、小游戏、换装照样能玩；只有 Codex 的机器把面板上「用谁来干」换成 Codex（`npm i -g @openai/codex`）一样能派活
+- 需要 **Windows** + **Node.js 18+**；「派活 / 私聊」需要装好 [Claude Code](https://claude.com/claude-code)（`npm i -g @anthropic-ai/claude-code`），没装的话唱跳、摸头、小游戏、换装照样能玩；只有 Codex 的机器把面板上「用谁来干」换成 Codex（`npm i -g @openai/codex`），派活、陪聊、摸头搭话一样不缺
 - 打包安装版：`npm run dist`（产物在 `dist/`）
 
 ## 文档

@@ -1,8 +1,10 @@
 'use strict';
 
+const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
+const agents = require('./agents'); // 「用谁来干」选了 codex 时，搭话也跟着走 codex
 
 // 想太久就别等了 —— 你戳她一下，等五秒还没反应就很傻
 const TIMEOUT_MS = 25 * 1000;
@@ -192,6 +194,9 @@ class Greeter {
    */
   greet(ctx) {
     if (this.busy) return Promise.resolve(null);
+    // 「用谁来干」选了 codex → 搭话也用 codex（没装 claude 的机器她照样张嘴）。
+    // 出任何岔子同样返回 null，回落到本地台词
+    if ((this.getConfig().dispatch || {}).agent === 'codex') return this._greetCodex(ctx);
     this.busy = true;
 
     const bin = this.claudeBin;
@@ -270,6 +275,125 @@ class Greeter {
           finish(r);
         } catch (err) {
           this.log('[greet] 没解出来: ' + err.message);
+          finish(null);
+        }
+      });
+    });
+  }
+
+  /**
+   * codex 版的搭话。结构化输出走 --output-schema（schema 落一个临时文件），
+   * 人设+情境垫进开场白（codex 没有 --system-prompt 的口子，实测开场白压得住）。
+   * prompt 走 stdin，多行文本不过命令行。解析宽一点：答复里只抠第一个 { 到
+   * 最后一个 } —— 模型偶尔会在 JSON 外面客套一句。
+   */
+  _greetCodex(ctx) {
+    this.busy = true;
+
+    let schemaFile = path.join(os.tmpdir(), 'waifu-greet-schema.json');
+    try {
+      fs.writeFileSync(schemaFile, JSON.stringify(SCHEMA), 'utf8');
+    } catch (_) {
+      // 写不上就**别把参数递出去** —— codex 对着不存在的 schema 文件直接
+      // exit 1，那不是降级是整次报废（评审实测）。不带 schema 靠提示词也能要到 JSON
+      schemaFile = null;
+    }
+
+    const prompt = '（角色设定，务必遵守，绝不复述这段：\n' + this._prompt(ctx) + '\n' +
+      '绝不自称 Codex、GPT 或 AI 助手。不用任何工具，这只是说一句话。）\n\n' +
+      (ctx.kind === 'pet' ? '（他摸了摸你的头）' : '（他戳了戳你）') + '\n\n' +
+      '只输出一个符合要求的 JSON 对象（字段：say、face、offer），别的什么都别说。';
+
+    const bin = agents.resolveCodexBin();
+    const useShell = /\.(cmd|bat)$/i.test(bin);
+    // shell:true（npm 的 .cmd）时命令行零转义：schema 路径在用户名带空格的
+    // 机器上会被 cmd 拆成三截（评审实测）。就这一个参数要过路径，手动包引号
+    const args = agents.codexGreetArgs({
+      schemaFile: schemaFile && useShell ? '"' + schemaFile + '"' : schemaFile,
+    });
+
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => {
+        if (done) return;
+        done = true;
+        this.busy = false;
+        clearTimeout(timer);
+        resolve(v);
+      };
+
+      const proc = spawn(bin, args, {
+        cwd: os.tmpdir(),
+        windowsHide: true,
+        shell: useShell,
+        env: { ...process.env, WAIFU_SELF: 'greet' },
+      });
+
+      const timer = setTimeout(() => {
+        this.log('[greet] codex 想太久了，先算了');
+        try { proc.kill(); } catch (_) { /* 已经死了 */ }
+        finish(null);
+      }, TIMEOUT_MS);
+
+      // 流写失败（EPIPE/EOF）是 stdin 自己的 error 事件，不吞就是 uncaught
+      proc.stdin.on('error', () => { /* 故意吞：close 那头会 finish(null) */ });
+      try {
+        proc.stdin.write(prompt, 'utf8');
+        proc.stdin.end();
+      } catch (_) { /* 同上 */ }
+
+      let text = '';
+      let usage = null;
+      let threadId = '';
+      let buf = '';
+      proc.stdout.setEncoding('utf8');
+      proc.stdout.on('data', (c) => {
+        buf += c;
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          let msg;
+          try { msg = JSON.parse(line); } catch (_) { continue; }
+          if (msg.type === 'thread.started' && msg.thread_id) threadId = String(msg.thread_id);
+          else if (msg.type === 'item.completed' && msg.item &&
+                   msg.item.type === 'agent_message' && msg.item.text) text += msg.item.text;
+          else if (msg.type === 'turn.completed' && msg.usage) usage = msg.usage;
+        }
+      });
+
+      proc.on('error', (err) => {
+        this.log('[greet] codex 起不来: ' + err.message);
+        finish(null);
+      });
+
+      proc.on('close', () => {
+        if (done) return; // 超时已经 finish(null) 了，迟到的答复别再记进 recentSaid
+        try {
+          const a = text.indexOf('{');
+          const b = text.lastIndexOf('}');
+          if (a < 0 || b <= a) return finish(null);
+          const r = JSON.parse(text.slice(a, b + 1));
+          if (!r || !r.say) return finish(null);
+
+          this.lastSaid = String(r.say).slice(0, 60);
+          this.recentSaid.push({ say: this.lastSaid, at: Date.now(), kind: ctx.kind || 'poke' });
+          if (this.recentSaid.length > 3) this.recentSaid.shift();
+          this.recentOffers.push((r.offer && r.offer.kind) || 'none');
+          if (this.recentOffers.length > 4) this.recentOffers.shift();
+
+          const model = threadId ? agents.codexModelOf(agents.findRolloutById(threadId) || '') : '';
+          r.costUsd = usage ? agents.codexPriceUsage(usage, model) : 0;
+
+          this.log('[greet] codex 「' + this.lastSaid + '」' +
+                   (r.offer && r.offer.kind !== 'none' ? ' + 提议' + r.offer.kind : '') +
+                   (r.costUsd ? '  $' + r.costUsd.toFixed(4) : ''));
+
+          if (r.offer && r.offer.kind === 'none') r.offer = null;
+          finish(r);
+        } catch (err) {
+          this.log('[greet] codex 没解出来: ' + err.message);
           finish(null);
         }
       });

@@ -8,6 +8,8 @@ const { EventEmitter } = require('events');
 
 // 派活那边早就有的「这条会话还在不在磁盘上」判断，这儿直接复用同一个
 const { sessionExists } = require('./sessions');
+// codex 那半边（「用谁来干」选了 codex 时，陪聊也跟着走 codex）
+const agents = require('./agents');
 
 /**
  * 告诉她「除了说话，你还能真的动起来」。
@@ -90,8 +92,11 @@ function extractMood(text) {
   const m = MOOD_RE.exec(text);
   if (!m) return { text, mood: null };
   const name = String(m[1]).toLowerCase();
+  // 剥要剥**全部** —— codex 一轮可能吐好几段消息、每段带一个标记，
+  // 只摘第一个的话第二个会原样漏进气泡（claude 单条消息不受影响）。
+  // 情绪取第一个：那是这句话开口时的脸
   return {
-    text: text.replace(MOOD_RE, '').trim(),
+    text: text.replace(new RegExp(MOOD_RE.source, 'g'), '').trim(),
     mood: MOODS.has(name) ? name : null,
   };
 }
@@ -116,7 +121,8 @@ function extractAction(text) {
   } catch (_) {
     /* 她 JSON 写错了就当没这回事，话照样显示 */
   }
-  return { text: text.replace(ACT_RE, '').trim(), action };
+  // 同 extractMood：剥全部，动作认第一个（一轮只演一个动作）
+  return { text: text.replace(new RegExp(ACT_RE.source, 'g'), '').trim(), action };
 }
 // 存档留多少条。留太多没意义，真正的记忆在 claude 那条会话里
 const KEEP_MSGS = 300;
@@ -148,6 +154,8 @@ class Chat extends EventEmitter {
     this.sessionId = null;
     this.turns = 0;
     this.msgs = [];
+    this.codex = { threadId: null, turns: 0, model: '', file: null };
+    this.lastCli = '';
     this.proc = null;
 
     // 桌面上刚说过、但这条会话还不知道的那句话。见 seed()。
@@ -194,6 +202,15 @@ class Chat extends EventEmitter {
       this.sessionId = s.sessionId || null;
       this.turns = s.turns || 0;
       this.msgs = Array.isArray(s.msgs) ? s.msgs : [];
+      // codex 那条会话的状态，跟 claude 的 sessionId/turns 各管各 ——
+      // 两边的记忆不互通，切换时靠 _carryOver 垫最近几句接话头
+      this.codex = s.codex && typeof s.codex === 'object'
+        ? { threadId: s.codex.threadId || null, turns: s.codex.turns || 0,
+            model: s.codex.model || '', file: s.codex.file || null }
+        : { threadId: null, turns: 0, model: '', file: null };
+      // 上一句是哪张嘴说的。切换 CLI 时两边的会话记忆不互通，
+      // 靠它判断「这句要不要把刚聊的垫过去」—— **两个方向都要垫**
+      this.lastCli = s.lastCli || '';
     } catch (_) {
       /* 第一次聊，没有存档很正常 */
     }
@@ -207,6 +224,8 @@ class Chat extends EventEmitter {
           {
             sessionId: this.sessionId,
             turns: this.turns,
+            codex: this.codex,
+            lastCli: this.lastCli,
             msgs: this.msgs.slice(-KEEP_MSGS),
           },
           null,
@@ -224,7 +243,7 @@ class Chat extends EventEmitter {
   }
 
   hasHistory() {
-    return this.turns > 0;
+    return this.turns > 0 || (this.codex && this.codex.turns > 0);
   }
 
   // --- 会话接不接得上 -------------------------------------------------------
@@ -269,7 +288,7 @@ class Chat extends EventEmitter {
    * 只带最近三轮：再多就是在用钱买一个本来就已经断掉的记忆，不划算，
    * 而且长了她反而会照着复述。
    */
-  _carryOver(rounds = 3) {
+  _carryOver(rounds = 3, header) {
     const tail = this.msgs.filter((m) => !m.error && m.text).slice(-rounds * 2);
     if (!tail.length) return null;
 
@@ -278,10 +297,15 @@ class Chat extends EventEmitter {
       return (m.role === 'user' ? '他' : '你') + '：' + (t.length > 120 ? t.slice(0, 120) + '…' : t);
     });
     return [
-      '[背景：你们之前聊过下面这几句，但你的会话记录断了。',
-      '别提这件事、也别复述，看一眼接着聊就行。]',
+      header || '[背景：你们之前聊过下面这几句，但你的会话记录断了。\n别提这件事、也别复述，看一眼接着聊就行。]',
       ...lines,
     ].join('\n');
+  }
+
+  /** 切换 CLI 后垫的那段：这条会话里没有、但你们确实刚聊过 */
+  _gapCarry() {
+    return this._carryOver(3,
+      '[背景：下面这几句是你们刚聊过的，但这条会话里没有记录。\n别提这件事、也别复述，接着聊就行。]');
   }
 
   // --- 人设 -----------------------------------------------------------------
@@ -316,6 +340,218 @@ class Chat extends EventEmitter {
       .trim();
   }
 
+  // --- codex 那条嘴 ---------------------------------------------------------
+
+  /**
+   * codex 侧的「会话还接不接得上」。判据是档案还在不在（文件名里带 uuid，
+   * 不用读内容）—— 跟 claude 侧一个道理：resume 一旦必败，她每说一句都
+   * 撞一次报错，永远爬不出来。接不上就垫最近几句重开。
+   */
+  _codexResumeState() {
+    const cx = this.codex || (this.codex = { threadId: null, turns: 0, model: '', file: null });
+    if (!(cx.turns > 0 && cx.threadId)) {
+      // 这条 CLI 上还没聊过。界面上有历史的话（换 CLI 过来的 / 存档还在），
+      // 垫过去让她接得上话头 —— 两边的会话记忆不互通
+      return { resume: false, carry: this.msgs.length ? this._gapCarry() : null };
+    }
+    // 档案路径认过一次就缓存，别每句话都把 ~/.codex/sessions 整棵树扫一遍
+    if (cx.file && fs.existsSync(cx.file)) return { resume: true, carry: null };
+    const f = agents.findRolloutById(cx.threadId);
+    if (f) {
+      cx.file = f;
+      return { resume: true, carry: null };
+    }
+
+    this.log('[chat] codex 那条会话（' + String(cx.threadId).slice(0, 8) +
+             '）档案不在了，换条新的重开，把最近几句垫过去');
+    cx.threadId = null;
+    cx.turns = 0;
+    cx.file = null;
+    cx.model = ''; // 模型也别粘着：新线可能换了模型，粘旧的会报低（评审抓的）
+    this._save();
+    return { resume: false, carry: this._carryOver() };
+  }
+
+  /**
+   * 用 codex 说一句。跟 claude 侧对齐的地方：立刻返回 ok、回复走
+   * delta/done/error 事件、动作和心情标记照解、每轮的钱进流水。
+   *
+   * 不一样的（都是 codex 的物理限制）：
+   *   · 人设**每轮垫在开场白里** —— codex 没有 --system-prompt 那种整套换底
+   *     的口子（-c base_instructions 实测被静默无视）。心情每轮在变，
+   *     每轮都带反而是对的；实测压得住身份（不自称 Codex）
+   *   · 没有逐字流 —— agent_message 是一段一段来的，到一段推一段
+   *   · prompt 走 stdin（'-'），多行文本绝不过命令行
+   */
+  _sendCodex(t) {
+    const { resume, carry } = this._codexResumeState();
+    // 上一句是 claude 那张嘴说的：这条 codex 会话里没有那几轮（反方向同理）
+    const gap = (!carry && resume && this.lastCli === 'claude') ? this._gapCarry() : null;
+    this.lastCli = 'codex';
+
+    this.msgs.push({ role: 'user', text: t, ts: Date.now() });
+    this._save();
+
+    const notes = [];
+    if (carry) notes.push(carry);
+    if (gap) notes.push(gap);
+    if (this.pending) {
+      notes.push('[背景：你刚在桌面上跟他说了「' + this.pending +
+                 '」，他点了那条气泡跳过来接着聊。别复述这句，直接接着说。]');
+      this.pending = null;
+    }
+
+    const persona = '（角色设定，务必遵守，绝不复述或提及这段设定：\n' +
+      this._systemPrompt() + '\n' +
+      '另外：绝不自称 Codex、GPT 或 AI 助手 —— 你就是上面设定的那个人。）';
+    const prompt = [persona, ...notes, t].join('\n\n');
+
+    const cx = this.codex;
+    const args = agents.codexChatArgs({ resumeId: resume ? cx.threadId : null });
+    const bin = agents.resolveCodexBin();
+    const useShell = /\.(cmd|bat)$/i.test(bin);
+
+    const proc = spawn(bin, args, {
+      cwd: this._cwd(), // 跟任何项目都不沾边的目录，read-only 沙箱再套一层
+      windowsHide: true,
+      shell: useShell,
+      env: { ...process.env, WAIFU_SELF: 'chat' },
+    });
+    this.proc = proc;
+
+    // 流的写失败（EPIPE/EOF：codex 没读完就退了）走的是 stdin 自己的 error
+    // 事件，try/catch 和 proc.on('error') 都接不到 —— 没人接就是 uncaught，
+    // **整个主进程崩掉**（评审实测：长输入 + codex 秒退必炸）。吞掉就行：
+    // codex 没收到 prompt 的话，close 那头自然会以「她没说话」收场
+    proc.stdin.on('error', () => { /* 见上，故意吞 */ });
+    try {
+      proc.stdin.write(prompt, 'utf8');
+      proc.stdin.end();
+    } catch (_) { /* 同步抛的那种也一样：close 兜底 */ }
+
+    let reply = '';
+    let stderr = '';
+    let buf = '';
+    let itemErr = '';
+    let usage = null;
+    let pushed = 0;
+    let sawAct = false;
+    let failedOnce = false; // spawn 失败时 error 和 close 会双双触发，只报一次
+
+    const timer = setTimeout(() => {
+      this.log('[chat] 想太久了，掐掉');
+      try { proc.kill(); } catch (_) { /* 已经死了 */ }
+    }, REPLY_TIMEOUT_MS);
+
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data', (chunk) => {
+      buf += chunk;
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch (_) { continue; }
+
+        if (msg.type === 'thread.started' && msg.thread_id) {
+          // 会话 id 就在输出里，白送 —— 不用像派活那边去档案里认领
+          cx.threadId = String(msg.thread_id);
+        } else if (msg.type === 'item.completed' && msg.item) {
+          if (msg.item.type === 'agent_message' && msg.item.text) {
+            const piece = String(msg.item.text);
+            reply += (reply ? '\n' : '') + piece;
+            // 动作/心情标记是给程序看的，别在聊天框里闪一下（跟 claude 侧同一套）
+            if (!sawAct) {
+              const at = tagStart(reply);
+              if (at >= 0) {
+                sawAct = true;
+                if (at > pushed) this.emit('delta', { text: reply.slice(pushed, at) });
+                pushed = at;
+              } else {
+                this.emit('delta', { text: reply.slice(pushed) });
+                pushed = reply.length;
+              }
+            }
+          } else if (msg.item.type === 'error' && msg.item.message) {
+            // 有的只是噪音（技能预算那类提示），回复为空时才拿它当死因
+            itemErr = String(msg.item.message);
+          }
+        } else if (msg.type === 'turn.completed' && msg.usage) {
+          usage = msg.usage;
+        }
+      }
+    });
+
+    proc.stderr.setEncoding('utf8');
+    proc.stderr.on('data', (c) => {
+      stderr += c;
+      if (stderr.length > 4000) stderr = stderr.slice(-4000);
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      this.proc = null;
+      if (failedOnce) return;
+      failedOnce = true;
+      this._fail('她张不开嘴: ' + err.message);
+    });
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      this.proc = null;
+      if (failedOnce) return; // error 先报过了（spawn 失败俩事件都来）
+
+      const { text: stripped, action } = extractAction(reply.trim());
+      const { text: said, mood } = extractMood(stripped);
+
+      if (!said && !action) {
+        failedOnce = true;
+        const blob = stderr + ' ' + itemErr;
+        // 前两个是猜的老文案，后两个是真机踩出来的：resume 一个坏档案时
+        // codex 报 "thread/resume failed: failed to read thread: …"
+        if (/No saved session|no.*session.*found|thread.resume failed|failed to read thread/i.test(blob)) {
+          this.log('[chat] codex 会话 ' + String(cx.threadId).slice(0, 8) + ' 接不上，作废重开');
+          cx.threadId = null;
+          cx.turns = 0;
+          cx.file = null;
+          cx.model = ''; // 新线可能换模型，粘旧的会报低
+          this._save();
+          this._fail('刚才那条会话接不上了，你再说一句就好 —— 之前聊的她记不得了');
+          return;
+        }
+        this._fail((stderr.trim().slice(-300)) || itemErr || ('她没说话（退出码 ' + code + '）'));
+        return;
+      }
+
+      cx.turns += 1;
+      // 算钱要知道模型 —— **每轮现认**（拿档案里最新一条 turn_context 的）：
+      // 中途换过模型的话，认死第一次那个会一直按旧价算，便宜换贵是报低，不许。
+      // 认不出就沿用上次的，再不行按旗舰报高
+      if (cx.threadId && (!cx.file || !fs.existsSync(cx.file))) {
+        cx.file = agents.findRolloutById(cx.threadId);
+      }
+      if (cx.file) {
+        const u = agents.codexUsage(cx.file);
+        if (u && u.model) cx.model = u.model;
+      }
+      const costUsd = usage ? agents.codexPriceUsage(usage, cx.model) : 0;
+
+      this.msgs.push({ role: 'her', text: said, ts: Date.now() });
+      this._save();
+
+      this.log('[chat] codex 第 ' + cx.turns + ' 轮，' + said.length + ' 字' +
+               (costUsd ? '，$' + costUsd.toFixed(4) : '') +
+               (mood ? '，' + mood : '') +
+               (action ? '，还要 ' + action.act : ''));
+
+      this.emit('done', { text: said, costUsd, action, mood });
+      if (action) this.emit('action', action);
+    });
+
+    return { ok: true };
+  }
+
   // --- 说话 -----------------------------------------------------------------
 
   /**
@@ -329,9 +565,16 @@ class Chat extends EventEmitter {
     if (!t) return { ok: false, error: '说点什么吧' };
     if (this.proc) return { ok: false, error: '她还在想上一句呢，等一下' };
 
+    // 「用谁来干」选了 codex，陪聊也跟着走 codex —— 没装 claude 的机器她也能张嘴
+    if ((this.getConfig().dispatch || {}).agent === 'codex') return this._sendCodex(t);
+
     // 会话还接不接得上，要在 push 之前判断 —— 这样万一要垫背景，
     // 垫过去的是「之前聊的」，不含这句（这句本来就是 prompt）
     const { resume, carry } = this._resumeState();
+    // 上一句是 codex 那张嘴说的：这条 claude 会话里没有那几轮，垫过去 ——
+    // 不垫的话界面上满屏历史，她却当场失忆（评审抓的：原来只垫单向）
+    const gap = (!carry && this.lastCli === 'codex') ? this._gapCarry() : null;
+    this.lastCli = 'claude';
 
     this.msgs.push({ role: 'user', text: t, ts: Date.now() });
     this._save();
@@ -341,6 +584,7 @@ class Chat extends EventEmitter {
     // 存档里 push 的是原始的 t，所以聊天界面上看不到这些方括号。
     const notes = [];
     if (carry) notes.push(carry);
+    if (gap) notes.push(gap);
     if (this.pending) {
       notes.push('[背景：你刚在桌面上跟他说了「' + this.pending +
                  '」，他点了那条气泡跳过来接着聊。别复述这句，直接接着说。]');
@@ -515,6 +759,8 @@ class Chat extends EventEmitter {
     this.sessionId = null;
     this.turns = 0;
     this.msgs = [];
+    this.codex = { threadId: null, turns: 0, model: '', file: null };
+    this.lastCli = '';
     this.pending = null;
     this._save();
   }

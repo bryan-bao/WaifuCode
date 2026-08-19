@@ -119,6 +119,8 @@
   用 `waifuStage.hit(x, y)` 扫出一个真命中的点。
 
 - **codex 的权限映射永远不许产出 danger-full-access / --dangerously-bypass。**
+  陪聊那条（chat/greet 的 codex 分支）prompt 必须走 stdin（参数表末尾的 '-'），
+  多行文本不过命令行；`exec resume` 不认 -s，沙箱走 -c sandbox_mode=read-only。
   CLI 差异全收在 `src/agents.js`（term-shell 只按 `spec.agent` 分岔，窗口那套壳
   与 CLI 无关）；agents.js 只许用 node 自带模块 —— term-shell 是另起的 node
   进程 require 它的。`node tools/test-agents.js` 第 2 节守着映射。
