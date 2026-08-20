@@ -25,7 +25,8 @@ const SCHEMA = {
     },
     face: {
       type: 'string',
-      enum: ['happy', 'normal', 'shy', 'tired', 'sleepy', 'proud', 'lonely', 'excited', 'surprised'],
+      enum: ['happy', 'normal', 'shy', 'tired', 'sleepy', 'proud', 'lonely', 'excited', 'surprised',
+             'playful', 'curious', 'scorn', 'bored', 'frustrated', 'angry', 'panic', 'sad'],
       description: '说这句话时你是什么表情',
     },
     offer: {

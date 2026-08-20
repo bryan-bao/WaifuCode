@@ -35,11 +35,13 @@ for (const key of Object.keys(PROFILES)) {
  * 这个程序一共会问她摆哪些脸 —— **从源码里抠，不手抄一份**。
  * 手抄的迟早跟真的对不上，而且对不上的时候这个自检还是绿的。
  *
- * 三个来源，缺一不可：
+ * 四个来源，缺一不可：
  *   · mood.js computeState() 的返回值 —— 常驻状态（困、得意、闹脾气…）
  *   · mood.js flash(...) 的第一个参数 —— 临时闪一下（被摸、活干完了）
  *   · stage.js 的 WORK_FACE —— 干活时那几张（专注、卡住…）
- * 只抠第一个的话会漏掉 shy / surprised / working，而那几张恰恰天天出现。
+ *   · **chat.js 的 MOODS** —— 聊天时她每句话自己标的那些（搞怪、鄙夷、真火了…）
+ * 只抠第一个的话会漏掉 shy / surprised / working，而那几张恰恰天天出现；
+ * 漏掉第四个的话，「聊天时的表情」整条线没人守 —— 而切表情失败是**静默**的。
  */
 const MOODS = (() => {
   const mood = fs.readFileSync(path.join(ROOT, 'src', 'mood.js'), 'utf8');
@@ -55,6 +57,8 @@ const MOODS = (() => {
     ...[mood, main].flatMap((t) => [...t.matchAll(/\.flash\(([^,]+),/g)]
       .flatMap((m) => [...m[1].matchAll(/'([a-z]+)'/g)].map((x) => x[1]))),
     ...grab(stage.slice(workAt, workAt + 400), /:\s*'([a-z]+)'/g),
+    // 聊天那套直接 require 拿，别再手抄一份
+    ...require(path.join(ROOT, 'src', 'chat.js')).MOODS,
   ])];
 })();
 

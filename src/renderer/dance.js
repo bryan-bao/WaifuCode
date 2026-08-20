@@ -472,6 +472,97 @@ const GESTURES = {
   },
 
   // 来劲了：整个人往前凑
+  // 真火了：**往前逼一步** + 肩膀端起来 + 一下顿住（跟 frustrated 的
+  // 「原地抖」分得开 —— 生气是朝着你去的，烦躁是自己拧巴）
+  angry: {
+    sec: 2.2,
+    fn(t) {
+      const k = envelope(t, 0.12, 0.35);       // attack 特意短：发火是突然的
+      const shake = Math.sin(t * Math.PI * 9) * k * (1 - t);
+      return {
+        angleY: -k * 4, bodyY: -k * 6, angleZ: shake * 4, bodyX: shake * 3,
+        shoulder: k * 0.65, armL: k * 0.45, armR: k * 0.45, breath: 0.55 + k * 0.45,
+        armL2: k * 0.55, armR2: k * 0.55,
+        allY: k * 1.2, allX: k * 1.4,           // 往你那侧压过去
+      };
+    },
+  },
+
+  // 搞怪：歪着头左右晃两下 + 肩膀一耸（坏笑的身体）
+  playful: {
+    sec: 2.0,
+    fn(t) {
+      const k = envelope(t, 0.18, 0.28);
+      const w = Math.sin(t * Math.PI * 4);
+      return {
+        angleZ: -k * 16 + w * k * 6,            // 主要是歪头，再晃
+        angleY: -k * 3, bodyZ: -k * 5, bodyX: w * k * 5,
+        shoulder: k * 0.4, armL: k * 0.5, armR: k * 0.15,
+        armL2: k * 0.5, breath: 0.5 + k * 0.3,
+        allRot: -k * 2.5, allY: k * 0.8,
+      };
+    },
+  },
+
+  // 鄙夷：抬下巴 + 整个人侧开 + 半转身（「懒得看你」）。
+  // 慢：瞧不上是慢动作，快了就成了受惊
+  scorn: {
+    sec: 2.8,
+    fn(t) {
+      const k = envelope(t, 0.35, 0.35);
+      return {
+        angleY: -k * 10,                        // 下巴抬起来
+        angleX: -k * 12, bodyX: -k * 8,         // 脸和身子一起转开
+        angleZ: k * 6, bodyZ: k * 4,
+        shoulder: k * 0.3, armL: k * 0.35, armL2: k * 0.4,
+        breath: 0.35, allRot: -k * 2, allX: -k * 1.6,
+      };
+    },
+  },
+
+  // 好奇：探身凑近 + 歪头（跟 surprised 的「往后仰」正好相反）
+  curious: {
+    sec: 2.2,
+    fn(t) {
+      const k = envelope(t, 0.28, 0.3);
+      return {
+        angleZ: k * 14, angleY: k * 4, angleX: k * 5,
+        bodyY: -k * 3, bodyZ: k * 4,
+        shoulder: k * 0.2, armL: k * 0.25, armR: k * 0.1, armL2: k * 0.3,
+        breath: 0.5 + k * 0.2,
+        allY: k * 0.8, allX: k * 1.2, allRot: k * 1.5,    // 往前凑一点
+      };
+    },
+  },
+
+  // 慌了：整个人一抖 + 缩肩 + 往后半步，抖动比别的动作快得多
+  panic: {
+    sec: 1.8,
+    fn(t) {
+      const k = envelope(t, 0.08, 0.4);        // 慌是瞬间的
+      const j = Math.sin(t * Math.PI * 14) * k * (1 - t * 0.6);
+      return {
+        angleZ: j * 9, angleX: j * 7, bodyX: j * 6, bodyY: -k * 4,
+        shoulder: k * 0.8, armL: k * 0.6, armR: k * 0.6,
+        armL2: k * 0.6, armR2: k * 0.6, breath: 0.6 + k * 0.4,
+        allX: j * 1.5, allY: k * 1.4, allRot: j * 2.5,
+      };
+    },
+  },
+
+  // 无聊：整个人往下泄一口气 + 头歪到一边（敷衍）
+  bored: {
+    sec: 2.6,
+    fn(t) {
+      const k = envelope(t, 0.3, 0.35);
+      return {
+        angleY: k * 7, angleZ: k * 11, angleX: -k * 6,
+        bodyY: k * 4, shoulder: -k * 0.35, breath: -k * 0.1,
+        armL: k * 0.1, allY: -k * 1.8, allRot: k * 1.2,
+      };
+    },
+  },
+
   excited: {
     sec: 2.0,
     fn(t) {
@@ -541,6 +632,15 @@ const POSTURES = {
   // 「不看你」是转开，不是低头
   lonely: { angleX: -9, bodyX: -6, angleZ: 4, shoulder: 0.1, allRot: -2.2, allX: -1.5 },
   frustrated: { angleX: 4, angleZ: 5, bodyX: 4, shoulder: 0.18, breath: 0.05 },
+
+  // 聊天时她自己标的那六种，动作演完之后身体还留着余味。
+  // 幅度都比上面的 GESTURES 小一截 —— 这是「挂着」的姿态，不是「演一下」
+  angry: { angleY: -4, bodyY: -4, shoulder: 0.4, breath: 0.16, allY: 0.8, allX: 0.8, armL2: 0.25 },
+  scorn: { angleY: -6, angleX: -8, bodyX: -5, angleZ: 4, shoulder: 0.16, allRot: -1.6, allX: -1.2 },
+  playful: { angleZ: -10, angleY: -2, bodyZ: -3, shoulder: 0.2, allRot: -1.4, allY: 0.6 },
+  curious: { angleZ: 9, angleX: 3, bodyZ: 3, angleY: 2, shoulder: 0.12, allRot: 1, allX: 0.6 },
+  panic: { angleY: -3, shoulder: 0.55, breath: 0.2, armL: 0.3, armR: 0.3, allY: 0.7 },
+  bored: { angleY: 5, angleZ: 8, angleX: -4, shoulder: -0.3, breath: -0.06, allY: -1.5, allRot: 0.9 },
   shy: { angleY: 5, angleZ: -5, bodyX: -3, shoulder: 0.22, armL: 0.15, armR: 0.1 },
 
   // --- 下面这些不是心情，是当下正在发生的事 ---

@@ -1,0 +1,42 @@
+{
+  "Type": "Live2D Expression",
+  "FadeInTime": 0.45,
+  "FadeOutTime": 0.45,
+  "Parameters": [
+    {
+      "Id": "PARAM_EYE_FORM",
+      "Value": -1,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_EAR_L",
+      "Value": -0.9,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_EAR_R",
+      "Value": 0.9,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_TAIL_ANGRY",
+      "Value": 0.8,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_MOUTH_OPEN_Y",
+      "Value": 1,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_MOUTH_FORM",
+      "Value": -0.5,
+      "Blend": "Add"
+    },
+    {
+      "Id": "PARAM_EYE_BALL_X",
+      "Value": -0.7,
+      "Blend": "Add"
+    }
+  ]
+}

@@ -167,10 +167,23 @@ app.whenReady().then(async () => {
      * （表情能改的东西全在脸上）。再往外放一圈当留白。
      * 一张都没差异时退回按 headRatio 估 —— 那种情况下裁哪儿都一样。
      */
+    /**
+     * 取景框 = 各张表情「变化区域」的并集 —— 但**得先把动身体的那几张剔掉**。
+     *
+     * 踩过：海梦的 proud 会叉腰（Param40/43 是手臂），那一张的变化区域是整个人，
+     * 并集当场被撑成全身框。于是每张脸的 Δ 都被大片背景和身体稀释成 0.3%，
+     * 十八张脸全被标成「几乎没变化」——**量具自己把结论量反了**。
+     *
+     * 判据用面积中位数：脸部变化的面积彼此接近，动胳膊的那张会大出一个量级。
+     * 超过中位数 6 倍的一律不参与取景（它照样出现在联络表里，只是不决定镜头）。
+     */
+    const ds = frames.map((fr) => diff(base, fr.img)).filter((d) => d.n >= 30);
+    const areas = ds.map((d) => (d.x1 - d.x0 + 1) * (d.y1 - d.y0 + 1)).sort((p, q) => p - q);
+    const med = areas.length ? areas[Math.floor(areas.length / 2)] : 0;
     let X0 = 1e9, Y0 = 1e9, X1 = -1, Y1 = -1;
-    for (const fr of frames) {
-      const d = diff(base, fr.img);
-      if (d.n < 30) continue;   // 几十个像素多半是噪声，别让它把框拉歪
+    for (const d of ds) {
+      const area = (d.x1 - d.x0 + 1) * (d.y1 - d.y0 + 1);
+      if (med && area > med * 6) continue;   // 这张动的是身体，不拿它定镜头
       X0 = Math.min(X0, d.x0); Y0 = Math.min(Y0, d.y0);
       X1 = Math.max(X1, d.x1); Y1 = Math.max(Y1, d.y1);
     }

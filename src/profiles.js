@@ -62,6 +62,10 @@ const PROFILES = {
       frustrated: 'f02', sad: 'f03', lonely: 'f03',
       happy: 'f04', proud: 'f04', surprised: 'f05',
       shy: 'f06', tired: 'f07', sleepy: 'f07',
+      // 聊天时她自己标的那六种。f02 是她那张怒脸 —— angry 和 scorn 共用它，
+      // 差别交给身体：一个往前逼，一个抬下巴侧开（见 dance.js 的 GESTURES）
+      angry: 'f02', scorn: 'f02', playful: 'f04',
+      curious: 'f05', panic: 'f05', bored: 'f07',
     },
     headRatio: null, // 有真的 HitArea Head，不需要几何兜底
     mouthRatio: 0.22,
@@ -96,6 +100,8 @@ const PROFILES = {
       shy: 'exp_06',
       surprised: 'exp_07',
       frustrated: 'exp_08', lonely: 'exp_08',
+      angry: 'exp_08', scorn: 'exp_08', playful: 'exp_02',
+      curious: 'exp_07', panic: 'exp_07', bored: 'exp_05',
     },
 
     headRatio: null, // 有真的 HitArea Head
@@ -145,6 +151,8 @@ const PROFILES = {
       sad: 'Sad', lonely: 'Sad',
       shy: 'Blushing', surprised: 'Surprised', frustrated: 'Angry',
       tired: 'exp_05', sleepy: 'exp_05',
+      angry: 'Angry', scorn: 'Angry', playful: 'Smile',
+      curious: 'Surprised', panic: 'Surprised', bored: 'exp_05',
     },
     headRatio: null, // 有真的 HitArea Head
     mouthRatio: 0.17,
@@ -175,6 +183,10 @@ const PROFILES = {
       sad: 'exp_05', lonely: 'exp_05',
       frustrated: 'exp_04',
       tired: 'exp_03', sleepy: 'exp_03',
+      // 她一共就五张脸。好奇借那张笑眼；**panic 跟 surprised 一样不给** ——
+      // 「沉下脸」当慌张是硬套，照这个档案一贯的规矩，宁可让脸留在原样
+      angry: 'exp_04', scorn: 'exp_04', playful: 'exp_02',
+      curious: 'exp_02', bored: 'exp_03',
     },
     headRatio: null, // 有真的 HitArea Head
     mouthRatio: 0.15,
@@ -248,6 +260,8 @@ const PROFILES = {
       sad: 'Sad', lonely: 'Sad',
       shy: 'Blushing', frustrated: 'Angry',
       tired: 'f01',
+      angry: 'Angry', scorn: 'Angry', playful: 'Smile',
+      curious: 'Surprised', panic: 'Surprised', bored: 'f01',
     },
     headRatio: 0.28,
     mouthRatio: 0.24,
@@ -264,6 +278,8 @@ const PROFILES = {
       sad: 'Sad', lonely: 'Sad',
       shy: 'Blushing', frustrated: 'Angry',
       tired: 'f01',
+      angry: 'Angry', scorn: 'Angry', playful: 'Smile',
+      curious: 'Surprised', panic: 'Surprised', bored: 'f01',
     },
     // 量出来是 0.85，但那是**长发跟着头一起转**造成的 —— 头发垂到腰，
     // 一路把「头」的下边界拖了下去。嘴在 0.40，下巴撑死到 0.45，按这个来。
@@ -290,6 +306,8 @@ const PROFILES = {
       sad: 'Sad', lonely: 'f05',
       shy: 'Blushing', surprised: 'Surprised', frustrated: 'Angry',
       tired: 'f05', sleepy: 'f04',
+      angry: 'Angry', scorn: 'Angry', playful: 'f01',
+      curious: 'Surprised', panic: 'Surprised', bored: 'f05',
     },
     headRatio: 0.25,
     mouthRatio: 0.21,

@@ -95,6 +95,30 @@
       {
         "Name": "excited",
         "File": "expressions/excited.exp3.json"
+      },
+      {
+        "Name": "angry",
+        "File": "expressions/angry.exp3.json"
+      },
+      {
+        "Name": "playful",
+        "File": "expressions/playful.exp3.json"
+      },
+      {
+        "Name": "scorn",
+        "File": "expressions/scorn.exp3.json"
+      },
+      {
+        "Name": "curious",
+        "File": "expressions/curious.exp3.json"
+      },
+      {
+        "Name": "panic",
+        "File": "expressions/panic.exp3.json"
+      },
+      {
+        "Name": "bored",
+        "File": "expressions/bored.exp3.json"
       }
     ]
   },

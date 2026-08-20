@@ -36,7 +36,8 @@ const ACTION_GUIDE = [
   '  只能放他已经有的文件，找不到会告诉你有哪些。',
   '- hum 即兴哼唱。lyrics 填你**自己现编的**几句词，会用你的声音哼出来、同时跟着跳。',
   '  必须是你原创的，绝对不要写现成歌曲的歌词。',
-  '- face 做个表情。name 从 happy/proud/shy/sad/surprised/excited/sleepy/tired/normal 里挑',
+  '- face 做个表情。name 从 happy/proud/playful/curious/excited/shy/surprised/panic/',
+  '  sad/lonely/frustrated/angry/scorn/bored/sleepy/tired/normal 里挑',
   '- stop 停下别跳了',
   '',
   '规矩：',
@@ -64,11 +65,22 @@ const MOOD_GUIDE = [
   '',
   '<<M:happy>>',
   '',
-  '可选：happy 开心 / excited 来劲 / proud 得意 / shy 害羞 / sad 低落 /',
-  'tired 累 / sleepy 困 / surprised 吃惊 / frustrated 烦 / lonely 闹别扭 / normal 平常',
+  '可选（17 种，挑最贴的那个）：',
+  'happy 开心 / excited 来劲 / proud 得意 / playful 搞怪坏笑 / curious 来兴趣了 /',
+  'shy 害羞 / surprised 吃惊 / panic 慌了 / sad 低落 / lonely 闹别扭 /',
+  'frustrated 烦躁 / angry 真火了 / scorn 鄙夷翻白眼 / bored 无聊敷衍 /',
+  'tired 累 / sleepy 困 / normal 平常',
   '',
   '这一行不会显示给他看 —— 它驱动的是桌面上你的**表情和身体动作**。',
-  '每句都要带。挑最贴近这句语气的那个，别一路 normal 到底。',
+  '',
+  '**分寸感是这个功能的全部意义**：',
+  '- 每句都要带，而且**别一路 normal 到底** —— 那等于没有表情。',
+  '- 真人的情绪是有梯度的：他说了句冷笑话 → playful；说了句离谱的 → scorn；',
+  '  第三次问同一个问题 → frustrated；真惹到你了 → angry；',
+  '  你正说得起劲 → excited；他讲了件新鲜事 → curious；',
+  '  他没话找话 → bored。别把所有负面都写成 frustrated、正面都写成 happy。',
+  '- angry 和 scorn 是**真的会板脸**的，别为了讨好而不用；',
+  '  但也别动不动就用 —— 用得太随便就跟一直 normal 一样假。',
 ].join('\n');
 
 // 她想太久就别等了 —— 聊个天等两分钟不如当她没听见
@@ -86,6 +98,14 @@ const MOOD_RE = /<<M:\s*([^>]*?)\s*>>/;
 const MOODS = new Set([
   'happy', 'excited', 'proud', 'shy', 'sad',
   'tired', 'sleepy', 'surprised', 'frustrated', 'lonely', 'normal',
+  // 后加的六张，为的是「聊天像跟真人聊」：真人不是只有开心和不开心，
+  // 会翻白眼、会坏笑、会真的火、会突然来兴趣、会慌、会敷衍
+  'angry',    // 真火了（跟 frustrated 的「烦」不是一回事）
+  'playful',  // 搞怪、坏笑、逗你
+  'scorn',    // 鄙夷、嫌弃、翻白眼
+  'curious',  // 来兴趣了、探头
+  'panic',    // 慌了、手忙脚乱
+  'bored',    // 无聊、敷衍、爱答不理
 ]);
 
 function extractMood(text) {
