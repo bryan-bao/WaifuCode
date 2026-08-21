@@ -608,8 +608,24 @@ class TerminalManager extends EventEmitter {
       agent: agent === 'codex' ? 'codex' : undefined,
       bin: bin || undefined,
       notesFile: notesFile || undefined,
+      // codex 线要能喊「在等你确认」：hook 命令要写绝对路径（hook 的执行环境
+      // 未必有 node 在 PATH 上）。claude 线不需要 —— 它那 5 个 hook 是装在
+      // ~/.claude/settings.json 里的，不走命令行
+      notifyFile: agent === 'codex' ? path.join(__dirname, '..', 'hooks', 'notify.js') : undefined,
+      nodeBin: agent === 'codex' ? this.node.bin : undefined,
+      // 让那个 hook 被信任（不信任 = 静默不跑）。main.js 启动时问过一次存在
+      // config 里；还没问到就先不带，这次窗口只是没有「等你确认」的提醒
+      codexHookHash: agent === 'codex'
+        ? ((this.getConfig().codex || {}).hookHash || undefined) : undefined,
       codexSessionId: codexSessionId || undefined,
       codexFile: codexFile || undefined,
+      // claude 线「接着聊」续写的是**同一份**会话记录，里面躺着旧窗口已经
+      // 结算进流水的全部历史 —— 接手点以前的钱不是这个窗口花的，得记基线，
+      // 不然新窗口第一轮结算就把整段历史再入一遍账（评审实测：$50 记成 $100）。
+      // codex 线不走这儿（它有 codexBase 那套）；新线 resume=false 也不用记
+      costBase: (agent !== 'codex' && resume && sessionId)
+        ? (() => { try { return cost.ofSession(sessionId).total; } catch (_) { return 0; } })()
+        : undefined,
       // 起点基线（**token**，不是美元 —— 换模型时差值才不会被价目差抹掉）：
       // 接着聊落在同一份文件里续写时，这个窗口的钱 = (现在的累计 - 基线) 按
       // 当前模型定价。新文件基线自然是空
@@ -722,6 +738,14 @@ class TerminalManager extends EventEmitter {
       // codex 线每轮结账后落盘（_codexPersist）：不落的话重启认回来 costPaid
       // 归零，整条线的钱在流水里**再记一遍**（评审抓的，撞「不许重复计钱」那条）
       costPaid: spec.costPaid || 0,
+      // 换过会话的线，钱从换的那一刻算起（_rebindSession 落的盘，
+      // 桌宠重启 _adopt 认回窗口时读回来 —— 不读的话整条老会话的历史
+      // 会一次性算到这个窗口头上）
+      costCarry: spec.costCarry || 0,
+      costBase: spec.costBase || 0,
+      // 账冻住了（别的线跟到这条会话上了，往后归那条算）。**必须落盘**：
+      // 不落的话重启认回来这条线又开始跟着涨，同一笔钱还是摆两遍
+      costFrozen: Boolean(spec.costFrozen),
       // 「她干的事对不对」用的三个。**必须在这儿初始化** ——
       // _adopt（桌宠重启后认回终端）也走这个函数，漏了的话 warned.has() 直接抛，
       // 而这行跑在 hook 处理路径上，抛出去就是整条 hook 链断掉
@@ -895,8 +919,14 @@ class TerminalManager extends EventEmitter {
       case 'close':
         if (rec.status === 'closed') break; // gone 先到过了，窗口都没了别再翻成 done
         // codex 退出前最后扫一眼档案 —— 收尾那轮的 task_complete 可能刚落盘，
-        // 等下一个 3 秒节拍就晚了（status 马上翻 done，汇报还是要给的）
-        if (rec.agent === 'codex') { try { this._codexWatch(rec); } catch (_) { /* 汇报丢了也不拦收尾 */ } }
+        // 等下一个 3 秒节拍就晚了（status 马上翻 done，汇报还是要给的）。
+        // 认领也补一次：档案可能到最后才出生（空任务终端聊得晚）
+        if (rec.agent === 'codex') {
+          try {
+            this._codexPeek(rec, Date.now());
+            this._codexWatch(rec);
+          } catch (_) { /* 汇报丢了也不拦收尾 */ }
+        }
         // 注意：这是 **claude 干完退出了**，不是窗口关了 ——
         // term-shell 还停在「按回车关掉」那一步等你看结果。
         // 所以这条继续留在列表里（灰的），你还能点它把窗口调到前面。
@@ -926,6 +956,9 @@ class TerminalManager extends EventEmitter {
     if (!rec) return false;
 
     rec.lastSeen = Date.now();
+    // 她在这个窗口里换会话了（用户敲了 /resume 挑另一条、或者 /clear）——
+    // 认下真身，不然「接着聊」和算钱都还盯着一个从没落盘的空 id
+    if (ev.session_id && ev.session_id !== rec.sessionId) this._rebindSession(rec, ev.session_id);
     const name = ev.waifuEvent || ev.hook_event_name;
 
     switch (name) {
@@ -981,6 +1014,29 @@ class TerminalManager extends EventEmitter {
         break;
       }
 
+      /**
+       * codex 停下来问你了。
+       *
+       * 【为什么单开一个分支，而不是复用上面那条 Notification。】
+       * 那条是 claude 的 hook 名，codex 发的是我们自己在命令行上挂的
+       * `CodexAttention`（见 agents.js 的 codexWatchArgs）。两边载荷的字段名
+       * 也对不上 —— codex 给的是它自己那套 permissionRequest 的 JSON。
+       * 而下游（她转过来看着你、气泡、语音、点她直接调出终端）是**同一套**，
+       * 所以这儿只负责把契约拼齐：status 置 waiting + 一句能直接念的中文。
+       *
+       * 原来 codex 线上这块是全瞎的：全项目只有上面那处给 rec.status 赋过
+       * 'waiting'，于是 codex 窗口卡在确认框上时，面板还写着「干着呢」。
+       */
+      case 'CodexAttention': {
+        rec.status = 'waiting';
+        this.emit('change');
+        this.emit('attention', {
+          id: rec.id, name: rec.name, kind: 'confirm',
+          text: '「' + rec.name + '」那边在等你确认。',
+        });
+        break;
+      }
+
       case 'Notification': {
         const msg = String(ev.message || '');
         // 「waiting for your input」是空闲提醒 —— 你晾着它一分钟它就发一次，
@@ -1020,13 +1076,37 @@ class TerminalManager extends EventEmitter {
         this.emit('change');
         break;
 
-      case 'SessionEnd':
+      case 'SessionEnd': {
         if (rec.status === 'closed') break; // 同上，别把已关的翻活
+
+        /**
+         * 【`/clear` 和 `/resume` 也发 SessionEnd —— 那不是活干完了。】
+         *
+         * claude 的 reason 枚举一共五个（从 claude.exe 里挖出来的原文：
+         * `["clear","resume","logout","prompt_input_exit","other"]`），
+         * 前两个是**她在这个窗口里换了条会话接着聊**，人还在、窗口还在。
+         *
+         * 原来无条件翻 done，后果有三层，而且都是哑的：
+         *   · 她当场以为活干完了 —— 走一遍心情结算，白得意/白低落一次
+         *   · `rec.finished` 就此立起来**再也不复位** → 这个窗口**真正**干完
+         *     那一次永远不汇报了（正好把「干完了她是个哑巴」那个修好的东西打回去）
+         *   · `livesFor()` 跳过 done → 两道「别开第二个窗口」的闸对它全瞎
+         *
+         * 而 CLAUDE.md 和玩法说明里**推荐**的正是「想接着上次聊就敲 /resume」。
+         */
+        if (ev.reason === 'clear' || ev.reason === 'resume') {
+          rec.status = 'idle';
+          this.log('[term] ' + rec.id + ' 换了条会话接着聊（' + ev.reason + '），人还在');
+          this.emit('change');
+          break;
+        }
+
         rec.status = 'done';
         rec.closedAt = Date.now();
         this._finish(rec, null);
         this.emit('change');
         break;
+      }
 
       default:
         break;
@@ -1166,14 +1246,26 @@ class TerminalManager extends EventEmitter {
    */
   _refreshCost(rec, force) {
     if (!rec || !rec.sessionId) return;
+    /**
+     * 【关掉的线不再刷新（force 是结算那一次）。】
+     * 这条原来只写在下面 codex 分支里，claude 线是漏的 —— 而 list() 每 3 秒
+     * 对**每一条** rec 都刷一遍：你点了「接着聊」之后，已经变暗的老线会跟着
+     * 新窗口 1:1 同步涨钱（同一份 jsonl，两条 rec 各读各的 total）。
+     * 流水账逃过一劫（closed 收不到 hook，不会二次结算），但面板上同一笔钱
+     * 明晃晃摆了两遍。
+     */
+    if (rec.status === 'closed' && !force) return;
+    /**
+     * 账被冻住了：别的线跟到了这条会话上，往后的钱归**那条**算
+     * （见 _rebindSession）。force 也不解冻 —— 关窗结算那一次要的是
+     * 「把冻住之前欠的记完」，不是把别人花的钱补记到它头上。
+     */
+    if (rec.costFrozen) return;
     // codex 的钱不在 ~/.claude/projects，在它自己的 rollout 里 ——
     // 认领到文件才算得出（没认领到就保持 0，面板显示小牌，宁可空着不编数）。
     // token_count 是累计值，整读一遍取最后一条就是全部，天然不怕重复计
     if (rec.agent && rec.agent !== 'claude') {
       if (rec.agent === 'codex' && rec.codexFile) {
-        // 关掉的线不再刷新（force 是结算那一次）：这条线的文件可能正被
-        // 「接着聊」开出的新窗口续写 —— 再刷的话钱会挂在两条线上各涨一遍
-        if (rec.status === 'closed' && !force) return;
         try {
           // 文件没长就别重读（面板 3 秒问一次，别每次都嚼几百 KB）
           const mt = fs.statSync(rec.codexFile).mtimeMs;
@@ -1190,22 +1282,122 @@ class TerminalManager extends EventEmitter {
       return;
     }
     try {
-      rec.costUsd = cost.ofSession(rec.sessionId).total;
+      // carry = 换会话之前那条线已经花掉的；base = 新会话在我们接手前就有的历史
+      // （用户 /resume 到一条聊了半天的老会话，那些钱不是这个窗口花的）。
+      // 没换过会话的线两个都是 0，跟以前一模一样
+      // 只涨不跌：会话文件被清空/换掉时 cost.js 会把累计重置成 0，
+      // 减基线就成了负数（面板上蹦出个负金额）。钱是只增不减的东西，
+      // 卡在已经算出来的那个数上
+      // ponytail: 卡地板，代价是文件被换掉后新会话的钱要涨过旧基线才看得见
+      rec.costUsd = Math.max(rec.costUsd || 0, (rec.costCarry || 0) +
+                    cost.ofSession(rec.sessionId).total - (rec.costBase || 0));
     } catch (_) { /* 读不到就当没有，绝不能因为算钱把列表搞挂 */ }
   }
 
   /**
-   * 认领 codex 的会话文件（启动后 90 秒内，跟着 _sweep 的 3 秒节拍试）。
+   * 往这个窗口的 spec 文件上打个补丁（读-改-写）。
+   *
+   * spec 是**重启之后唯一的记忆**：桌宠重启时 `_adopt` 从它把窗口认回来，
+   * 没落进去的字段一律归零。原来这套读-改-写在文件里抄了三遍，
+   * 而 claude 线的 costPaid **一遍都没抄到** —— 见 _settleCost。
+   */
+  _patchSpec(rec, patch) {
+    try {
+      const f = path.join(this.specDir, rec.id + '.json');
+      const spec = JSON.parse(fs.readFileSync(f, 'utf8'));
+      Object.assign(spec, patch);
+      fs.writeFileSync(f, JSON.stringify(spec, null, 2), 'utf8');
+    } catch (_) { /* 写不回只是重启后接不上，绝不能因此拦住正事 */ }
+  }
+
+  /**
+   * 这个窗口实际在用的会话换了 —— 把绑定挪过去。
+   *
+   * 【为什么必须有这一步。】开窗口时我们 `--session-id <自己发的>` 指一条新的，
+   * 但用户在窗口里敲 `/resume` 挑另一条（CLAUDE.md 里推荐的做法就是这个）、
+   * 或者 `/clear` 一下，claude 从此写的就是**别的会话文件**了。我们记的那个 id
+   * 一个字都没落盘 → 面板上这条线的钱恒为 0、点「接着聊」开出来的是条空会话，
+   * 昨天聊了一整天的事她全不记得。翻过本机 registry：46 条线里 22 条的
+   * jsonl 根本不存在，全是这个原因。
+   *
+   * 钱要从换的那一刻起算：老会话文件里已有的历史不是这个窗口花的
+   * （用户可能 resume 到一条几十美元的长会话上），所以记一道基线，
+   * 换之前这条线花掉的则留在 carry 里。
+   */
+  _rebindSession(rec, sid) {
+    if (rec.agent && rec.agent !== 'claude') return; // codex 有它自己那套认领
+    let base = 0;
+    try { base = cost.ofSession(sid).total; } catch (_) { /* 读不到就从 0 起 */ }
+
+    /**
+     * 【这条会话已经有别的线在记账了 → 把那条冻住，别让同一笔钱记两遍。】
+     *
+     * 场景是真的会发生：A、B 两个窗口都开着，你在 A 里 `/resume` 挑了 B 那条
+     * 会话。两条 rec 从此读**同一份 jsonl 的同一个 total**，面板上各涨各的，
+     * 各自结算时又都往流水里记一笔 —— 撞 CLAUDE.md「增量读不许重复计钱」。
+     *
+     * 处理方式是**跟过去、但只留一个记账的**：老那条的账停在此刻
+     * （carry 收住、base 顶到当前 total，于是它的 costUsd 从此是个常数），
+     * 新的照常跟。**不能反过来「发现冲突就不跟」** —— 不跟等于这条线的
+     * sessionId 永远停在一个从没落盘的空 id 上，「接着聊」又变回开空会话，
+     * 那正是这套东西当初要治的病。
+     *
+     * 顺带说清一件这道闸**防不住**的事：那两个 claude 进程此刻已经在抢同一份
+     * jsonl 了（记忆会被交错写坏），那是在 CLI 里发生的，我们只是个记账的。
+     * 所以这儿要吭一声，让日志里留得下痕迹。
+     */
+    for (const other of this.items.values()) {
+      if (other === rec || other.status === 'closed') continue;
+      if (other.sessionId !== sid) continue;
+      other.costFrozen = true;
+      this._patchSpec(other, { costFrozen: true });
+      this.log('[term] ' + other.id + ' 也绑着会话 ' + sid.slice(0, 8) +
+               '，账冻在这儿；两个窗口同写一条会话，记忆可能被写乱');
+    }
+
+    rec.costCarry = rec.costUsd || 0;
+    rec.costBase = base;
+    rec.sessionId = sid;
+    // 它自己换到了另一条会话 —— 就算之前因为「被别的窗跟上」冻过账，
+    // 新会话的钱是它自己的，解冻（冻结有进无出的话，这条线从此钱永久蒸发，
+    // 评审抓的）
+    rec.costFrozen = false;
+
+    // 回写 spec：桌宠重启 _adopt 认回这个窗口时，钱和线才接得上
+    this._patchSpec(rec, { sessionId: sid, costCarry: rec.costCarry, costBase: base, costFrozen: false });
+
+    this.emit('claude-session', { dir: rec.dir, laneId: rec.laneId, sessionId: sid });
+    this.log('[term] ' + rec.id + ' 跟到了会话 ' + sid.slice(0, 8) + '…（窗口里换过）');
+  }
+
+  /**
+   * 认领 codex 的会话文件（**窗口活着就一直配**，跟着 _sweep 的 3 秒节拍试）。
    *
    * 认领到手三件事都齐了：算钱（rollout 里的 token_count）、「接着聊」
    * （codex resume <uuid>）、重启后找回（回写进 spec 文件给 _adopt）。
    * 已被**别的线**认领的 id 不抢 —— 同目录并行开两条也各认各的；
    * 自己上次那条（resume 时 spec 带来的）不算抢，认到新文件就换新的
    * （codex 的 resume 可能另起一份文件，钱和下次接着聊都得跟着新的走）。
+   *
+   * 开窗 90 秒之后的「晚认领」多一道新鲜度闸（只认 10 秒内还在写的档案）——
+   * 不设的话，已出列死线的旧档案会被捡走：汇报重播 + 钱二次入账（评审抓的）。
+   *
+   * 【文档化的残余风险，文件系统层面分不出来的】同目录**两条以上**空任务
+   * codex 窗一起挂着时，谁的档案先落盘、先手的那扇窗就认走 —— 后开的窗
+   * 敲的第一句可能被先开的窗认走（认领时这儿会大声记一笔日志）。
+   * 用户自己在同目录手开 codex 同理。开一扇空窗聊完再开下一扇就没这事。
    */
   _codexPeek(rec, now) {
     if (rec.agent !== 'codex' || rec.codexClaimed) return;
-    if (now - rec.startedAt > 90000) return;
+    // 窗口活着就一直配，**没有截止时间**。原来是「开窗后 90 秒」—— 实机死过
+    // （w63，2026-08-21）：不带任务的终端，codex 要等用户敲**第一句话**才把
+    // rollout 落盘 —— 文件名时间戳是会话创建（14:38:13），文件真正出生在
+    // 14:39:36，90 秒窗到 14:39:37 截止，差一秒错过之后永远不看了。带任务
+    // 派活是秒落盘的，所以自测全过、这条最常见的用法反而一直是死的。
+    // 时间闸还在（born >= startedAt - 5s）：认的必须是这扇窗开了**之后**出生
+    // 的档案。残余风险照旧文档化：窗口一直没人用、用户又在同目录自己开了个
+    // codex，可能认错 —— 比整条线死了强。
+    if (rec.status === 'done') return; // codex 已经退了还没认到 = 它压根没落过盘
 
     // 接着聊的窗口只认自己那条会话（resume 另起新文件时 id 不变）——
     // 不设这道闸，它会把同目录新开线刚落盘的会话抢走（评审抓的）
@@ -1230,9 +1422,29 @@ class TerminalManager extends EventEmitter {
 
     let hit = null;
     try {
-      hit = agents.findCodexSession({ dir: rec.dir, sinceMs: rec.startedAt, claimed, expectId });
+      hit = agents.findCodexSession({
+        dir: rec.dir, sinceMs: rec.startedAt, claimed, expectId,
+        // 开窗 90 秒后的晚认领只认「10 秒内还在写」的档案（防出列死线被捡走）
+        freshWithinMs: now - rec.startedAt > 90000 ? 10000 : undefined,
+      });
     } catch (_) { return; }
     if (!hit) return;
+
+    // 同目录还有别的没认领的活窗：这次认领可能认的是**它**的会话（文件系统
+    // 层面分不出来）。照认（先手赢），但必须大声留痕 —— 真串了线，日志里
+    // 查得到是从这儿开始的
+    if (!expectId) {
+      const myDir2 = path.resolve(rec.dir).toLowerCase();
+      for (const r of this.items.values()) {
+        if (r !== rec && r.agent === 'codex' && !r.codexClaimed && !r.codexSessionId &&
+            r.status !== 'closed' && r.status !== 'done' &&
+            path.resolve(r.dir).toLowerCase() === myDir2) {
+          this.log('[term] ⚠ ' + rec.id + ' 认领 ' + hit.sessionId.slice(0, 8) +
+                   '… 时，同目录还有没认领的 ' + r.id +
+                   ' —— 若那句话是在 ' + r.id + ' 的窗里敲的，两条线就串了');
+        }
+      }
+    }
 
     rec.codexSessionId = hit.sessionId;
     rec.codexFile = hit.file;
@@ -1274,6 +1486,14 @@ class TerminalManager extends EventEmitter {
     const owed = rec.costUsd - (rec.costPaid || 0);
     if (!(owed > 1e-6)) return;
     rec.costPaid = rec.costUsd;
+    /**
+     * 【落盘，不然重启一次整条会话的钱再记一遍。】
+     * 原来只有 codex 线落（_codexPersist 里那句），claude 线一直是漏的：
+     * 终端还开着时重启桌宠 → _adopt 认回来 costPaid 归零、costUsd 又被算成
+     * 全额 → 下一次结算 owed = 全额，当天账直接翻倍。而终端里那笔是
+     * **几十美元量级**的，翻一倍非常显眼。
+     */
+    this._patchSpec(rec, { costPaid: rec.costPaid });
     this.emit('cost', {
       id: rec.id, project: rec.project, laneName: rec.laneName, costUsd: owed,
     });
@@ -1365,6 +1585,15 @@ class TerminalManager extends EventEmitter {
       carry.files[p] = (carry.files[p] || 0) + n;
     }
     if (g.lastPrompt) rec.lastPrompt = String(g.lastPrompt).slice(0, 500);
+    // codex 在动了（新工具/新轮次落盘）→「在等你确认」翻回「干着呢」。
+    // 不翻的话 waiting 卡死到关窗：面板一直喊「等你确认」，她的姿态也被
+    // 这条僵尸 waiting 一直占着（waiting 权重最高，别的窗抢不过）——
+    // codex 只挂了 PermissionRequest 一个 hook，「批准了」没有事件，
+    // 但批准之后必然有工具动静，档案里看得见（评审抓的）
+    if (rec.status === 'waiting' && (g.toolCount > 0 || g.turns > 0)) {
+      rec.status = 'running';
+      this.emit('change');
+    }
     if (!g.turns) return; // 轮还没完
 
     // ≥1 轮完成：把攒的一起结

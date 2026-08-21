@@ -703,6 +703,12 @@ function wireEvents() {
     sessions.rememberCodexSession(e.dir, e.laneId, e.sessionId, e.file);
   });
 
+  // claude 的窗口在里面换了会话（用户敲了 /resume 或 /clear）—— 跟着改线上的记录。
+  // 不跟的话「接着聊」永远接的是我们发出去但从没被写过的那个空 id
+  terminals.on('claude-session', (e) => {
+    sessions.rememberSession(e.dir, e.laneId, e.sessionId);
+  });
+
   /**
    * 一条线的活干完了 —— 她脸上得有那一下。
    *
@@ -1175,9 +1181,54 @@ function guardClaude() {
 }
 
 // 按面板上选的 CLI 拦：选了 codex 就查 codex，别拿 claude 的标准冤枉人
+/**
+ * 问一次「那个 hook 的信任哈希是多少」，存进 config。
+ *
+ * 【为什么要有这一步。】codex 的 hook **不被信任就静默不跑** —— 不报错、
+ * 不警告、日志里一个字都没有，表现就是「她还是不知道 codex 在等你确认」。
+ * 信任是按 hook 定义的内容哈希记的，算法没公开，但 codex 自己会报：
+ * 起一个本地 app-server 问 `hooks/list` 就有（不调模型、不花钱，约 1.6 秒）。
+ *
+ * 哈希只跟命令串有关，也就是只跟这台机器上 node 和 notify.js 的路径有关，
+ * **存一次管一辈子**，换了安装位置才重问（所以 key 里带上那两个路径）。
+ *
+ * 摸着头做：拿不到就算了，那次窗口只是没有「等你确认」的提醒，照样能干活；
+ * 同一时刻只许有一个在飞，别每点一次 codex 就起一个 app-server。
+ */
+let codexHashProbing = false;
+function ensureCodexHookHash() {
+  if (codexHashProbing) return;
+  const notifyFile = path.join(__dirname, '..', 'hooks', 'notify.js');
+  const nodeBin = terminals ? terminals.node.bin : process.execPath;
+  const want = nodeBin + '|' + notifyFile;
+
+  const cur = loadConfig().codex || {};
+  if (cur.hookHash && cur.hookFor === want) return; // 存过了，路径也没变
+
+  codexHashProbing = true;
+  try {
+    agents.probeCodexHookHash(
+      { bin: agents.resolveCodexBin(), notifyFile, nodeBin },
+      (hash) => {
+        codexHashProbing = false;
+        if (!hash) { log('[codex] 没问到 hook 的信任哈希，这次先不带（不影响干活）'); return; }
+        try {
+          config.patch({ codex: { hookHash: hash, hookFor: want } });
+          log('[codex] hook 信任哈希存好了 ' + hash.slice(7, 15) + '… 下次开窗她就能喊你了');
+        } catch (_) { /* 存不上就下次再问 */ }
+      }
+    );
+  } catch (_) { codexHashProbing = false; }
+}
+
 function guardAgent(agent) {
   if (agent === 'codex') {
-    if (agents.codexInstalled()) return null;
+    if (agents.codexInstalled()) {
+      // 顺手把 hook 的信任哈希问了（存过就直接返回，不重复问）——
+      // 不带信任的话「codex 在等你确认」那个提醒是静默失效的
+      ensureCodexHookHash();
+      return null;
+    }
     return {
       ok: false,
       error: '这台电脑上没找到 Codex CLI，而「用谁来干」选的是它。'
@@ -1280,7 +1331,7 @@ function openLaneTerminal(opts, { minimized }) {
     const live = terminals.livesFor(dir).find((t) => t.laneId === wantLane);
     if (live) {
       focusTerminal(live.id);
-      return { id: live.id, name: live.name, dir, focused: true };
+      return { id: live.id, name: live.name, dir, focused: true, focusedLane: live.laneName || '' };
     }
   }
 
@@ -1298,6 +1349,27 @@ function openLaneTerminal(opts, { minimized }) {
     laneId: wantLane,
     laneName,
   });
+
+  /**
+   * 那条会话已经有个窗口开着在写了 → 调过去，绝不开第二个。
+   *
+   * 上面按 laneId 挡过一道，这儿按**真实会话 id** 再挡一道 —— 两者会岔开：
+   * 用户在 A 窗口里 `/resume` 到了 B 线那条会话，A 和 B 的 laneId 不一样，
+   * 但底下是同一条会话。两个 claude 同时 --resume 它，记忆会被交错写坏，
+   * 而且是事后查不出来的坏（不报错、不崩，只是她开始把两件事混着说）。
+   */
+  if (info.resume && terminals) {
+    const busy = terminals.livesFor(dir).find((t) => t.sessionId === info.sessionId);
+    if (busy) {
+      focusTerminal(busy.id);
+      // 带上是**哪条线**的窗口：这道闸命中的场景恰恰是「调出来的不是你点的那条」
+      // （laneId 不同才轮得到这道闸），不说清楚你会对着一个陌生的窗口发懵
+      return {
+        id: busy.id, name: busy.name, dir, focused: true,
+        focusedLane: busy.laneName || '', otherLane: busy.laneId !== wantLane,
+      };
+    }
+  }
 
   // info.name 是 path.basename 出来的项目名，天然不带路径。
   // 上面「已经开着就调过去」那条早退分支不记 —— 那次没开新的。

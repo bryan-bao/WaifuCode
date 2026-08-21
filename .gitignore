@@ -8,6 +8,9 @@ dist/
 sessions/
 # 个人配置（人设、模型选择、皮肤、路径）
 config.json
+# 探 codex 行为时用的临时 CODEX_HOME（tools 里那些探针会造，2MB 起步）
+.tmp-codexhome/
+
 # 运行日志
 *.log
 
@@ -27,3 +30,5 @@ workPosture
 expressions-*.png
 vendor/pylibs/__pycache__/
 vendor/pylibs/**/__pycache__/
+# 生成的功能手册（交付物，含 base64 大图，不入库）
+WaifuCode功能手册.html

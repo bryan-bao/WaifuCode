@@ -362,6 +362,31 @@ class SessionManager extends EventEmitter {
   }
 
   /**
+   * 这个窗口实际在用的 claude 会话变了 —— 认下它，换掉我们原来发的那个 id。
+   *
+   * 【不认的话「接着聊」是个空壳。】开窗口时我们 `--session-id` 指了一个 id，
+   * 但用户在窗口里敲 `/resume` 挑另一条（这正是 CLAUDE.md 里推荐的做法）、
+   * 或者 `/clear` 一下，claude 就换到别的会话上写了 —— 我们记的那个 id
+   * **一个字都没落盘**。于是点「接着聊」时 `sessionExists()` 说那条不在，
+   * 开出来的是条崭新的空会话：她把你们聊了一整天的事忘得干干净净。
+   *
+   * 实地翻过：registry 里 46 条线，22 条的 jsonl 根本不存在 —— 全是这个。
+   *
+   * 真实 id 由 claude 的 hook 事件带来（`ev.session_id`），窗口是我们开的
+   * （靠 WAIFU_TERM_ID 认人），所以认下来是安全的。
+   */
+  rememberSession(projectPath, laneId, sessionId) {
+    if (!laneId || !sessionId) return;
+    try {
+      const rec = this._recordFor(path.resolve(projectPath));
+      const lane = this._lanesOf(rec).find((l) => l.id === laneId);
+      if (!lane || lane.sessionId === sessionId) return;
+      lane.sessionId = sessionId;
+      this._saveRegistry();
+    } catch (_) { /* 记不上就只是下次接不上，别拦正事 */ }
+  }
+
+  /**
    * codex 的窗口认领到会话了 —— 记到那条线上，「接着聊」和重启找回全靠它。
    * 找不到线就算了（比如线已经被清了），这不是要紧事。
    */

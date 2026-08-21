@@ -177,11 +177,18 @@ async function refreshTerms() {
           agent: t.agent || 'claude',
         });
         if (r && r.ok) {
-          msg(t.agent === 'codex'
-            ? (t.codexSessionId
-                ? '回到「' + (t.laneName || t.name) + '」了，接上了上次那条 Codex 会话'
-                : '照「' + (t.laneName || t.name) + '」重开了一条 Codex 的线（上次的会话没认领到，这是新开的）')
-            : '回到「' + (t.laneName || t.name) + '」了，她还记得你们聊到哪儿', 'ok');
+          // **说实话**：撞上一个还开着的窗口时是「调过去」，不是「重开并接上」。
+          // 而且要说清是**哪条线**的窗口 —— 第二道闸（按真实会话判重）命中时，
+          // 调出来的往往是另一条线：你在那条线的窗口里 /resume 到了这条会话
+          msg(r.focused
+            ? (r.otherLane
+                ? '这条会话正被「' + (r.focusedLane || '另一条线') + '」那个窗口写着，给你调过去了'
+                : '这条线的窗口本来就开着，给你调到最前面了')
+            : t.agent === 'codex'
+              ? (t.codexSessionId
+                  ? '回到「' + (t.laneName || t.name) + '」了，接上了上次那条 Codex 会话'
+                  : '照「' + (t.laneName || t.name) + '」重开了一条 Codex 的线（上次的会话没认领到，这是新开的）')
+              : '回到「' + (t.laneName || t.name) + '」了，她还记得你们聊到哪儿', 'ok');
           refreshTerms();
         } else {
           msg((r && r.error) || '这条线捡不回来了', 'err');
@@ -465,7 +472,22 @@ function readForm() {
  * 「用谁来干」一换，模型下拉跟着变脸：codex 不认 claude 的模型名，
  * 模型跟它自己的 ~/.codex/config.toml 走 —— 下拉灰掉、第一项换个说法。
  * 切回来时把你之前选的模型还回去（不然摸一下 codex 就把记住的模型洗没了）。
+ *
+ * 权限那四条也得换脸，但**不是灰掉，是改说法** —— 它在 codex 上是真生效的
+ * （命令行逐键压过 config.toml），只是四档的含义跟 claude 对不上：
+ *   · 「改文件不问」在 codex 上**跟「自己判断」一模一样** —— 它的 -a 只有
+ *     untrusted / on-request / never 三档，拆不出「改文件不问但跑命令要问」。
+ *     不写清楚的话，你照着说明去分辨这两档，只会得出「选哪个都没区别」。
+ *   · 「先出方案」在 codex 上是「什么都问你 + 一个字不许写」，codex 没有
+ *     plan 模式。歪的不止一条，所以四条一起换。
  */
+const PERM_CODEX = {
+  '': '按设置里的默认',
+  auto: '自己判断 · 拿不准的才问你，只能改这个项目目录',
+  acceptEdits: '跟「自己判断」完全一样 · Codex 拆不出这一档',
+  plan: '只读 · 一个字都不许改，而且干什么都先问你',
+  dontAsk: '全都别问 · 但仍然只能改这个项目目录',
+};
 let modelBeforeCodex = '';
 function syncAgentUi() {
   const codex = $('agent').value === 'codex';
@@ -477,8 +499,16 @@ function syncAgentUi() {
     ? '跟 Codex 自己的设置走（config.toml 里选）'
     : '跟 Claude Code 自己的设置走';
   model.title = codex ? 'Codex 用哪个模型在它自己的配置里选，这儿管不着' : '';
-}
 
+  const perm = $('perm');
+  for (const o of perm.options) {
+    if (!o.dataset.claude) o.dataset.claude = o.text; // 头一回把原文收起来
+    o.text = codex ? (PERM_CODEX[o.value] || o.dataset.claude) : o.dataset.claude;
+  }
+  perm.title = codex
+    ? '这一档会盖过你 ~/.codex/config.toml 里的设置，只管这一次。\n开出来的窗口里会印一行告诉你具体给了什么'
+    : '';
+}
 /**
  * 这个目录现在在哪个分支、有几个文件没提交。
  *

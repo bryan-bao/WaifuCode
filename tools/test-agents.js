@@ -1,6 +1,6 @@
 'use strict';
 
-// codex 那条线的自检（离线，几百毫秒跑完）。守四件事：
+// codex 那条线的自检（离线，几百毫秒跑完）。守五件事：
 //
 //   1. 权限映射：claude 的模式名 → codex 的 -a/-s 两个旋钮，宁紧勿松 ——
 //      **永远不许**映射出 danger-full-access 或那个 --dangerously-bypass 开关
@@ -9,6 +9,8 @@
 //   3. term-shell 里那几处分岔别被人顺手删了（跟 test-termlife 钉引号一个套路）
 //   4. 关窗去留：codex 的线收不到 hook，turns 恒 0 —— 派过活的必须留成「已完成」
 //      （不留「再来」永远不出现），而 claude 那边的老规矩一个字不许变
+//   5. 「等你确认」那条 hook 的参数：事件名大小写、timeout 必须显式、一个反斜杠
+//      都不许有（TOML 会当非法转义整段解析失败），以及永远不许产出 bypass 开关
 
 const fs = require('fs');
 const path = require('path');
@@ -234,6 +236,19 @@ console.log('\n[8] 捞会话：cwd + 启动时间配对，别人认领过的不�
         '**expectId 只认那一条** —— 接着聊的窗口不许抢同目录新线刚落盘的会话');
   check(agents.findCodexSession({ dir: eDir, sinceMs: since, root, expectId: '019a0000-0000-7000-8000-00000000none' }) === null,
         'expectId 对不上任何文件 → 空手而归，不拿别人的凑数');
+
+  // 新鲜度闸：晚认领只认「还在写」的档案 —— 出列死线的旧档案 mtime 早停了，
+  // 捡走它 = 汇报重播 + 已入账的钱二次入账（评审实测过整条路径）
+  const idF = '019a0000-0000-7000-8000-000000000fff';
+  const fDir = path.join(TMP, '死档案');
+  const ff = path.join(dayDir(since), 'rollout-x-f.jsonl');
+  fs.writeFileSync(ff, metaLine(idF, fDir) + '\n', 'utf8');
+  const old = new Date(Date.now() - 60000);
+  fs.utimesSync(ff, old, old); // mtime 拨回一分钟前 = 早就不写了
+  check(agents.findCodexSession({ dir: fDir, sinceMs: since, root, freshWithinMs: 10000 }) === null,
+        '**晚认领不捡死档案** —— mtime 一分钟没动的不认（防出列死线被二次入账）');
+  check(agents.findCodexSession({ dir: fDir, sinceMs: since, root }) !== null,
+        '不带新鲜度闸（开窗 90 秒内的正常认领）照常认得到');
 }
 
 console.log('\n[9] 算钱：只认最后一条累计值，半行不上账，认不出的模型宁可报高');
@@ -336,6 +351,26 @@ console.log('\n[10] 认领的规矩（_codexPeek 那一层）');
     check(calls.length === 0, '**晚开的让早开的先认** —— 两条新线不许倒挂着配对');
     tm._codexPeek(rOld, now);
     check(calls.length === 1, '早开的照常去找');
+
+    // **认领没有截止时间**。实机死过（w63）：不带任务的终端，codex 要等用户
+    // 敲第一句话才落盘档案 —— 文件出生比开窗晚一分多钟，原来的 90 秒窗一过
+    // 这条线的汇报/金额/接着聊全灭，还是静默的
+    calls.length = 0;
+    const rLate = tm._makeRecord(specOf('pk5'), { pid: 1, status: 'running' });
+    rLate.startedAt = now - 10 * 60 * 1000;   // 开窗十分钟了
+    tm.items.set('pk5', rLate);
+    tm._codexPeek(rLate, now);
+    check(calls.length === 1,
+          '**开窗十分钟了照样在配** —— 空任务终端的档案要等第一句话才出生（评审+实机抓的）');
+
+    // codex 退了还没认到 = 它压根没落过盘，别再认了（之后同目录出现的
+    // 只可能是别人的会话）
+    calls.length = 0;
+    const rDone = tm._makeRecord(specOf('pk6'), { pid: 1, status: 'done' });
+    rDone.startedAt = now - 5 * 60 * 1000;
+    tm.items.set('pk6', rDone);
+    tm._codexPeek(rDone, now);
+    check(calls.length === 0, 'codex 退了还没认到 → 不再认（再出现的只会是别人的）');
   } finally {
     agents.findCodexSession = realFind;
     tm.dispose();
@@ -463,6 +498,15 @@ console.log('\n[12] 盯档案 → 汇报：跟 claude 同一个下游，一个�
   check(rec2.lastReport !== '' && rec2.costPaid === (seenSpec.costPaid || 0),
         '最后那句和已入账的钱也一起回来了（钱不落盘会在流水里翻倍）');
 
+  // codex 停下来问过你（waiting），你批准之后它动了工具 —— 档案里读到新动静
+  // 就把「在等你确认」翻回「干着呢」。不翻的话 waiting 卡死到关窗：面板一直
+  // 喊「等你确认」，她的姿态也被这条僵尸 waiting 占着（评审抓的）
+  rec.status = 'waiting';
+  fs.appendFileSync(rf, L('response_item', { type: 'function_call', name: 'shell', arguments: '{}' }) + '\n');
+  tm._codexWatch(rec);
+  check(rec.status === 'running',
+        '**批准之后她不再喊「等你确认」** —— 档案里读到新工具动静就翻回干着呢');
+
   // 接着聊续写同一份文件：从文件末尾跟起，旧轮次不重报
   const rec3 = tm._makeRecord(specOf('wb', { codexOffset: fs.statSync(rf).size }), { pid: 1, status: 'running' });
   tm.items.set('wb', rec3);
@@ -543,7 +587,7 @@ console.log('\n[13] 陪聊的参数和定价（agents 那半边）');
       "process.stdin.on('data',(c)=>{inp+=c;});",
       "process.stdin.on('end',()=>{",
       "fs.writeFileSync(path.join(d,'prompt-'+n+'.txt'),inp);",
-      "const greet=process.argv.slice(2).includes('--output-schema');",
+      "const greet=inp.includes('只输出一个 JSON 对象');",
       "console.log(JSON.stringify({type:'thread.started',thread_id:'" + fakeId + "'}));",
       "const text=greet?JSON.stringify({say:'戳我干嘛呀',face:'happy',offer:{kind:'none',label:''}}):('回你第'+n+'句<<M:happy>>');",
       "console.log(JSON.stringify({type:'item.completed',item:{id:'i1',type:'agent_message',text}}));",
@@ -626,15 +670,89 @@ console.log('\n[13] 陪聊的参数和定价（agents 那半边）');
       check(r && r.offer === null, 'offer 是 none → 归一成 null（跟 claude 侧一致）');
       check(r && r.costUsd > 0, '这次花的钱也带出来了（进当天流水）');
       const argsG = JSON.parse(fs.readFileSync(path.join(capDir, 'args-3.txt'), 'utf8'));
-      check(argsG.includes('--output-schema'), '带了 --output-schema（结构化输出）');
+      check(!argsG.includes('--output-schema'),
+            '**不带 --output-schema** —— 走中转的 codex 对它一律 502（实机 55 秒全灭），提示词要 JSON 就够');
       const pG = fs.readFileSync(path.join(capDir, 'prompt-3.txt'), 'utf8');
       check(pG.includes('他戳了戳你') && pG.includes('绝不自称 Codex'), '情境和人设都在开场白里');
+      check(pG.includes('只输出一个 JSON 对象') && pG.includes('"say"'),
+            'JSON 的样子直接写进提示词（比 schema 更通用）');
     } finally {
       if (oldBin === undefined) delete process.env.WAIFU_CODEX_BIN; else process.env.WAIFU_CODEX_BIN = oldBin;
     }
   }
 
   console.log('');
+console.log('\n[16] codex 停下来问你时她要能知道（hook 参数）');
+{
+  const NOTIFY = 'D:/WaifuCode/hooks/notify.js';
+  const NODE = 'C:/n/node.exe';
+  const w = agents.codexWatchArgs(NOTIFY, NODE);
+  const line = w.join(' ');
+
+  check(w.length === 6 && w.filter((x) => x === '-c').length === 3,
+        '三条 -c：一条挂 hook，两条让 Windows Terminal 也弹通知');
+  check(/hooks\.PermissionRequest=/.test(line),
+        '事件名是 **PascalCase**（写成 permissionRequest 的话 hooks/list 返回空，' +
+        '而且零告警零错误）');
+  check(/timeout=5/.test(line),
+        '**timeout 必须显式给** —— 默认 600 秒，而 hook 是阻塞的，' +
+        '桌宠没开着时能把 codex 卡十分钟');
+  check(!/\\/.test(line),
+        '**一个反斜杠都不许有** —— TOML 会把 \\W 当非法转义，整段解析失败');
+  check(line.includes(NOTIFY) && line.includes(NODE),
+        'node 和 notify.js 都写绝对路径（hook 的执行环境未必有 node 在 PATH 上）');
+
+  // 宁紧勿松那条铁律，在这儿同样成立
+  check(!/dangerously|danger-full-access|bypass/i.test(line),
+        '**绝不产出 --dangerously-bypass-hook-trust** —— 它会对这次调用里' +
+        '所有 hook 放行，包括派活目录里可能躺着的 .codex/hooks.json');
+
+  // 路径拼不安全就宁可不挂（单引号是 TOML 字面串的定界符，没法转义）
+  check(agents.codexWatchArgs("C:/o'brien/notify.js", NODE).length === 0,
+        '路径里有单引号 → 宁可不挂，也不拼一个会解析失败的串');
+  check(agents.codexWatchArgs('', NODE).length === 0, '没给路径就不挂');
+
+  // 只有开终端那条路带，陪聊那两条不带
+  const BS = String.fromCharCode(92);
+  const termSpec = { permissionMode: 'auto', task: '干活', notifyFile: NOTIFY, nodeBin: NODE };
+  const term = agents.codexArgs(termSpec, false);
+  check(term.join(' ').includes('hooks.PermissionRequest'), '开终端那条带上了');
+  const bare = agents.codexArgs({ permissionMode: 'auto', task: '干活' }, false);
+  check(!bare.join(' ').includes('hooks.'), '没给 notifyFile 就不带（老行为原样）');
+  check(!agents.codexChatArgs({}).join(' ').includes('hooks.'),
+        '陪聊那条不带 —— 那是我们自己调的进程，直接读输出');
+
+  // ── 信任那一半：不带信任的 hook 是**静默不跑**的 ──────────────────
+  const H = 'sha256:' + 'a'.repeat(64);
+  const t = agents.codexTrustArgs(H);
+  check(t.length === 2 && t[0] === '-c', '信任是一条独立的 -c');
+  check(t[1].includes("{'C:" + BS + "<session-flags>" + BS + "config.toml:permission_request:0:0'}".slice(0, -1)),
+        '**key 用单引号（TOML 字面串）**，反斜杠才活得下来');
+  check(t[1].includes('trusted_hash="' + H + '"'),
+        '**hash 必须用双引号** —— 换成单引号整个 hooks 段会消失，而且零报错（实测）');
+  check(t[1].indexOf(BS) > 0, 'key 里得有真的反斜杠（JS 串里 ' + BS + '< 会被吞掉，必须转义）');
+  check(agents.codexTrustArgs('').length === 0 && agents.codexTrustArgs('abc').length === 0 &&
+        agents.codexTrustArgs('sha256:xyz').length === 0,
+        '哈希不像样就不带 —— 宁可这次没提醒，也不拼个会把配置搞坏的串');
+
+  const withTrust = agents.codexArgs({ ...termSpec, codexHookHash: H }, false);
+  check(withTrust.some((x) => String(x).startsWith('hooks.state')), '存过哈希就带上信任');
+  check(!term.some((x) => String(x).startsWith('hooks.state')), '没存过就不带（老行为原样）');
+  check(typeof agents.probeCodexHookHash === 'function', '问哈希的探针导出来了（main.js 启动时用）');
+}
+
+console.log('\n[17] 这次给了什么权限，要说得出人话');
+{
+  for (const m of ['auto', 'acceptEdits', 'plan', 'dontAsk']) {
+    const w = agents.codexPermWords(m);
+    check(w.includes('-a ') && w.includes('-s '), m + '：把真参数也带出来（' + w + '）');
+  }
+  check(agents.codexPermWords('plan').includes('一个字都不许写'),
+        'plan 在 codex 上是「只读」，不是「先出方案」—— codex 没有 plan 模式');
+  check(agents.codexPermWords('乱写的') === agents.codexPermWords('auto'),
+        '认不出来的一律按 auto 说（跟 PERM 的兜底一致）');
+}
+
   if (failed) {
     console.log('\x1b[31m✗ ' + failed + ' 条没过\x1b[0m');
     process.exitCode = 1;

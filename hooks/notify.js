@@ -41,7 +41,18 @@ let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (c) => { input += c; });
 
-process.stdin.on('end', () => {
+/**
+ * 发这一趟，**只发一趟**。
+ *
+ * 原来只挂在 stdin 的 'end' 上 —— claude 每次都喂 stdin，所以一直没事。
+ * 但 codex 那边的 hook（我们自己在命令行上挂的 CodexAttention）不保证喂，
+ * 不喂的话下面那个 1.5 秒的兜底会**一声不吭地直接退掉**，事件就此蒸发。
+ * 所以兜底那条也走这儿：拿到什么发什么，事件名和 termId 本来就够用了。
+ */
+let sent = false;
+function send() {
+  if (sent) return;
+  sent = true;
   let payload;
   try {
     payload = JSON.parse(input || '{}');
@@ -71,7 +82,16 @@ process.stdin.on('end', () => {
   req.on('timeout', () => { req.destroy(); bail(); });
   req.write(body);
   req.end();
-});
+}
 
-// stdin 迟迟不来也不能挂住 Claude Code
-setTimeout(bail, 1500);
+process.stdin.on('end', send);
+process.stdin.on('error', send); // stdin 压根没接上（codex 那条可能这样）
+
+// 1.2 秒的「不等了直接发」**只留给 CodexAttention** —— 那条 hook 确实可能
+// 不喂 stdin，事件名和 termId 就够用。claude 的事件绝不能提前发：stdin
+// 读到一半就发等于送残包，SessionEnd 丢了 reason 会绕过「/clear、/resume
+// 不算干完」那道闸、把窗口误翻成 done（评审实测复现过）。
+// claude 的事件等不到 end 就放弃这单 —— 宁可不发（_sweep 有兜底），不发残包
+if (EVENT === 'CodexAttention') setTimeout(send, 1200);
+// 真正的死线：send() 里那发 HTTP 自己有 800ms 超时，再留点余量
+setTimeout(bail, 2500);

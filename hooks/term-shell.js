@@ -157,8 +157,22 @@ function banner() {
     console.log('\x1b[90m  活儿：' + spec.task.replace(/\s+/g, ' ').slice(0, 100) + '\x1b[0m');
   }
   if (spec.agent === 'codex') {
-    // codex 没有 claude 那套 hook，她收不到里面的动静 —— 别许诺「会来汇报」
-    console.log('\x1b[90m  这扇窗跑的是 Codex。她只管开关窗口，里面的事不盯。\x1b[0m');
+    /**
+     * 【这次给了什么权限，必须印出来。】命令行是**逐键压过** ~/.codex/config.toml
+     * 的（实测：不带旗子时 `codex debug prompt-input` 报的是你 config 里那套，
+     * 带上 `-a untrusted -s read-only` 当场就变），所以派出去的 codex 跟你平时
+     * 手敲的不是一个脾气。不印的话你只能得出「面板上那个下拉大概没用」——
+     * 它一直在生效，只是从面板到这儿没有一处提过。
+     *
+     * 别改成印 buildArgs() 的全量参数：最后一项是任务描述，会把一整段活儿糊上来。
+     */
+    try {
+      const words = require(path.join(ROOT, 'src', 'agents.js'))
+        .codexPermWords(spec.permissionMode);
+      console.log('\x1b[90m  这次的权限：' + words + '\x1b[0m');
+      console.log('\x1b[90m  （盖过你 ~/.codex/config.toml 里的设置，只管这一次）\x1b[0m');
+    } catch (_) { /* 印不出来不拦开窗 */ }
+    console.log('\x1b[90m  这扇窗跑的是 Codex。做完一段她会来汇报；她停下来问你时也会喊你。\x1b[0m');
   } else {
     console.log('\x1b[90m  她在旁边看着，每做完一段会去跟你汇报。\x1b[0m');
     console.log('\x1b[90m  想让她记住这次聊的，用 /exit 退出，别直接叉窗口。\x1b[0m');

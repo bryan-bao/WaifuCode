@@ -16,6 +16,7 @@
 // （test-termlife 钉着它的引号处理，不挪窝）。
 
 const fs = require('fs');
+const { spawn } = require('child_process');
 const os = require('os');
 const path = require('path');
 
@@ -67,6 +68,162 @@ const PERM = {
 };
 
 /**
+ * 这一档权限，**说人话是什么**。
+ *
+ * 【为什么非要有这么一句。】命令行是**逐键压过** `~/.codex/config.toml` 的
+ * （实测：不带旗子时 `codex debug prompt-input` 报的是你 config 里那套，
+ * 带上 `-a untrusted -s read-only` 当场就变），所以派出去的 codex 行为跟你
+ * 平时手敲的**不一样**。而原来从面板到 banner 没有任何一处提过这件事 ——
+ * 于是你的体感只能是「窗口长得一样，里面却不听话，选那个下拉大概没用」。
+ * 印出来，两件事才连得上。
+ */
+function codexPermWords(mode) {
+  const a = PERM[mode] || PERM.auto;
+  const ask = { untrusted: '干什么都先问你', 'on-request': '拿不准的问你', never: '一概不问' }[a[1]] || a[1];
+  const box = { 'read-only': '一个字都不许写', 'workspace-write': '只能改这个项目目录里的' }[a[3]] || a[3];
+  return ask + '，' + box + '（' + a.join(' ') + '）';
+}
+
+/**
+ * 让 codex 停下来问用户时，桌宠也知道。
+ *
+ * 【为什么要这个。】claude 那条线靠 Notification hook 报「在等你确认」，
+ * 于是她会转过来看着你、弹气泡、念一句，点她还能直接把那个终端调出来
+ * —— 整套下游早就建好了（tools/test-stage.js 第 14 节钉着）。
+ * codex 线上唯一缺的就是**触发那一下**：全项目只有 Notification 那一处
+ * 给 rec.status 赋过 'waiting'，codex 永远进不去，窗口卡在确认框上时
+ * 面板还显示「干着呢」。
+ *
+ * codex 0.147.0 起是有 hook 的（`codex features list` 里 hooks stable true），
+ * 事件表里就有 permissionRequest。这里全部走 `-c` 注入，**不碰用户的
+ * ~/.codex/config.toml** —— 跟权限那两个旗子一个原则：只管这一次。
+ *
+ * 【几个必须记住的坑，每一条都是实测踩出来的】
+ *
+ * · 事件名在 `hooks.X` 里是 **PascalCase**（PermissionRequest）。写错了
+ *   `hooks/list` 返回空，而且**零告警零错误** —— 跟表情切换失败一个德行。
+ * · 值里**不许出现反斜杠**：TOML 双引号串会把 `\W` 当非法转义 → 整段解析
+ *   失败 → 报 `invalid type: string …, expected a sequence in hooks`。
+ *   所以命令一律用**单引号字面串**（TOML 里字面串不处理任何转义），
+ *   路径全折成正斜杠（node 在 Windows 上照吃）。
+ * · **timeout 必须显式给**。默认 600 秒，而 hook 是阻塞的 —— 桌宠没开着的
+ *   时候能把 codex 卡十分钟。notify.js 自己 1.5 秒就退，给 5 秒足够。
+ * · **绝对不许用 `--dangerously-bypass-hook-trust`**：它对这次调用里
+ *   **所有** hook 放行，包括派活目标仓库里可能躺着的 .codex/hooks.json ——
+ *   而派活目录是用户随便挑的。名字也正撞 CLAUDE.md「永远不许产出
+ *   --dangerously-bypass」那条。
+ * · node 用 `process.execPath`：hook 的执行环境未必有 node 在 PATH 上
+ *   （install.js 那边同款理由）。便携版跑的是 electron 冒充 node，而
+ *   `ELECTRON_RUN_AS_NODE=1` 是 term-shell 进程环境里就有的，codex 和它拉起的
+ *   hook 都继承得到，所以这儿不用再操心。
+ *
+ * tui.notifications 是**另一条独立的腿**：它让 Windows Terminal 自己弹一个
+ * 系统通知。走的是终端转义序列，跟 hook 那条互不影响 —— hook 万一没被信任，
+ * 至少这条还在。
+ */
+function codexWatchArgs(notifyJs, nodeBin) {
+  const js = String(notifyJs || '').replace(/\\/g, '/');
+  const exe = String(nodeBin || process.execPath).replace(/\\/g, '/');
+  // 单引号是 TOML 字面串的定界符，路径里真有单引号就没法转义了 —— 宁可不挂
+  if (!js || js.includes("'") || exe.includes("'")) return [];
+  // 路径可能带空格（装到 C:\Program Files\… 之类），命令里得自己包一层双引号
+  const cmd = '"' + exe + '" "' + js + '" CodexAttention';
+  return [
+    '-c', "hooks.PermissionRequest=[{matcher='*',hooks=[{type='command',command='" +
+          cmd + "',timeout=5}]}]",
+    // 顺带让 Windows Terminal 也弹一个系统通知：hook 那条要是没被信任，
+    // 至少这条还在。这条不需要任何信任
+    '-c', "tui.notifications=['approval-request']",
+    '-c', "tui.notification_condition='always'",
+  ];
+}
+
+/**
+ * 让上面那个 hook **被信任** —— 不信任的 hook 是**静默不跑**的。
+ *
+ * codex 按「hook 定义的内容哈希」记信任。哈希算法没公开，但它自己会报：
+ * 起一个 `codex app-server`（本地 stdio JSON-RPC，**不调模型、不花钱**）问
+ * `hooks/list`，回来的每条里就带着 `key` 和 `currentHash`。把这两个原样填进
+ * `hooks.state`，trustStatus 当场从 untrusted 变 trusted（实测）。
+ *
+ * 【写法差一个引号就整段失效，而且是静默的。】三种写法实测下来只有一种能过：
+ *
+ *   ✗ trusted_hash='sha256:…'        单引号 → 整个 hooks 段消失，零报错
+ *   ✗ hooks.state.'KEY'.trusted_hash=…  点号路径 → 同上
+ *   ✓ hooks.state={'KEY'={trusted_hash="sha256:…"}}
+ *
+ * key **必须**是 TOML 字面串（单引号）—— 它里面有反斜杠，双引号串会把 `\<`
+ * 当非法转义；hash **必须**是双引号串。两个反过来都不行。
+ *
+ * key 本身是个常量（`C:\<session-flags>\config.toml:…`，跟 CODEX_HOME 在哪个盘
+ * 无关，二进制里能直接搜到这个字面量），所以只有 hash 需要问。而 hash 只跟
+ * 命令串有关 —— 也就是只跟这台机器上 node 和 notify.js 的路径有关，
+ * 存一次就够了，换了安装位置才需要重问。
+ */
+// 反斜杠在 JS 串里必须转义 —— 写成 \< 的话 JS 直接把反斜杠吞掉（不是合法转义），
+// 拼出来的 key 就跟 codex 报的对不上，于是信任静默失效
+const CODEX_HOOK_KEY = 'C:\\<session-flags>\\config.toml:permission_request:0:0';
+
+function codexTrustArgs(hash) {
+  if (!hash || !/^sha256:[0-9a-f]{64}$/.test(String(hash))) return [];
+  return ['-c', "hooks.state={'" + CODEX_HOOK_KEY + "'={trusted_hash=" +
+                JSON.stringify(String(hash)) + '}}'];
+}
+
+/**
+ * 问 codex 要那个哈希。**只在没存过、或者装的位置变了的时候跑一次。**
+ *
+ * 起 app-server → initialize → hooks/list → 抠 currentHash → 关掉。约 2 秒，
+ * 纯本地。拿不到就回 null，调用方那边照常开窗（只是这次没有信任，
+ * codex 会自己弹一个「Hooks need review」让用户点一下，也能用）。
+ */
+function probeCodexHookHash({ bin, notifyFile, nodeBin, timeoutMs = 9000 }, done) {
+  const watch = codexWatchArgs(notifyFile, nodeBin);
+  if (!watch.length) return done(null);
+
+  let child = null, finished = false, buf = '';
+  const finish = (v) => {
+    if (finished) return;
+    finished = true;
+    try { if (child) child.kill(); } catch (_) { /* 已经没了 */ }
+    done(v);
+  };
+
+  try {
+    const isBatch = /\.(cmd|bat)$/i.test(String(bin));
+    child = spawn(bin, isBatch ? ['app-server'].concat(watch).map(quoteForCmd) : ['app-server'].concat(watch),
+                  { shell: isBatch, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+  } catch (_) { return finish(null); }
+
+  child.on('error', () => finish(null));
+  child.stdout.on('data', (d) => {
+    buf += d.toString('utf8');
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 1);
+      if (!line.trim()) continue;
+      let j; try { j = JSON.parse(line); } catch (_) { continue; }
+      if (j.id !== 2) continue;
+      const hooks = ((((j.result || {}).data || [])[0] || {}).hooks) || [];
+      const hit = hooks.find((h) => h && h.eventName === 'permissionRequest');
+      finish(hit && hit.currentHash ? String(hit.currentHash) : null);
+    }
+  });
+
+  const send = (o) => { try { child.stdin.write(JSON.stringify(o) + '\n'); } catch (_) { /* 死了就算 */ } };
+  send({ jsonrpc: '2.0', id: 1, method: 'initialize',
+         params: { clientInfo: { name: 'waifucode', title: 'WaifuCode', version: '1.0.0' } } });
+  setTimeout(() => send({ jsonrpc: '2.0', id: 2, method: 'hooks/list', params: {} }), 1500);
+  setTimeout(() => finish(null), timeoutMs);
+}
+
+/** term-shell 那边 quoteArg 的同款（`.cmd` 走 shell 时零转义，得自己包） */
+function quoteForCmd(a) {
+  const s = String(a).replace(/\r?\n/g, ' ');
+  return /["\s]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+/**
  * 拼 codex 的启动参数。跟 claude 那份（term-shell 里的 claudeArgs）的差别：
  *
  *   · **没有 --session-id / --resume** —— codex 的会话 id 自己生成，不收外派的。
@@ -85,6 +242,15 @@ function codexArgs(spec, useResume) {
   // 接不上的情况（没认领过 / 文件没了）上游已经把 useResume 算成 false。
   if (useResume && spec.codexSessionId) args.push('resume', spec.codexSessionId);
   args.push(...(PERM[spec.permissionMode] || PERM.auto));
+  // 让她能感知「codex 停下来问你了」。只有开终端这条路带（spec.notifyFile
+  // 由 terminals.js 给），陪聊那两条（codexChatArgs / codexGreetArgs）不带 ——
+  // 那是我们自己调的进程，本来就直接读输出
+  if (spec.notifyFile) {
+    args.push(...codexWatchArgs(spec.notifyFile, spec.nodeBin));
+    // 不带信任的话这个 hook 是**静默不跑**的。哈希由 main.js 问过一次存在
+    // config 里（probeCodexHookHash）；没存上就只是这次没提醒，不影响干活
+    args.push(...codexTrustArgs(spec.codexHookHash));
+  }
   // 模型：面板上 codex 线不选模型（跟 ~/.codex/config.toml 走），
   // 但管道留着 —— 哪天要选了只用改面板
   if (spec.model) args.push('-m', spec.model);
@@ -142,7 +308,7 @@ function readHead(file, n) {
  * 剩下的真空窗：用户在同一目录、启动后 90 秒内自己也开了一个 codex ——
  * 谁先落盘认谁，认错了钱和「接着聊」会串线。够罕见，认了。
  */
-function findCodexSession({ dir, sinceMs, claimed, expectId, root }) {
+function findCodexSession({ dir, sinceMs, claimed, expectId, freshWithinMs, root }) {
   const base = root || codexSessionsRoot();
   const want = path.resolve(dir).toLowerCase();
   const skip = claimed || new Set();
@@ -164,6 +330,11 @@ function findCodexSession({ dir, sinceMs, claimed, expectId, root }) {
       try { st = fs.statSync(full); } catch (_) { continue; }
       const born = st.birthtimeMs || st.mtimeMs;
       if (born < sinceMs - 5000) continue;
+      // 晚认领（开窗 90 秒后才配上的）只认**刚写过的**档案 —— 认领窗取消后，
+      // 「已出列死线」的旧档案会在 claimed 名单失忆（重启/出列）后被捡走：
+      // 整段汇报重播 + 已入账的钱二次入账（评审实测过整条路径）。
+      // 活会话在持续写、mtime 永远新鲜，这道闸只拦「早就不再写的死档案」
+      if (freshWithinMs && Date.now() - st.mtimeMs > freshWithinMs) continue;
       const head = readHead(full, 8192);
       if (!head.includes('"type":"session_meta"')) continue;
       const id = (/"session_id":"([0-9a-fA-F-]{36})"/.exec(head) || [])[1];
@@ -290,7 +461,8 @@ function collectPatchFiles(patch, files) {
 /**
  * 从 fromOffset 往后读一段档案：这段时间里她干了什么。
  *
- * claude 的监督靠 hook 推事件；codex 没有 hook，但它的会话档案是**实时**写的，
+ * claude 的监督靠 hook 推事件；codex 的 hook 只挂了「等你确认」那一个（见 codexWatchArgs —— 挂多了每一下都要起一个 node 进程，而 codex 是阻塞等它的），
+ * 「她干到哪一步了」还是靠读档案：它的会话档案是**实时**写的，
  * 每一轮都有现成的记号：
  *   · task_complete —— 一轮干完，**last_agent_message 就是她这轮最后说的话**
  *     （出错的轮可能是 null）
@@ -476,7 +648,7 @@ function codexModelOf(file) {
 }
 
 module.exports = {
-  onPath, resolveCodexBin, codexInstalled, codexArgs, PERM,
+  onPath, resolveCodexBin, codexInstalled, codexArgs, PERM, codexPermWords, codexWatchArgs, codexTrustArgs, probeCodexHookHash,
   codexSessionsRoot, findCodexSession, codexUsage, codexPriceFor, codexGlance, pickPrompt,
   codexChatArgs, codexGreetArgs, codexPriceUsage, findRolloutById, codexModelOf,
 };

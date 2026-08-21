@@ -9,12 +9,17 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
+
+// 算钱那块要读 ~/.claude/projects，第 18 节要在里面摆假会话文件 ——
+// **必须赶在 require terminals（它里面 require 了 cost）之前**把家指到临时目录，
+// 不然读的是你真实的会话记录
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-termlife-'));
+process.env.CLAUDE_HOME = TMP;
+
 const {
   TerminalManager, pidAlive, spokenReport,
   checkDanger, isInside, filePathOf,
 } = require('../src/terminals');
-
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-termlife-'));
 
 let bad = 0;
 const check = (cond, label) => {
@@ -625,6 +630,241 @@ const specOf = (id, name) => ({
           '**close 后到不许把「已关」翻回「干完了」** —— 窗口都没了');
 
     tm5.dispose();
+  }
+
+  console.log('\n[18] 她在窗口里换了会话，线要跟过去（「接着聊」的地基）');
+  {
+    /**
+     * 【不跟过去的话，「接着聊」是个空壳。】
+     *
+     * 开窗口时我们 `--session-id <自己发的>` 指一条新会话，但用户在窗口里敲
+     * `/resume` 挑另一条（CLAUDE.md 里推荐的就是这个做法）、或者 `/clear` 一下，
+     * claude 从此写的是**别的 jsonl**。我们记的那个 id 一个字节都没落盘 →
+     * 点「接着聊」开出来的是条崭新的空会话，昨天聊一整天的事她全不记得。
+     * 翻过本机 registry：46 条线里 22 条的 jsonl 根本不存在，全是这个。
+     */
+    const tmR = new TerminalManager({ storeDir: TMP, getConfig: () => ({}), log: () => {} });
+
+    // 摆一份「用户 /resume 过去的那条老会话」，里面已经花了 $25
+    const projDir = path.join(TMP, '.claude', 'projects',
+                              path.resolve(TMP).replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(projDir, { recursive: true });
+    const OLD = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const row = JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-opus-5', usage: { output_tokens: 1e6 } },
+    }) + '\n';
+    const oldFile = path.join(projDir, OLD + '.jsonl');
+    fs.writeFileSync(oldFile, row, 'utf8'); // $25
+
+    const spec = { ...specOf('w940', '换过会话的'), laneId: 'L940', sessionId: 'sess-w940' };
+    fs.writeFileSync(path.join(tmR.specDir, 'w940.json'), JSON.stringify(spec), 'utf8');
+    tmR.items.set('w940', tmR._makeRecord(spec, { pid: process.pid }));
+
+    let told = null;
+    tmR.on('claude-session', (e) => { told = e; });
+
+    // hook 事件报上来一个**不一样**的 session_id = 她在窗口里换会话了
+    tmR.onHookEvent({ waifuTermId: 'w940', hook_event_name: 'UserPromptSubmit',
+                      session_id: OLD, prompt: '接着上次那个' });
+
+    const r = tmR.items.get('w940');
+    check(r.sessionId === OLD, '线跟到了她真正在用的那条会话');
+    check(told && told.laneId === 'L940' && told.sessionId === OLD,
+          '**喊了一声** —— main.js 靠它把真身写进 registry，不喊等于没改');
+    check(JSON.parse(fs.readFileSync(path.join(tmR.specDir, 'w940.json'), 'utf8')).sessionId === OLD,
+          '回写进 spec —— 桌宠重启 _adopt 认回这个窗口时才接得上');
+
+    // 钱：老会话里那 $25 是**别的窗口**花的，不许算到这一条头上
+    tmR._refreshCost(r, true);
+    check(Math.abs(r.costUsd) < 1e-9,
+          '**resume 到一条花过钱的老会话，历史不算这个窗口头上**（$25 → $0）');
+
+    fs.appendFileSync(oldFile, row, 'utf8'); // 这个窗口自己又花了 $25
+    tmR._refreshCost(r, true);
+    check(Math.abs(r.costUsd - 25) < 1e-6, '换会话之后新花的才算它的（$25）');
+
+    // 文件被清空（换了一份 / 被清过）：钱只增不减，绝不能蹦出负数
+    fs.writeFileSync(oldFile, '', 'utf8');
+    tmR._refreshCost(r, true);
+    check(r.costUsd >= 0, '**会话文件被清空也不许算出负金额**');
+
+    // 同一个 id 再报一遍不算「换了」—— 别每来一个 hook 事件就重算一次基线
+    const before = r.costUsd;
+    told = null;
+    tmR.onHookEvent({ waifuTermId: 'w940', hook_event_name: 'PostToolUse', session_id: OLD });
+    check(told === null && Math.abs(r.costUsd - before) < 1e-9,
+          'id 没变就什么都不做（不重算基线、不重写 spec）');
+
+    // codex 有它自己那套认领，这条路不许碰它
+    const cspec = { ...specOf('w941', 'codex 的'), laneId: 'L941', agent: 'codex' };
+    fs.writeFileSync(path.join(tmR.specDir, 'w941.json'), JSON.stringify(cspec), 'utf8');
+    tmR.items.set('w941', tmR._makeRecord(cspec, { pid: process.pid }));
+    tmR.onHookEvent({ waifuTermId: 'w941', hook_event_name: 'UserPromptSubmit', session_id: OLD });
+    check(tmR.items.get('w941').sessionId === cspec.sessionId,
+          'codex 的线不走这条（它的会话是从 ~/.codex/sessions 认领的）');
+
+    tmR.dispose();
+  }
+
+  console.log('\n[19] 钱不许记两遍（三个口子，都是实跑复现过的）');
+  {
+    const tmC = new TerminalManager({ storeDir: TMP, getConfig: () => ({}), log: () => {} });
+    const projDir = path.join(TMP, '.claude', 'projects',
+                              path.resolve(TMP).replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(projDir, { recursive: true });
+    const row = JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-opus-5', usage: { output_tokens: 1e6 } },
+    }) + '\n'; // 每行 $25
+
+    // ① 关掉的线不许跟着新窗口一起涨
+    //    list() 每 3 秒对每条 rec 刷一遍。你点「接着聊」之后，变暗的老线跟
+    //    新窗口读的是同一份 jsonl 的同一个 total —— 面板上同一笔钱摆两遍
+    const S1 = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const f1 = path.join(projDir, S1 + '.jsonl');
+    fs.writeFileSync(f1, row, 'utf8');
+    const sp1 = { ...specOf('w950', '变暗的老线'), sessionId: S1 };
+    fs.writeFileSync(path.join(tmC.specDir, 'w950.json'), JSON.stringify(sp1), 'utf8');
+    const old = tmC._makeRecord(sp1, { pid: process.pid });
+    tmC.items.set('w950', old);
+    tmC._refreshCost(old, true);
+    const frozen = old.costUsd;
+    old.status = 'closed';
+    fs.appendFileSync(f1, row, 'utf8'); // 「接着聊」开出的新窗口又花了 $25
+    tmC._refreshCost(old);
+    check(Math.abs(old.costUsd - frozen) < 1e-9,
+          '**变暗的线不再跟着涨** —— 那笔是新窗口花的，不是它的');
+    tmC._refreshCost(old, true);
+    check(old.costUsd > frozen, '但关窗结算那一次（force）照样算得到');
+
+    // ② costPaid 要落盘：不落的话重启一次整条会话的钱再记一遍
+    const S2 = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+    fs.writeFileSync(path.join(projDir, S2 + '.jsonl'), row + row, 'utf8'); // $50
+    const sp2 = { ...specOf('w951', '重启前'), sessionId: S2 };
+    const specFile2 = path.join(tmC.specDir, 'w951.json');
+    fs.writeFileSync(specFile2, JSON.stringify(sp2), 'utf8');
+    const r2 = tmC._makeRecord(sp2, { pid: process.pid });
+    tmC.items.set('w951', r2);
+    let billed = 0;
+    tmC.on('cost', (e) => { billed += e.costUsd; });
+    tmC._settleCost(r2);
+    check(Math.abs(billed - 50) < 1e-6, '头一次结算记了 $50');
+    check(Math.abs(JSON.parse(fs.readFileSync(specFile2, 'utf8')).costPaid - 50) < 1e-6,
+          '**costPaid 落进 spec 了** —— 原来只有 codex 线落，claude 线一直是漏的');
+
+    // 模拟桌宠重启：_makeRecord 从 spec 认回来，再结算一次
+    const r2b = tmC._makeRecord(JSON.parse(fs.readFileSync(specFile2, 'utf8')),
+                                { pid: process.pid });
+    tmC.items.set('w951', r2b);
+    billed = 0;
+    tmC._settleCost(r2b);
+    check(Math.abs(billed) < 1e-9,
+          '**重启认回来之后不再重记** —— 原来这儿整条会话的钱会再进一遍流水');
+
+    // ③ 两条线绑上同一条会话时，只留一个记账的
+    const S3 = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+    const f3 = path.join(projDir, S3 + '.jsonl');
+    fs.writeFileSync(f3, row, 'utf8'); // $25
+    const spB = { ...specOf('w960', 'B 线'), laneId: 'L960', sessionId: S3 };
+    fs.writeFileSync(path.join(tmC.specDir, 'w960.json'), JSON.stringify(spB), 'utf8');
+    const B = tmC._makeRecord(spB, { pid: process.pid });
+    tmC.items.set('w960', B);
+    tmC._refreshCost(B, true);
+
+    const spA = { ...specOf('w961', 'A 线'), laneId: 'L961', sessionId: 'sess-w961' };
+    fs.writeFileSync(path.join(tmC.specDir, 'w961.json'), JSON.stringify(spA), 'utf8');
+    const A = tmC._makeRecord(spA, { pid: process.pid });
+    tmC.items.set('w961', A);
+
+    // 你在 A 窗口里敲 /resume 挑了 B 那条会话
+    tmC.onHookEvent({ waifuTermId: 'w961', hook_event_name: 'UserPromptSubmit', session_id: S3 });
+    check(A.sessionId === S3, 'A **跟过去了**（不跟的话「接着聊」又变回开空会话）');
+
+    fs.appendFileSync(f3, row, 'utf8'); // 之后又花了 $25
+    tmC._refreshCost(A, true); tmC._refreshCost(B, true);
+    check(Math.abs(B.costUsd - 25) < 1e-6, '**B 的账冻在换过去那一刻**（还是 $25）');
+    check(Math.abs(A.costUsd - 25) < 1e-6, '往后的 $25 只算 A 一份');
+    check(Math.abs((A.costUsd + B.costUsd) - 50) < 1e-6,
+          '**两条线加起来正好是文件里的真实总额**，一分不多');
+
+    tmC.dispose();
+  }
+
+  console.log('\n[20] 在窗口里敲 /clear 或 /resume，不算「活干完了」');
+  {
+    /**
+     * claude 的 SessionEnd reason 枚举一共五个（从 claude.exe 里挖的原文：
+     * ["clear","resume","logout","prompt_input_exit","other"]），前两个是
+     * **她换了条会话接着聊**，人还在。原来无条件翻 done，后果三层全是哑的：
+     * 白结算一次心情、rec.finished 再也不复位（这窗口真正干完那次永远不汇报）、
+     * 两道「别开第二个窗口」的闸对它全瞎。
+     */
+    const tmS = new TerminalManager({ storeDir: TMP, getConfig: () => ({}), log: () => {} });
+    let finished = 0;
+    tmS.on('finish', () => { finished++; });
+
+    for (const reason of ['clear', 'resume']) {
+      const id = 'w97' + (reason === 'clear' ? 0 : 1);
+      const sp = { ...specOf(id, reason), laneId: 'L' + id };
+      fs.writeFileSync(path.join(tmS.specDir, id + '.json'), JSON.stringify(sp), 'utf8');
+      const r = tmS._makeRecord(sp, { pid: process.pid, turns: 3 });
+      tmS.items.set(id, r);
+      tmS.onHookEvent({ waifuTermId: id, hook_event_name: 'SessionEnd', reason });
+      check(r.status !== 'done' && !r.finished,
+            '`/' + reason + '` 之后她**没有**以为活干完了');
+      check(tmS.livesFor(TMP).some((x) => x.id === id),
+            '`/' + reason + '` 之后这条线还算「开着的」（两道闸看得见它）');
+    }
+    check(finished === 0, '**一次都没结算** —— 白得意/白低落一次是要人命的');
+
+    // 真结束还是要照常翻 done
+    const sp = { ...specOf('w972', '真干完的') };
+    fs.writeFileSync(path.join(tmS.specDir, 'w972.json'), JSON.stringify(sp), 'utf8');
+    tmS.items.set('w972', tmS._makeRecord(sp, { pid: process.pid, turns: 1 }));
+    tmS.onHookEvent({ waifuTermId: 'w972', hook_event_name: 'SessionEnd', reason: 'other' });
+    check(tmS.items.get('w972').status === 'done', 'reason=other 照常算干完了');
+    // 没带 reason 的要用**新 rec** 测 —— w972 已经 finished，_finish 的去重闸
+    // 会早退，对着它再发一条断言什么都测不到（评审抓的死断言）
+    const sp3 = { ...specOf('w973', '老版没 reason 的') };
+    fs.writeFileSync(path.join(tmS.specDir, 'w973.json'), JSON.stringify(sp3), 'utf8');
+    tmS.items.set('w973', tmS._makeRecord(sp3, { pid: process.pid, turns: 1 }));
+    tmS.onHookEvent({ waifuTermId: 'w973', hook_event_name: 'SessionEnd' });
+    check(tmS.items.get('w973').status === 'done' && finished === 2,
+          '没带 reason 的（老行为）也照常算干完了');
+
+    tmS.dispose();
+  }
+
+  console.log('\n[21] codex 停下来问你了 —— 她得知道（跟 claude 同一个下游）');
+  {
+    /**
+     * claude 那条靠 Notification hook 报「在等你确认」，于是她转过来看着你、
+     * 弹气泡、念一句，点她还能直接把终端调出来（test-stage.js 第 14 节钉着）。
+     * codex 线上原来这块全瞎：全项目只有 Notification 那一处给 status 赋过
+     * 'waiting'，于是 codex 卡在确认框上时面板还写着「干着呢」。
+     * 现在靠命令行挂的 PermissionRequest hook 补上（agents.js codexWatchArgs）。
+     */
+    const tmA = new TerminalManager({ storeDir: TMP, getConfig: () => ({}), log: () => {} });
+    const sp = { ...specOf('w980', 'codex 的'), agent: 'codex', laneId: 'L980' };
+    fs.writeFileSync(path.join(tmA.specDir, 'w980.json'), JSON.stringify(sp), 'utf8');
+    tmA.items.set('w980', tmA._makeRecord(sp, { pid: process.pid }));
+
+    let called = null;
+    tmA.on('attention', (e) => { called = e; });
+    const took = tmA.onHookEvent({ waifuTermId: 'w980', waifuEvent: 'CodexAttention' });
+
+    check(took === true, '这条事件被认领了（是我们开的窗口）');
+    check(tmA.items.get('w980').status === 'waiting',
+          '**状态翻成「在等你确认」** —— 她转过来看你、面板变色全靠它');
+    check(called && called.kind === 'confirm' && called.text.includes('等你确认'),
+          '**喊了你** —— 气泡 + 语音走的是跟 claude 一模一样的那条 attention');
+
+    // 不是我们开的窗口一概不认（你自己敲的 codex 不该算到她头上）
+    check(tmA.onHookEvent({ waifuTermId: '不认识的', waifuEvent: 'CodexAttention' }) === false,
+          '不是我们开的窗口 → 不认领');
+
+    tmA.dispose();
   }
 
   tm.dispose();

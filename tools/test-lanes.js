@@ -144,6 +144,44 @@ for (const x of all) {
 console.log('    一共 ' + all.length + ' 条线，' + seen.size + ' 个不同的会话 id');
 check(!dup, '**没有任何两条线共用一个会话 id**' + (dup ? '（撞的是 ' + dup + '）' : ''));
 
+console.log('\n[9] 她在窗口里换了会话，这条线要跟过去');
+{
+  /**
+   * 【这条守的是「接着聊」的命根子。】
+   *
+   * 我们开窗口时 `--session-id <自己发的>` 指一条新会话，但用户在窗口里敲
+   * `/resume` 挑另一条（CLAUDE.md 里推荐的正是这个做法）、或者 `/clear` 一下，
+   * claude 从此写的就是别的 jsonl —— 我们记的那个 id **一个字节都没落盘**。
+   * 于是点「接着聊」时 sessionExists() 说那条不在，开出来的是条崭新的空会话。
+   *
+   * 实地翻过本机 registry：46 条线里 22 条的 jsonl 根本不存在，全是这个原因。
+   * 真实 id 由 claude 的 hook 事件带上来（terminals.js 的 _rebindSession
+   * → emit('claude-session') → main.js → 这儿）。
+   */
+  const m9 = sm();
+  const lane = m9.prepareTerminal({ projectPath: PROJ, laneName: '查支付' });
+  const REAL = 'ffffffff-ffff-ffff-ffff-ffffffffffff'; // 用户 /resume 挑中的那条
+  mkSession(REAL);
+
+  m9.rememberSession(PROJ, lane.laneId, REAL);
+  const back = m9.prepareTerminal({ projectPath: PROJ, laneId: lane.laneId });
+  check(back.sessionId === REAL, '**接着聊接的是她真正在写的那条**，不是我们发出去的空壳');
+  check(back.resume === true, '那条真的在磁盘上，所以敢 --resume');
+  check(back.laneName === '查支付', '线名没被冲掉');
+
+  // 防呆：认不出来的一律不动，别把一条好线改瞎
+  m9.rememberSession(PROJ, lane.laneId, '');
+  check(m9.prepareTerminal({ projectPath: PROJ, laneId: lane.laneId }).sessionId === REAL,
+        '空 id 不许覆盖（hook 事件缺字段时别把线改瞎）');
+  m9.rememberSession(PROJ, 'L不存在的线', 'dddddddd-dddd-dddd-dddd-dddddddddddd');
+  check(m9.prepareTerminal({ projectPath: PROJ, laneId: lane.laneId }).sessionId === REAL,
+        '线号对不上就当没发生（线可能已经被清掉了，这不是要紧事）');
+
+  // 还是那条铁律：换完之后也不许跟别的线撞
+  const other = m9.prepareTerminal({ projectPath: PROJ, laneName: '别的活' });
+  check(other.sessionId !== REAL, '换过会话的线不许跟新开的线撞在一起');
+}
+
 console.log('');
 console.log(bad === 0 ? '\x1b[32m全过了\x1b[0m' : '\x1b[31m' + bad + ' 项没过\x1b[0m');
 process.exit(bad === 0 ? 0 : 1);

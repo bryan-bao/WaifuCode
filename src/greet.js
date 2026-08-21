@@ -283,35 +283,34 @@ class Greeter {
   }
 
   /**
-   * codex 版的搭话。结构化输出走 --output-schema（schema 落一个临时文件），
-   * 人设+情境垫进开场白（codex 没有 --system-prompt 的口子，实测开场白压得住）。
+   * codex 版的搭话。**JSON 靠提示词要，不用 --output-schema** —— 走中转的
+   * codex 对带 schema 的请求一律 502（实测 55 秒全灭），去掉后 5 秒就回；
+   * 表情名单直接列进提示词（enum 不再有别的路到 codex）。
+   * 人设+情境垫进开场白（codex 没有 --system-prompt 的口子，实测压得住）。
    * prompt 走 stdin，多行文本不过命令行。解析宽一点：答复里只抠第一个 { 到
    * 最后一个 } —— 模型偶尔会在 JSON 外面客套一句。
    */
   _greetCodex(ctx) {
     this.busy = true;
 
-    let schemaFile = path.join(os.tmpdir(), 'waifu-greet-schema.json');
-    try {
-      fs.writeFileSync(schemaFile, JSON.stringify(SCHEMA), 'utf8');
-    } catch (_) {
-      // 写不上就**别把参数递出去** —— codex 对着不存在的 schema 文件直接
-      // exit 1，那不是降级是整次报废（评审实测）。不带 schema 靠提示词也能要到 JSON
-      schemaFile = null;
-    }
+    // **不用 --output-schema，靠提示词要 JSON。** 实机抓过（2026-08-21）：
+    // 走中转的 codex（relay 不支持结构化输出接口）对带 schema 的请求一律
+    // 502、重试五次耗满 55 秒 —— 摸头搭话因此全军覆没（日志里连着四条
+    // 「想太久了」）。去掉 schema 之后同一句话 5.4 秒就回来了，JSON 也规整
+    // （下面反正有宽松解析兜着）。官方直连虽然吃 schema，但没有它一样出
+    // JSON —— 少一个只在部分环境能用的开关，比多一层假保险强。
 
     const prompt = '（角色设定，务必遵守，绝不复述这段：\n' + this._prompt(ctx) + '\n' +
       '绝不自称 Codex、GPT 或 AI 助手。不用任何工具，这只是说一句话。）\n\n' +
       (ctx.kind === 'pet' ? '（他摸了摸你的头）' : '（他戳了戳你）') + '\n\n' +
-      '只输出一个符合要求的 JSON 对象（字段：say、face、offer），别的什么都别说。';
+      '只输出一个 JSON 对象，长这样：{"say":"你要说的话","face":"happy",' +
+      '"offer":{"kind":"none","label":""}}。face 只能从这些里挑：' +
+      SCHEMA.properties.face.enum.join('/') + '。' +
+      '大多数时候 offer 就是 none。JSON 以外一个字都别输出。';
 
     const bin = agents.resolveCodexBin();
     const useShell = /\.(cmd|bat)$/i.test(bin);
-    // shell:true（npm 的 .cmd）时命令行零转义：schema 路径在用户名带空格的
-    // 机器上会被 cmd 拆成三截（评审实测）。就这一个参数要过路径，手动包引号
-    const args = agents.codexGreetArgs({
-      schemaFile: schemaFile && useShell ? '"' + schemaFile + '"' : schemaFile,
-    });
+    const args = agents.codexGreetArgs({}); // 不带 schema（见上）—— 顺带没有路径过命令行的转义问题了
 
     return new Promise((resolve) => {
       let done = false;
