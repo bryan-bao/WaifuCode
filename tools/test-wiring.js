@@ -126,6 +126,19 @@ console.log('\n[5] 渲染层调的 window.waifu.xxx()，preload 里得有');
           : 'stage.js 用到的 mock-preload 都有（' + stageCalls.size + ' 个）');
 }
 
+console.log('\n[6] 拖动她不许用 setPosition / 现读现写尺寸');
+{
+  // 显示缩放不是 100% 的机器上，setPosition（以及 getSize 读回再写）每趟
+  // 都被 DIP↔物理像素的四舍五入撑大 1px，拖动高频调用 = 拖着拖着她变大。
+  // 发给别人的机器上实测撞过（2026-08-22）。只许 setBounds + 写死的 petWinSize
+  const dragBody = main.slice(main.indexOf("ipcMain.on('pet:drag'"), main.indexOf("ipcMain.on('pet:drag'") + 1600);
+  check(dragBody.length > 100, "pet:drag 的处理还得在 main.js 里");
+  check(!dragBody.includes('setPosition'), '拖动不许用 setPosition（缩放屏上会把窗口撑大）');
+  check(!dragBody.includes('getSize'), '拖动不许现读窗口尺寸（读回的是被撑大的值，形成回路）');
+  check(dragBody.includes('petWinSize') && dragBody.includes('setBounds'),
+        '拖动用 setBounds + 建窗时定死的 petWinSize');
+}
+
 console.log('');
 console.log(bad === 0 ? '\x1b[32m全过了\x1b[0m' : '\x1b[31m' + bad + ' 项没过\x1b[0m');
 process.exit(bad === 0 ? 0 : 1);

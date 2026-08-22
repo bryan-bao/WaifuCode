@@ -116,6 +116,11 @@ const PET_W = 420;
 // 窗口整块是透明的，所以这段空带在桌面上看不见 —— 但气泡有地方待了，
 // 不会像以前那样直接浮在她脸上。加高是往上长的，她还站在原来那个位置。
 const PET_H = 540 + 160;
+// 拖动时要往 setBounds 里回填的「本意尺寸」。**绝不能现读现写**：显示缩放
+// 不是 100% 的机器上，getSize/setPosition 每来回一趟就被四舍五入撑大 1 像素，
+// 拖一路她就肉眼可见地长个儿（发出去的机器上实测撞过）。写死一个常量进去，
+// 同一个逻辑尺寸每次换算结果一样，就长不了
+let petWinSize = { w: PET_W, h: PET_H };
 
 // ---------------------------------------------------------------------------
 // 角色窗口
@@ -124,6 +129,7 @@ function createPetWindow() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
   // 屏幕矮的时候（小笔记本、缩放拉满）别让窗口顶出可视区
   const h = Math.min(PET_H, Math.max(360, height - 48));
+  petWinSize = { w: PET_W, h };
 
   petWin = new BrowserWindow({
     width: PET_W,
@@ -1655,14 +1661,15 @@ function wireIpc() {
       const GRAB = 80;
       const { x: wx, y: wy, width: ww, height: wh } =
         screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-      const [w, h] = petWin.getSize();
-      nx = Math.max(wx - w + GRAB, Math.min(wx + ww - GRAB, nx));
+      nx = Math.max(wx - petWinSize.w + GRAB, Math.min(wx + ww - GRAB, nx));
       ny = Math.max(wy, Math.min(wy + wh - GRAB, ny)); // 顶部不许出去，出去就抓不着了
     } catch (_) {
       /* 取不到屏幕信息就不夹，总比拖不动强 */
     }
 
-    petWin.setPosition(nx, ny);
+    // setBounds 带上写死的尺寸，不走「只挪位置」的那条 API：那条在缩放屏上
+    // 每次内部换算都可能把窗口撑大 1px，拖动高频调用就成了「拖着拖着变大」
+    petWin.setBounds({ x: nx, y: ny, width: petWinSize.w, height: petWinSize.h });
   });
 
   /**
