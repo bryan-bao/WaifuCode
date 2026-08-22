@@ -595,9 +595,8 @@ async function doTerminal() {
   });
 
   if (r.ok) {
-    msg($('agent').value === 'codex'
-      ? '终端开好了，在「' + r.name + '」目录下。这条是 Codex 的线，她只管开关窗口'
-      : '终端开好了，在「' + r.name + '」目录下。她会盯着，做完一段就来告诉你', 'ok');
+    // Codex 线三期之后两边待遇一样了，不再分开说
+    msg('终端开好了，在「' + r.name + '」目录下。她会盯着，做完一段就来告诉你', 'ok');
     clearTask();
     refreshRecent();
     refreshTerms();
