@@ -108,6 +108,9 @@ function fillLook() {
     previewLook();
   });
 
+  // 她的大小：拖着滑杆窗口当场跟着变（主进程收到预览就调窗口尺寸）
+  slider('scale', 'look.scale', { onLive: previewLook, fmt: (v) => '×' + (v / 100).toFixed(2) });
+
   for (const k of ['smile', 'cheek', 'brow', 'browAngle', 'eyeX', 'eyeY']) {
     slider(k, 'look.' + k, { onLive: previewLook });
   }

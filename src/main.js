@@ -122,19 +122,50 @@ const PET_H = 540 + 160;
 // 同一个逻辑尺寸每次换算结果一样，就长不了
 let petWinSize = { w: PET_W, h: PET_H };
 
+// 「她的大小」（look.scale，设置页的滑杆）。她是适配窗口渲染的，所以放大 =
+// 把窗口按比例放大 —— 头肩比、点击判定、气泡占位全是按比例算的，渲染层
+// 一行不用改。**尺寸只有 petWinSize 一个源头**：缩放改它一次，拖动永远写
+// 它的常量值，「拖着拖着变大」那个坑不会因为加了缩放又回来
+function petScaleOf(cfg) {
+  const s = Number(((cfg || {}).look || {}).scale);
+  return s >= 0.5 && s <= 2 ? s : 1;
+}
+
+function petBaseH() {
+  try {
+    const { height } = screen.getPrimaryDisplay().workAreaSize;
+    return Math.min(PET_H, Math.max(360, height - 48));
+  } catch (_) { return PET_H; }
+}
+
+function applyPetScale(s) {
+  if (!petWin || petWin.isDestroyed()) return;
+  const w = Math.round(PET_W * s);
+  const h = Math.round(petBaseH() * s);
+  if (w === petWinSize.w && h === petWinSize.h) return;
+  // 脚底站住不动：往上、往两边长 —— 一放大就往下坠出屏幕的话没法调
+  const [x, y] = petWin.getPosition();
+  const nx = Math.round(x + (petWinSize.w - w) / 2);
+  const ny = y + (petWinSize.h - h);
+  petWinSize = { w, h };
+  petWin.setBounds({ x: nx, y: ny, width: w, height: h });
+}
+
 // ---------------------------------------------------------------------------
 // 角色窗口
 // ---------------------------------------------------------------------------
 function createPetWindow() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  const s = petScaleOf(loadConfig());
   // 屏幕矮的时候（小笔记本、缩放拉满）别让窗口顶出可视区
-  const h = Math.min(PET_H, Math.max(360, height - 48));
-  petWinSize = { w: PET_W, h };
+  const h = Math.round(Math.min(PET_H, Math.max(360, height - 48)) * s);
+  const w = Math.round(PET_W * s);
+  petWinSize = { w, h };
 
   petWin = new BrowserWindow({
-    width: PET_W,
+    width: w,
     height: h,
-    x: Math.max(0, width - PET_W - 24),
+    x: Math.max(0, width - w - 24),
     y: Math.max(0, height - h - 24),
     transparent: true,
     frame: false,
@@ -2080,7 +2111,10 @@ function wireIpc() {
   }));
 
   // 调外观时实时预览，不写盘 —— 拖滑块看不到效果就没法调
-  ipcMain.on('settings:preview-look', (_e, lookCfg) => send('look:apply', lookCfg || {}));
+  ipcMain.on('settings:preview-look', (_e, lookCfg) => {
+    send('look:apply', lookCfg || {});
+    applyPetScale(petScaleOf({ look: lookCfg }));
+  });
 
   ipcMain.handle('settings:try-voice', async (_e, voiceCfg) => {
     if (!voice) return { ok: false, error: '语音还没起来' };
@@ -2113,6 +2147,9 @@ function wireIpc() {
           voice._drop('换了音色');
         }
       }
+
+      // 「她的大小」：预览时窗口已经跟着了，这一步是落定（换角色那条路也得走到）
+      applyPetScale(petScaleOf(after));
 
       // 换角色：重新加载渲染层就行，整个应用不用重启
       if (before.modelPath !== after.modelPath) {
