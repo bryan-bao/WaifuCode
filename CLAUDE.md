@@ -36,6 +36,7 @@
   node tools/test-milestone.js         # 记日子：老存档不许被当成今天刚认识
   node tools/test-profiles.js          # 角色档案：表情名/动作组名对不上模型就红
   node tools/test-cost.js              # 算钱：单价、增量读不许重复计、半行不许算
+  node tools/test-update.js            # 局域网更新：文件名名单=防穿越的全部、校验不过必删包
   node tools/test-agents.js            # codex 线：权限映射宁紧勿松、小抄拼 prompt、关窗去留
   npx electron tools/test-stage.js     # 真模型，约 1 分钟
   ```

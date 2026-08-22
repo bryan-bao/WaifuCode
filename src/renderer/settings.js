@@ -191,6 +191,31 @@ function fillWork() {
   toggle($('sw-sup-speak'), get('supervise.speak', true), (v) => set('supervise.speak', v));
   toggle($('sw-sup-guard'), get('supervise.guard', true), (v) => set('supervise.guard', v));
   slider('gap', 'supervise.minGapSec', { scale: 1, fmt: (n) => n + '秒' });
+
+  // 版本与更新
+  $('up-source').value = get('update.source', '');
+  $('up-source').oninput = () => set('update.source', $('up-source').value.trim());
+  toggle($('sw-up-serve'), get('update.serve', false), (v) => set('update.serve', v));
+  window.waifu.appInfo().then((i) => {
+    $('up-cur').textContent = 'v' + i.version;
+    $('up-serve-hint').textContent =
+      '开了之后：把打好的 WaifuCode-x.y.z-安装版.exe 丢进 ' + i.updateDir +
+      '，让朋友在他那边的「更新源」里填 ' +
+      // 全列出来：装了 WSL2/VPN 的机器第一块很可能是虚拟网卡，挑错就白填
+      ((i.lanIPs && i.lanIPs.length)
+        ? i.lanIPs.map((ip) => ip + ':' + i.updatePort).join(' 或 ')
+        : '本机IP:' + i.updatePort) +
+      '（多个地址就试哪个通）。第一次开 Windows 会问防火墙，选「允许」。开关保存后生效。';
+  }).catch(() => {});
+  $('up-check').onclick = async () => {
+    $('up-state').textContent = '查着呢…';
+    // 查**输入框里现在这个**地址（刚粘完还没保存就点查是最自然的操作），
+    // 结论也只按主进程真查回来的说，不拿框里有没有字编
+    const r = await window.waifu.updateCheck($('up-source').value.trim());
+    $('up-state').textContent = !r.ok ? r.error
+      : r.hasUpdate ? '有新版 ' + r.latest + '！去派活面板标题旁点一下就能装'
+      : (r.latest ? '已经是最新（' + r.current + '）' : '没填更新源，没处查');
+  };
 }
 
 function fillHer() {

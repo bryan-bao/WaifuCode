@@ -56,6 +56,10 @@ contextBridge.exposeInMainWorld('waifu', {
   // 「用谁来干」选的 CLI 没装 → 报错旁点「帮我装」，她 npm -g 装好了喊你
   installAgent: (agent) => ipcRenderer.invoke('agent:install', agent),
 
+  // --- 版本更新（局域网分发）---
+  updateCheck: (src) => ipcRenderer.invoke('update:check', src),
+  updateApply: () => ipcRenderer.invoke('update:apply'),
+
   // --- 设置 ---
   openSettings: () => ipcRenderer.send('settings:open'),
   closeSettings: () => ipcRenderer.send('settings:close'),
@@ -97,6 +101,7 @@ contextBridge.exposeInMainWorld('waifu', {
       'term:change',
       'term:report',
       'agent:install-done', // 「帮我装」装完了（成没成都吱一声）
+      'update:available',   // 探到新版了（面板把版本号变成更新按钮）
       'chat:delta',
       'chat:done',
       'chat:error',

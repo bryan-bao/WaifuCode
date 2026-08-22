@@ -44,6 +44,7 @@
     "test:profiles": "node tools/test-profiles.js",
     "test:agents": "node tools/test-agents.js",
     "test:cost": "node tools/test-cost.js",
+    "test:update": "node tools/test-update.js",
     "scan-chcp": "node tools/scan-chcp.js",
     "pack": "node tools/pack.js",
     "faces": "electron tools/expression-sheet.js",

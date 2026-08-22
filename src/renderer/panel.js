@@ -669,6 +669,35 @@ window.waifu.on('session:done', (e) => {
 
 // 终端那边有任何风吹草动都立刻反映到列表上
 window.waifu.on('term:change', () => refreshTerms());
+// 版本号：平时安安静静待在标题旁，探到新版就变成能点的更新按钮
+let updVersion = null;
+function showVer(cur, upd) {
+  const el = $('ver');
+  if (upd) {
+    updVersion = upd;
+    el.className = 'upd';
+    el.textContent = '有新版 ' + upd + ' · 点我更新';
+    el.title = '当前 v' + cur + '，点一下下载并安装（装的时候她会先退出）';
+  } else {
+    el.className = '';
+    el.textContent = 'v' + (cur || '');
+    el.title = '当前版本';
+  }
+}
+window.waifu.appInfo().then((i) => showVer(i.version, i.updateAvailable)).catch(() => {});
+window.waifu.on('update:available', () => {
+  window.waifu.appInfo().then((i) => showVer(i.version, i.updateAvailable));
+});
+let verBusy = false; // 下载几十秒，重复点由主进程的在途锁兜底，这儿是第一道
+$('ver').onclick = async () => {
+  if (!updVersion || verBusy) return;
+  verBusy = true;
+  msg('下载新版 ' + updVersion + ' 中……下好她会拉起安装器然后先退出', 'ok', 600000);
+  const r = await window.waifu.updateApply();
+  verBusy = false;
+  if (!r || !r.ok) msg((r && r.error) || '没下下来', 'err');
+};
+
 window.waifu.on('agent:install-done', (p) => {
   msg(p.ok ? '装好了！再点一次「派活 / 开终端」就能用'
            : '没装上，原因在她的气泡里', p.ok ? 'ok' : 'err', 20000);

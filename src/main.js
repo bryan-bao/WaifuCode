@@ -35,6 +35,8 @@ const { Mood, LINES } = require('./mood');
 const { SessionManager, resolveClaudeBin, claudeInstalled } = require('./sessions');
 // codex 那一侧的适配（找 bin、判装没装、拼参数在 term-shell 里用）
 const agents = require('./agents');
+// 局域网版本更新：查新版/下载校验/当分发点，协议和边界见模块头注释
+const updates = require('./updates');
 const { startServer } = require('./server');
 const { profileFor } = require('./profiles');
 const { Voice } = require('./voice');
@@ -1367,6 +1369,115 @@ function installAgent(agent) {
   return { ok: true };
 }
 
+// ─── 局域网版本更新 ──────────────────────────────────────────────────────────
+const UPDATE_DIR = path.join(DATA_ROOT, 'updates');          // 发包侧：安装包丢这儿
+const UPDATE_DL = path.join(DATA_ROOT, 'update-download');   // 收包侧：下到这儿
+let updateSrv = null;      // 分发服务（开着才有）
+let updateLatest = null;   // 上次探到的远端 manifest —— 面板开晚了靠它补显示
+
+// 分发开关：让「现在的状态」向「存档想要的状态」看齐（启动、设置保存都走这儿）
+function syncUpdateServe(cfg) {
+  const want = !!(((cfg || {}).update || {}).serve);
+  const port = Number(((cfg || {}).update || {}).port) || 47200;
+  if (want === !!updateSrv) return;
+  if (!want) {
+    try { updateSrv.close(); } catch (_) { /* 关不上也没什么可做的 */ }
+    updateSrv = null;
+    log('[update] 分发关了');
+    return;
+  }
+  try { fs.mkdirSync(UPDATE_DIR, { recursive: true }); } catch (_) { /* 已存在 */ }
+  const srv = updates.createServer({ dir: UPDATE_DIR, log });
+  srv.on('error', (err) => {
+    // 典型是端口被占。别崩，说清楚就行
+    log('[update] 分发起不来: ' + err.message);
+    send('session:say', { name: '', text: '更新分发起不来：' + err.message + '（多半是 ' + port + ' 口被占了）' });
+    updateSrv = null;
+  });
+  srv.listen(port, () => log('[update] 分发开在 :' + port + '，包放 ' + UPDATE_DIR));
+  updateSrv = srv;
+}
+
+// 收包侧：查一次。有新版就亮面板，她也吱一声（同一个版本只吱一次）。
+// overrideSource：设置页「现在查一次」查的必须是**输入框里现在这个**，
+// 不是盘上存的那个 —— 刚粘完地址还没保存就点查是最自然的操作，查旧值
+// 等于谎报「已经是最新」（评审抓的）
+let updateLatestSrc = null; // updateLatest 是从哪个源探到的（下载要用同一个源）
+async function checkUpdate(overrideSource) {
+  const cfg = loadConfig();
+  const source = String(overrideSource != null ? overrideSource : ((cfg.update || {}).source || '')).trim();
+  const current = app.getVersion();
+  if (!source) {
+    // 源清空了，之前探到的新版也一起作废 —— 不清的话面板按钮僵在那儿
+    updateLatest = null;
+    updateLatestSrc = null;
+    return { ok: true, current, hasUpdate: false };
+  }
+  try {
+    const m = await updates.fetchLatest(source);
+    const hasUpdate = updates.cmpVer(m.version, current) > 0;
+    updateLatest = hasUpdate ? m : null;
+    updateLatestSrc = hasUpdate ? source : null;
+    if (hasUpdate) {
+      send('update:available', { version: m.version });
+      if ((cfg.update || {}).announced !== m.version) {
+        config.patch({ update: { announced: m.version } });
+        send('session:say', {
+          name: '',
+          text: '有新版 ' + m.version + ' 啦（现在是 ' + current + '）。派活面板标题旁点一下就能更新。',
+        });
+      }
+    }
+    return { ok: true, current, hasUpdate, latest: m.version };
+  } catch (err) {
+    return { ok: false, current, hasUpdate: false, error: '够不着更新源（' + source + '）：' + err.message };
+  }
+}
+
+// 收包侧：下载 + 校验 + 拉起安装器。装的时候我们得让路 —— 自己退出。
+// 在途锁：下载几十秒里用户完全可能再点一次按钮，两条流写同一个文件互相踩、
+// 校验失败那条还会把另一条正在写的删掉（评审抓的）—— 同一时刻只跑一单，
+// 重复点直接搭上正在跑的那单
+let updateApplying = null;
+function applyUpdate() {
+  if (!updateApplying) {
+    updateApplying = _applyUpdate().finally(() => { updateApplying = null; });
+  }
+  return updateApplying;
+}
+
+async function _applyUpdate() {
+  if (!updateLatest) {
+    const r = await checkUpdate();
+    if (!r.ok) return r;
+    if (!updateLatest) return { ok: false, error: '现在就是最新版（' + r.current + '）' };
+  }
+  const source = updateLatestSrc || ((loadConfig().update || {}).source || '').trim();
+  try {
+    // 上一轮的旧安装包别攒着 —— 一个上百 MB，只进不出等于白吃硬盘（评审抓的）
+    try { fs.rmSync(UPDATE_DL, { recursive: true, force: true }); } catch (_) { /* 没有就算了 */ }
+    const exe = await updates.download(source, updateLatest, UPDATE_DL);
+    // openPath 失败**不 reject**，只 resolve 一个错误串 —— 不看的话：安装器
+    // 被杀软拦了没起来，她却先喊「装完再见」然后自己退了，用户面前空无一物
+    const openErr = await shell.openPath(exe);
+    if (openErr) {
+      log('[update] 安装器拉不起来: ' + openErr);
+      return {
+        ok: false,
+        error: '包下好了，但安装器没拉起来：' + openErr
+             + '（多半被杀毒软件拦了。包在 ' + exe + '，可以手动跑）',
+      };
+    }
+    log('[update] 安装器起来了，退出让路');
+    send('session:say', { name: '', text: '新版下好啦，安装器出来了 —— 我先退下，装完再见！' });
+    setTimeout(() => app.quit(), 2500); // 给气泡和安装器一点起身时间
+    return { ok: true };
+  } catch (err) {
+    log('[update] 更新没成: ' + err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
 /**
  * 这个目录已经有终端开着了吗？
  *
@@ -2137,6 +2248,9 @@ function wireIpc() {
     if (!next || typeof next !== 'object') return { ok: false, error: '没收到配置' };
     try {
       const before = loadConfig();
+      // announced（她喊过哪个新版）是她自己的小本本，不归设置窗管 —— 设置窗
+      // 开着的当口她喊了一嗓子的话，保存旧快照会把这笔抹掉、下次又喊一遍
+      if (next.update) delete next.update.announced;
       const after = config.patch(next);
 
       // 语音的改动当场生效，不用重启
@@ -2150,6 +2264,9 @@ function wireIpc() {
 
       // 「她的大小」：预览时窗口已经跟着了，这一步是落定（换角色那条路也得走到）
       applyPetScale(petScaleOf(after));
+
+      // 更新分发开关跟着存档走
+      syncUpdateServe(after);
 
       // 换角色：重新加载渲染层就行，整个应用不用重启
       if (before.modelPath !== after.modelPath) {
@@ -2260,7 +2377,17 @@ function wireIpc() {
     claudeBin: resolveClaudeBin(),
     root: ROOT,
     dataRoot: DATA_ROOT,
+    version: app.getVersion(),
+    lanIPs: updates.lanIPs(),
+    updateDir: UPDATE_DIR,
+    updatePort: Number((loadConfig().update || {}).port) || 47200,
+    // 已经探到、还没装的新版本号（面板开晚了靠这个补显示）
+    updateAvailable: updateLatest ? updateLatest.version : null,
   }));
+
+  // 版本更新：手动查一次 / 下载并安装
+  ipcMain.handle('update:check', (_e, src) => checkUpdate(typeof src === 'string' ? src : undefined));
+  ipcMain.handle('update:apply', () => applyUpdate());
 }
 
 // ---------------------------------------------------------------------------
@@ -2423,6 +2550,12 @@ if (!app.requestSingleInstanceLock()) {
     startCursorWatch();
     startPresenceWatch();
     registerHotkey();
+
+    // 版本更新：分发开关对齐存档；开机 20 秒后查一次，之后每 4 小时一次
+    // （没填更新源的话 checkUpdate 空手就回，一次网络请求都不发）
+    syncUpdateServe(loadConfig());
+    setTimeout(() => { checkUpdate(); }, 20 * 1000);
+    setInterval(() => { checkUpdate(); }, 4 * 60 * 60 * 1000);
 
     // 调试模式：--shot 启动后截图存盘再退出。
     // 透明窗口没法靠肉眼隔空判断渲染对不对，有张图就能直接看出

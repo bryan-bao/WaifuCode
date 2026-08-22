@@ -302,6 +302,11 @@
   }
   #msg.ok { color: var(--acc); }
   #msg.err { color: var(--bad); }
+  #ver { color: var(--dim); font-size: 11px; margin-left: 2px; }
+  #ver.upd {
+    color: var(--acc); border: 1px solid var(--acc); border-radius: var(--r-s);
+    padding: 1px 7px; cursor: pointer;
+  }
   #msg button {
     margin-left: 8px; background: transparent; border: 1px solid var(--acc);
     color: var(--acc); border-radius: var(--r-s); font-size: 11px;
@@ -428,6 +433,7 @@
   <header>
     <span class="dot"></span>
     <strong>给她派个活</strong>
+    <span id="ver" title="当前版本"></span>
     <span class="spacer"></span>
     <select id="skin" title="面板换个皮肤，换完就记住">
       <option value="deep">深空</option>

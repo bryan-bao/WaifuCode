@@ -220,6 +220,15 @@
       <div class="sw" id="sw-sup-speak"><span class="box"></span><span class="t">汇报时出声</span></div>
       <div class="sw" id="sw-sup-guard"><span class="box"></span><span class="t">跑偏了喊我</span></div>
       <div class="row"><label>最短间隔</label><input type="range" id="k-gap" min="0" max="120"><span class="val" id="v-gap"></span></div>
+
+      <h3>版本与更新</h3>
+      <p class="hint">当前版本 <b id="up-cur">…</b>　<span id="up-state"></span></p>
+      <div class="row"><label>更新源</label><input type="text" id="up-source" spellcheck="false" placeholder="发包那台机器的地址，如 192.168.1.5:47200；留空不查" /></div>
+      <button class="chip" id="up-check" style="margin-top:4px">现在查一次</button>
+
+      <h3>更新分发（发包的人才要开）</h3>
+      <p class="hint" id="up-serve-hint"></p>
+      <div class="sw" id="sw-up-serve"><span class="box"></span><span class="t">把这台电脑当更新分发点</span></div>
     </div>
 
     <!-- ---- 她 ---- -->
