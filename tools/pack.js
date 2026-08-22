@@ -205,6 +205,68 @@ console.log('');
 console.log(C.b('WaifuCode 打包'));
 console.log(C.dim('  项目: ' + ROOT));
 
+// --- 0. 版本号 --------------------------------------------------------------
+// 每次打包版本号都要递增 —— 局域网更新那套全靠版本号分辨新旧：号不动，
+// 朋友那边永远「已经是最新」，新包发了等于没发。规则跟通用惯例一致：
+// 大改 → 第一段 +1 后面归零；中改 → 第二段 +1 尾段归零；小改 → 尾段 +1。
+// 双击打包.bat 会停下来问；命令行跑可以直接带参数：
+//   node tools/pack.js 大|中|小|不动   （或 major|minor|patch|keep）
+
+step(0, '版本号');
+
+{
+  const { bumpVer } = require('../src/updates');
+  const PKG_FILE = path.join(ROOT, 'package.json');
+  const pkgText = fs.readFileSync(PKG_FILE, 'utf8');
+  const cur = JSON.parse(pkgText).version;
+
+  const menu = [
+    ['1', 'major', '大改（换代）'],
+    ['2', 'minor', '中改（加功能）'],
+    ['3', 'patch', '小改（修毛病）'],
+    ['0', 'keep',  '不动（重打同一版）'],
+  ];
+  const alias = {
+    '大': 'major', '中': 'minor', '小': 'patch', '不动': 'keep',
+    'major': 'major', 'minor': 'minor', 'patch': 'patch', 'keep': 'keep',
+    '1': 'major', '2': 'minor', '3': 'patch', '0': 'keep',
+  };
+
+  // 同步读一行。stdin 不是终端（CI、管道）时 readSync 读到 EOF/抛错，
+  // 都当「没回答」→ 走默认的小改 —— 打包不能因为没人在键盘前就卡死
+  const askSync = (q) => {
+    process.stdout.write(q);
+    try {
+      const buf = Buffer.alloc(64);
+      const n = fs.readSync(0, buf, 0, 64);
+      return buf.toString('utf8', 0, n).trim();
+    } catch (_) { console.log(''); return ''; }
+  };
+
+  let kind = alias[String(process.argv[2] || '').trim()];
+  if (!kind) {
+    console.log('  现在是 v' + cur + '，这次改动多大？');
+    for (const [key, k, label] of menu) {
+      const next = k === 'keep' ? cur : bumpVer(cur, k);
+      console.log('    ' + C.hi(key) + '  ' + label + C.dim('  → v' + next));
+    }
+    kind = alias[askSync('  选一个（回车 = 小改）: ')] || 'patch';
+  }
+
+  if (kind === 'keep') {
+    console.log('  ' + C.ok('✓') + ' 版本号不动，还是 v' + cur);
+    console.log(C.dim('    注意：号不动的包发到分发文件夹，朋友那边不会收到更新'));
+  } else {
+    const next = bumpVer(cur, kind);
+    // 只动 version 那一行，别整份重排 —— JSON.stringify 会把格式洗一遍
+    const replaced = pkgText.replace('"version": "' + cur + '"', '"version": "' + next + '"');
+    if (replaced === pkgText) die('package.json 里没找到 version 那行', '手动看一眼 package.json');
+    fs.writeFileSync(PKG_FILE, replaced, 'utf8');
+    console.log('  ' + C.ok('✓') + ' v' + cur + ' → ' + C.b('v' + next));
+    console.log(C.dim('    记得把这个版本号变更连着代码一起提交'));
+  }
+}
+
 // --- 1. 家伙事齐不齐 --------------------------------------------------------
 
 step(1, '看看家伙事');
@@ -310,6 +372,8 @@ for (const { f, size } of out) {
 
 console.log('');
 console.log('  ' + C.b('发给别人：') + '上面这两个文件，随便挑一个发过去就行。');
+console.log('  ' + C.b('发更新：') + '把安装版 exe 丢进数据目录的 updates 文件夹（开了「更新分发点」');
+console.log('  ' + C.dim('的机器上，设置 → 干活里写着完整路径），朋友那边的桌宠就能收到了。'));
 console.log('  ' + C.dim('用法写在 dist\\win-unpacked\\给使用者看.txt，安装包里也带着。'));
 console.log('');
 console.log('  ' + C.dim('提醒：对方要想用「派活 / 私聊」，他自己电脑上得先装 Claude Code。'));

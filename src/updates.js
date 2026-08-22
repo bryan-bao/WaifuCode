@@ -39,6 +39,17 @@ function cmpVer(a, b) {
   return 0;
 }
 
+// 打包时的版本递增：'major' 大改（1.0.0 起新篇）、'minor' 中改（第二段 +1、
+// 尾段归零）、'patch' 小改（尾段 +1，默认）。归零是规矩的一部分 —— 不归零
+// 的话 0.1.7 加个功能变 0.2.7，看着像已经修过 7 轮
+function bumpVer(v, kind) {
+  const p = String(v || '0.0.0').split('.').map((n) => parseInt(n, 10) || 0);
+  while (p.length < 3) p.push(0);
+  if (kind === 'major') return (p[0] + 1) + '.0.0';
+  if (kind === 'minor') return p[0] + '.' + (p[1] + 1) + '.0';
+  return p[0] + '.' + p[1] + '.' + (p[2] + 1);
+}
+
 // 从安装包文件名里抠版本：WaifuCode-0.2.0-安装版.exe → '0.2.0'。
 // 这个正则同时就是服务端的「许可名单」—— 对不上的一律当不存在，
 // 所以它绝不能放宽到会匹配路径分隔符/点点
@@ -202,6 +213,6 @@ function download(source, manifest, destDir) {
 }
 
 module.exports = {
-  cmpVer, parseArtifact, newestArtifact, sha256File, manifestFor,
+  cmpVer, bumpVer, parseArtifact, newestArtifact, sha256File, manifestFor,
   createServer, lanIPs, normalizeSource, fetchLatest, download, ART_RE,
 };

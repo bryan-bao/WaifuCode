@@ -25,6 +25,11 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-update-'));
     check(updates.cmpVer('0.10.0', '0.9.9') > 0, '0.10.0 > 0.9.9（数值比，不是字符串比）');
     check(updates.cmpVer('1.0.0.1', '1.0.0') > 0, '四段也认');
     check(updates.cmpVer('', '1.0') < 0, '空串当 0');
+    // 打包时的递增：大改换代、中改加功能、小改修毛病，后面的段要归零
+    check(updates.bumpVer('0.1.0', 'major') === '1.0.0', '大改 0.1.0 → 1.0.0（后面归零）');
+    check(updates.bumpVer('0.1.7', 'minor') === '0.2.0', '中改 0.1.7 → 0.2.0（尾段归零）');
+    check(updates.bumpVer('0.1.0', 'patch') === '0.1.1', '小改 0.1.0 → 0.1.1');
+    check(updates.bumpVer('1.2', 'patch') === '1.2.1', '两段的补齐成三段再加');
   }
 
   console.log('\n[2] 文件名许可名单：它就是防穿越的全部，一步不许放宽');
