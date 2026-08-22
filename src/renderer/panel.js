@@ -698,6 +698,8 @@ $('ver').onclick = async () => {
   if (!r || !r.ok) msg((r && r.error) || '没下下来', 'err');
 };
 
+$('docs').onclick = () => window.waifu.openDocs();
+
 window.waifu.on('agent:install-done', (p) => {
   msg(p.ok ? '装好了！再点一次「派活 / 开终端」就能用'
            : '没装上，原因在她的气泡里', p.ok ? 'ok' : 'err', 20000);

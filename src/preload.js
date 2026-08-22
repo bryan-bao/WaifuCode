@@ -56,6 +56,9 @@ contextBridge.exposeInMainWorld('waifu', {
   // 「用谁来干」选的 CLI 没装 → 报错旁点「帮我装」，她 npm -g 装好了喊你
   installAgent: (agent) => ipcRenderer.invoke('agent:install', agent),
 
+  // 面板上的「说明书」：打开随包带的功能手册
+  openDocs: () => ipcRenderer.send('docs:open'),
+
   // --- 版本更新（局域网分发）---
   updateCheck: (src) => ipcRenderer.invoke('update:check', src),
   updateApply: () => ipcRenderer.invoke('update:apply'),

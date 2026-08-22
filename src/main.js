@@ -1373,6 +1373,7 @@ function installAgent(agent) {
 const UPDATE_DIR = path.join(DATA_ROOT, 'updates');          // 发包侧：安装包丢这儿
 const UPDATE_DL = path.join(DATA_ROOT, 'update-download');   // 收包侧：下到这儿
 let updateSrv = null;      // 分发服务（开着才有）
+let docsWin = null;        // 功能手册窗口（面板上「说明书」开的，单例）
 let updateLatest = null;   // 上次探到的远端 manifest —— 面板开晚了靠它补显示
 
 // 分发开关：让「现在的状态」向「存档想要的状态」看齐（启动、设置保存都走这儿）
@@ -2384,6 +2385,21 @@ function wireIpc() {
     // 已经探到、还没装的新版本号（面板开晚了靠这个补显示）
     updateAvailable: updateLatest ? updateLatest.version : null,
   }));
+
+  // 面板上的「说明书」：把随包带的功能手册开在一个独立窗口里。
+  // 手册是单文件 HTML（图全内嵌），asar 又是关的，loadFile 直接就能吃
+  ipcMain.on('docs:open', () => {
+    if (docsWin && !docsWin.isDestroyed()) { docsWin.focus(); return; }
+    docsWin = new BrowserWindow({
+      width: 880,
+      height: 920,
+      autoHideMenuBar: true,
+      title: '功能手册',
+      webPreferences: { contextIsolation: true, nodeIntegration: false },
+    });
+    docsWin.loadFile(path.join(ROOT, 'docs', '功能手册.html'));
+    docsWin.on('closed', () => { docsWin = null; });
+  });
 
   // 版本更新：手动查一次 / 下载并安装
   ipcMain.handle('update:check', (_e, src) => checkUpdate(typeof src === 'string' ? src : undefined));
