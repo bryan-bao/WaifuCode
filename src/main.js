@@ -6,7 +6,7 @@ const {
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 
 // 代码/素材在哪儿、数据写哪儿，是两回事。开发时它俩相同，打包后就分家了 ——
 // 装到 Program Files 底下时安装目录是**只读**的。详见 src/paths.js
@@ -1173,10 +1173,12 @@ function guardClaude() {
   if (claudeInstalled()) return null;
   return {
     ok: false,
+    // missing 让面板长出「帮我装」按钮；这段话也会出现在没按钮的地方
+    // （私聊窗、气泡），所以「派活面板上」四个字得说全
+    missing: 'claude',
     error: '这台电脑上没找到 Claude Code —— 「派活」和「私聊」要靠它'
-         + '（唱跳、摸头、小游戏都不用）。装好后重启一次桌宠即可。'
-         + '装法见 claude.com/claude-code。'
-         + '（没有 Claude 的话，面板上「用谁来干」选 Codex 也能派活）',
+         + '（唱跳、摸头、小游戏都不用）。派活面板上点「帮我装」，'
+         + '我自己就能装好；或者「用谁来干」选 Codex 也能派活。',
   };
 }
 
@@ -1231,12 +1233,101 @@ function guardAgent(agent) {
     }
     return {
       ok: false,
+      missing: 'codex',
       error: '这台电脑上没找到 Codex CLI，而「用谁来干」选的是它。'
-           + '装法：npm i -g @openai/codex，装好后重启一次桌宠。'
-           + '（或者把「用谁来干」换回 Claude Code）',
+           + '派活面板上点「帮我装」，我自己就能装好；'
+           + '或者把「用谁来干」换回 Claude Code。',
     };
   }
   return guardClaude();
+}
+
+// ─── 没装就帮着装 ────────────────────────────────────────────────────────────
+// 「用谁来干」选的 CLI 这台机器上没有 → 面板报错旁边给「帮我装」，点了走这儿。
+// npm 全局装，跟手动敲 npm i -g 一模一样：命令落在 npm 全局 bin 里，那个目录
+// 本来就在 PATH 上，装完**不用重启桌宠**，再点一次派活就能用。装好第一次用
+// 还要登录（浏览器点授权，替不了），她开口报「装好了」时会顺嘴提醒。
+const AGENT_PKG = {
+  claude: '@anthropic-ai/claude-code',
+  codex: '@openai/codex',
+};
+let agentInstalling = null; // 同一时刻只装一个，别让两个 npm -g 打架
+
+function installAgent(agent) {
+  const pkg = AGENT_PKG[agent];
+  if (!pkg) return { ok: false, error: '不认识要装什么：' + agent };
+  if (agentInstalling) return { ok: false, error: '正装着呢，装完这个再说' };
+  if (!agents.onPath('npm')) {
+    return {
+      ok: false,
+      // 「装完回来再点」是空头支票：本进程的 PATH 在启动那刻就冻住了，
+      // 装完 Node 只有重启桌宠才看得见（评审抓的死循环）
+      error: '这台电脑连 npm 都没有，我装不了 —— 得先去 nodejs.org 装个'
+           + ' Node.js（选 LTS 那个）。装完把桌宠关了重开一次再来点我 ——'
+           + ' 不重开的话我看不见新装的东西。',
+    };
+  }
+  const name = agent === 'codex' ? 'Codex CLI' : 'Claude Code';
+  agentInstalling = agent;
+  log('[install] npm i -g ' + pkg + ' 开始');
+
+  // shell:true 是必须的：npm 在 Windows 上是 .cmd，新版 node 不带 shell 直接
+  // spawn 它会 EINVAL；给裸名 'npm' 让 cmd 自己按 PATH 找 —— 上面 onPath 已经
+  // 确认在，而且裸名不含空格，躲开 "C:\Program Files\..." 在 shell 拼接时炸掉
+  const child = spawn('npm', ['install', '-g', pkg], { windowsHide: true, shell: true });
+  let tail = '';
+  const eat = (b) => { tail = (tail + String(b)).slice(-2000); };
+  child.stdout.on('data', eat);
+  child.stderr.on('data', eat);
+
+  let settled = false;
+  let deadline = null;
+  const finish = (ok, detail) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(deadline);
+    agentInstalling = null;
+    // npm 退出码 0 只证明装上了，不证明我找得着：全局 prefix 挪过
+    // （npm config set prefix）而那个目录不在本进程 PATH 上时，guard 下次
+    // 照样拦 ——「再点一次」就成了装-成功-再报错的死循环（评审抓的）。
+    // 播喜报之前回头真探一次，探不到就说实话
+    if (ok && !(agent === 'codex' ? agents.codexInstalled() : claudeInstalled())) {
+      log('[install] ' + name + ' npm 装完了，但探不到它（多半全局目录不在 PATH 上）');
+      send('session:say', {
+        name: '',
+        text: name + ' 装是装上了，但我找不着它 —— 多半 npm 的全局目录不在'
+            + ' PATH 里。把它加进 PATH，或者重启一次桌宠，再点一次试试。',
+      });
+      send('agent:install-done', { agent, ok: false });
+      return;
+    }
+    if (ok) {
+      log('[install] ' + name + ' 装好了');
+      send('session:say', {
+        name: '',
+        text: name + ' 装好啦！再点一次「派活 / 开终端」就能开工。'
+            + '第一次用它会让你登录，照它窗口里说的来就行。',
+      });
+    } else {
+      const gist = String(detail || '').split(/\r?\n/).map((s) => s.trim())
+        .filter(Boolean).slice(-2).join('；').slice(0, 160);
+      log('[install] ' + name + ' 没装上：' + (gist || '(没有输出)'));
+      send('session:say', {
+        name: '',
+        text: name + ' 没装上……' + (gist ? '它说：' + gist : '多半是网络不给力，过会儿再试一次？'),
+      });
+    }
+    send('agent:install-done', { agent, ok });
+  };
+  // ponytail: 网络烂到 10 分钟装不完就放弃并解锁；shell:true 下 kill 杀的是
+  // cmd 壳，里面的 npm 可能还在跑 —— 只影响这一次的提示，不值得上进程树
+  deadline = setTimeout(() => {
+    try { child.kill(); } catch (_) { /* 已经退了 */ }
+    finish(false, '装了 10 分钟还没装完，先不等了');
+  }, 10 * 60 * 1000);
+  child.on('error', (err) => finish(false, err.message));
+  child.on('close', (code) => finish(code === 0, tail));
+  return { ok: true };
 }
 
 /**
@@ -1816,6 +1907,9 @@ function wireIpc() {
    *
    * 老的无头模式没删，config.json 里 `"dispatch": { "mode": "headless" }` 换回去。
    */
+  // 「帮我装」：起了就返回，装没装好她开口告诉你（面板关了也听得见）
+  ipcMain.handle('agent:install', (_e, agent) => installAgent(String(agent || '')));
+
   ipcMain.handle('session:dispatch', (_e, opts) => {
     const cfg = loadConfig().dispatch || {};
     // 面板传了 agent 就用它；没这个字段的老入口用记住的默认（记住这件事在面板侧做）

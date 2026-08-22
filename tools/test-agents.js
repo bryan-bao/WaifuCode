@@ -753,6 +753,18 @@ console.log('\n[17] 这次给了什么权限，要说得出人话');
         '认不出来的一律按 auto 说（跟 PERM 的兜底一致）');
 }
 
+console.log('\n[18] 「帮我装」装的必须是官方那两个包，一个字都不能错');
+{
+  // 包名打错一个字 = 把用户的机器交给 npm 上的同名钓鱼包，这里逐字钉死
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  check(main.includes("claude: '@anthropic-ai/claude-code'"), 'claude 装 @anthropic-ai/claude-code');
+  check(main.includes("codex: '@openai/codex'"), 'codex 装 @openai/codex');
+  const inst = main.slice(main.indexOf('function installAgent'), main.indexOf('function installAgent') + 4000);
+  check(inst.length > 100, 'installAgent 得在 main.js 里');
+  check(!inst.includes('--force') && !inst.includes('sudo'), '装的时候不许 --force / sudo');
+  check(inst.includes('shell: true'), 'npm 是 .cmd，不带 shell 直接 spawn 会 EINVAL（别退回去）');
+}
+
   if (failed) {
     console.log('\x1b[31m✗ ' + failed + ' 条没过\x1b[0m');
     process.exitCode = 1;

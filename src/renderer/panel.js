@@ -45,15 +45,37 @@ let msgTimer = null;
  * **必须会自己消失。** 它说的是「你刚才那一下的结果」，几秒之后就变成误导了 ——
  * 你早就在干别的，它还挂着上一次的报错，看着像是这会儿又出错了。
  */
-function msg(text, kind, holdMs) {
+function msg(text, kind, holdMs, action) {
   const el = $('msg');
   clearTimeout(msgTimer);
   el.textContent = text || '';
   el.className = kind || '';
   if (!text) return;
+  if (action) {
+    const b = document.createElement('button');
+    b.textContent = action.label;
+    b.onclick = action.run;
+    el.appendChild(b);
+  }
   // 报错留久一点（你可能要照着它去查），普通提示看一眼就够
   const hold = holdMs || (kind === 'err' ? 9000 : 5000);
   msgTimer = setTimeout(() => { el.textContent = ''; el.className = ''; }, hold);
+}
+
+// 报错带按钮：guard 拦下来的结果里有 missing（claude/codex）就长出「帮我装」
+function showErr(r, fallback) {
+  if (r && r.missing) {
+    msg(r.error, 'err', 60000, { label: '帮我装', run: () => startInstall(r.missing) });
+  } else {
+    msg((r && r.error) || fallback || '出错了', 'err');
+  }
+}
+
+function startInstall(agent) {
+  window.waifu.installAgent(agent).then((r) => {
+    if (r && r.ok) msg('装着呢……装好她会喊你，一般一两分钟，网络慢会更久', 'ok', 600000);
+    else msg((r && r.error) || '没装上', 'err');
+  });
 }
 
 // --- 运行中的会话列表 -------------------------------------------------------
@@ -258,7 +280,7 @@ async function refreshTerms() {
           msg('照「' + (t.laneName || t.name) + '」又派了一次', 'ok');
           refreshTerms();
         } else {
-          msg((r && r.error) || '没派出去', 'err');
+          showErr(r, '没派出去');
         }
       };
       head.appendChild(again);
@@ -576,7 +598,7 @@ async function doDispatch() {
     refreshTerms();
     refreshRecent();
   } else {
-    msg(r.error, 'err');
+    showErr(r, '没派出去');
   }
 }
 
@@ -601,7 +623,7 @@ async function doTerminal() {
     refreshRecent();
     refreshTerms();
   } else {
-    msg(r.error, 'err');
+    showErr(r, '没派出去');
   }
 }
 
@@ -647,6 +669,10 @@ window.waifu.on('session:done', (e) => {
 
 // 终端那边有任何风吹草动都立刻反映到列表上
 window.waifu.on('term:change', () => refreshTerms());
+window.waifu.on('agent:install-done', (p) => {
+  msg(p.ok ? '装好了！再点一次「派活 / 开终端」就能用'
+           : '没装上，原因在她的气泡里', p.ok ? 'ok' : 'err', 20000);
+});
 window.waifu.on('term:report', (e) => {
   if (e && e.text) msg('「' + e.name + '」' + e.text, 'ok');
   refreshTerms();

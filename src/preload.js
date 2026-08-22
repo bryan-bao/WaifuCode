@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('waifu', {
   revealFile: (file) => ipcRenderer.invoke('term:reveal', file),
   // 派活之前看一眼这个目录在哪个分支、有几个文件没提交
   projectStatus: (dir) => ipcRenderer.invoke('project:status', dir),
+  // 「用谁来干」选的 CLI 没装 → 报错旁点「帮我装」，她 npm -g 装好了喊你
+  installAgent: (agent) => ipcRenderer.invoke('agent:install', agent),
 
   // --- 设置 ---
   openSettings: () => ipcRenderer.send('settings:open'),
@@ -94,6 +96,7 @@ contextBridge.exposeInMainWorld('waifu', {
       'voice:play',
       'term:change',
       'term:report',
+      'agent:install-done', // 「帮我装」装完了（成没成都吱一声）
       'chat:delta',
       'chat:done',
       'chat:error',
