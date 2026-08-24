@@ -371,6 +371,16 @@
      压暗是为了让还在跑的那些一眼跳出来，不是为了藏它 */
   .term.closed { opacity: .62; }
   .term.closed .led { background: #3f7d5c; box-shadow: none; }
+  /* 干砸的（非零退出）：灰行也要看得出是红的 */
+  .term.bad .led { background: #f87171; box-shadow: none; }
+  /* 还在跑但连着报错：绿灯换红闪；卡住没动静：黄灯 */
+  .term.strug .led { background: #f87171; box-shadow: 0 0 7px #f87171; animation: pulse 1.2s ease-in-out infinite; }
+  .term.stuckled .led { background: var(--warn); box-shadow: 0 0 7px var(--warn); }
+  .gitinfo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .term .warnline {
+    font-size: 11px; color: var(--bad); margin-top: 3px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .term.closed .n { color: var(--faint); }
   .term.closed:hover { opacity: .85; }
   @keyframes pulse { 50% { opacity: .35; } }

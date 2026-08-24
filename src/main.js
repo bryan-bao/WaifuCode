@@ -714,6 +714,7 @@ function wireEvents() {
 
   terminals.on('change', () => {
     send('term:change', { count: terminals.liveCount() });
+    refreshTrayTip();
   });
 
   // 一个阶段干完了，主动来汇报。这就是「监督」的落点：
@@ -866,10 +867,42 @@ function wireEvents() {
   // 原来这儿是硬编码「那边在等你确认」，报警的话根本传不出来。
   terminals.on('attention', (e) => {
     log(`[term] ${e.name} 喊你（${e.kind || 'confirm'}）: ${e.text}`);
-    // 这是最该一点就跳过去的场合，所以气泡上带终端 id
-    send('session:say', { name: e.name, text: e.text, termId: e.id });
+    // 这是最该一点就跳过去的场合，所以气泡上带终端 id。
+    // detail 只进气泡不进语音 —— 命令行原文念出来没法听
+    send('session:say', { name: e.name, text: e.text + (e.detail ? ' ' + e.detail : ''), termId: e.id });
     speakLine(e.text, { important: true });
   });
+}
+
+// 托盘 tooltip：悬停就知道她手上有几条线、有没有在等你。
+// change 事件每次工具调用都来一发，10 秒节流 —— tooltip 不值得每秒重算
+let trayTipAt = 0;
+let trayTipPending = null;
+function refreshTrayTip() {
+  if (!tray) return;
+  const now = Date.now();
+  if (now - trayTipAt < 10000) {
+    // 尾刷：窗口期里最后那次变化不能丢 —— 不补的话最后一条线干完之后
+    // 再没有 change 事件，tooltip 会永远停在「1 条线在跑」（评审抓的）
+    if (!trayTipPending) {
+      trayTipPending = setTimeout(() => {
+        trayTipPending = null;
+        refreshTrayTip();
+      }, 10000 - (now - trayTipAt) + 100);
+    }
+    return;
+  }
+  trayTipAt = now;
+  try {
+    const list = terminals ? terminals.list() : [];
+    const run = list.filter((t) => t.status === 'running').length;
+    const wait = list.filter((t) => t.status === 'waiting').length;
+    const who = (loadConfig().persona || {}).name || '桌宠';
+    const bits = [];
+    if (run) bits.push(run + ' 条线在跑');
+    if (wait) bits.push(wait + ' 条等你确认');
+    tray.setToolTip('WaifuCode — ' + who + (bits.length ? '（' + bits.join(' · ') + '）' : ''));
+  } catch (_) { /* tooltip 而已 */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -1939,7 +1972,9 @@ function wireIpc() {
 
     // 她手上还开着的活。后台派的活现在是**最小化的真终端**，
     // 所以「看看她在干嘛」是能真的调出现场的 —— 这一项也是无头模式给不了的东西
-    const live = terminals ? terminals.list().filter((t) => t.status !== 'done') : [];
+    const live = terminals
+      ? terminals.list().filter((t) => t.status !== 'done' && t.status !== 'closed')
+      : [];
     const workItem = live.length
       ? [
         {
@@ -2184,7 +2219,19 @@ function wireIpc() {
       if (branch === null) return null; // 不是 git 仓库
       const status = await git(['status', '--porcelain']);
       const dirty = String(status || '').split('\n').filter((l) => l.trim()).length;
-      return { branch: branch.trim(), dirty };
+      // 跟远端差几个提交（没配 upstream 时 git 报错 → null → 按 0 算）
+      const ab = await git(['rev-list', '--left-right', '--count', '@{upstream}...HEAD']);
+      let behind = 0, ahead = 0;
+      if (ab) {
+        const m = ab.trim().split(/\s+/);
+        behind = parseInt(m[0], 10) || 0;
+        ahead = parseInt(m[1], 10) || 0;
+      }
+      const last = await git(['log', '-1', '--format=%s']);
+      return {
+        branch: branch.trim(), dirty, ahead, behind,
+        lastCommit: String(last || '').trim().slice(0, 60),
+      };
     } catch (_) {
       return null;
     }
@@ -2425,6 +2472,7 @@ function createTray() {
 
   tray = new Tray(img);
   tray.setToolTip('WaifuCode — ' + ((loadConfig().persona || {}).name || '桌宠'));
+  refreshTrayTip();
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '派个活…', click: () => createPanel() },
     { label: '跟她聊聊…', click: () => createChatWindow() },

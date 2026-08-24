@@ -225,8 +225,10 @@ const specOf = (id, name) => ({
     rec.errorCount = 3; pulse(now);
     check(beats.at(-1).state === 'struggling', '报错到三次 → struggling');
 
-    rec.errorCount = 0; rec.lastSeen = now - 60000; pulse(now);
-    check(beats.at(-1).state === 'stuck', '还是 running 但一分钟没动静 → stuck');
+    // 判卡看 lastHookAt 不看 lastSeen —— 心跳每 5 秒喂 lastSeen 一口，
+    // 用它判的话 stuck 永远够不到（评审抓的死灯）。心跳新鲜也照样算卡
+    rec.errorCount = 0; rec.lastSeen = now; rec.lastHookAt = now - 60000; pulse(now);
+    check(beats.at(-1).state === 'stuck', '还是 running 但一分钟没干活动静 → stuck（心跳新鲜也不算数）');
 
     rec.status = 'waiting'; pulse(now);
     check(beats.at(-1).state === 'waiting', '在等你确认 → waiting');
@@ -369,6 +371,12 @@ const specOf = (id, name) => ({
       ['node graceful-shutdown.js', '不能被「关机」那条撞上'],
       ['git reset --soft HEAD~1', '--soft 不丢东西'],
       ['rm ' + path.join(os.tmpdir(), 'x.log'), '临时目录放行'],
+      ['node stop-process.js', '不能被「杀进程」那条撞上（命令头限定）'],
+      ['git checkout dev', '切分支不是丢改动'],
+      ['git checkout -- src/a.js', '回滚单个文件太常见，报起来就是狼来了'],
+      ['git restore --staged .', '只是取消暂存，改动还在'],
+      ['git stash list', 'stash 只看不扔'],
+      ['npm run kill-port', 'kill 在脚本名里，不是命令'],
     ];
     for (const [cmd, why] of QUIET) {
       check(danger(cmd) === null, cmd.slice(0, 46) + ' —— ' + why);
@@ -390,6 +398,20 @@ const specOf = (id, name) => ({
       'DROP DATABASE prod',
       'format C: /fs:ntfs',
       'shutdown /r /t 0',
+      'taskkill /F /IM node.exe',       // 用户立过规矩：杀进程必须先问
+      'Stop-Process -Name node -Force',
+      'kill -9 12345',
+      'rd /s /q D:\\OtherProject',      // cmd 删目录最常用写法，rmdir 的别名
+      'git checkout -- .',              // 丢掉整目录没提交的改动
+      'git restore .',
+      'git stash drop',
+      'npm ci\ntaskkill /F /IM node.exe', // 第二行动手 —— m 标志的生死线
+      'npm run build\nshutdown /s',
+      'kill -s KILL 12345',             // -9 的换拼法
+      'sudo kill -9 12345',
+      'git checkout ./',                // ./ 跟 . 完全等价
+      'git checkout HEAD -- .',         // 教程里最常见的「全部丢弃」写法
+      'git restore --source=HEAD~1 .',  // 整目录回滚到旧版，未提交改动照样没
     ];
     for (const cmd of LOUD) {
       const hit = danger(cmd);
@@ -874,6 +896,20 @@ const specOf = (id, name) => ({
     check(lc.includes("spec.windowName = null"), "conhost 开的窗必须清掉 windowName —— 留着 focus 就会 wt -w 造空窗");
     const fo = src.slice(src.indexOf("async focus(id)"), src.indexOf("async focus(id)") + 1200);
     check(fo.includes("pidAlive(rec.pid)"), "focus 的 wt 路要先探 pid —— 窗口没了还 focus-tab 就是造一个新空窗");
+  }
+
+  console.log('\n[22] 「卡住」判据只认干活的动静，心跳喂不饱它');
+  {
+    const rec = tm._makeRecord({ id: 'w991', name: '卡', dir: process.cwd(), title: 'x' }, {});
+    rec.status = 'running';
+    rec.lastSeen = Date.now();            // 心跳刚来过（原版就是被这个喂饱的）
+    rec.lastHookAt = Date.now() - 120000; // 但 2 分钟没有真动静
+    tm.items.set('w991', rec);
+    const row = tm.list().find((t) => t.id === 'w991');
+    check(Boolean(row) && row.stuckMin >= 2, '心跳再新鲜，没干活动静就是卡住（stuckMin=' + (row && row.stuckMin) + '）');
+    rec.lastHookAt = Date.now();
+    check(tm.list().find((t) => t.id === 'w991').stuckMin === 0, '动静一来就不算卡');
+    tm.items.delete('w991');
   }
 
   tm.dispose();

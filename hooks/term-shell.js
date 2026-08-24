@@ -77,7 +77,12 @@ function tell(payload) {
         headers: { 'Content-Type': 'application/json', 'Content-Length': body.length },
         timeout: 1000,
       },
-      (res) => { res.resume(); res.on('end', resolve); }
+      // 响应体带回来（close 那条里有总账一行），别的调用方拿到也只是不看
+      (res) => {
+        let buf = '';
+        res.on('data', (d) => { buf += d; });
+        res.on('end', () => resolve(buf));
+      }
     );
     req.on('error', resolve);
     req.on('timeout', () => { req.destroy(); resolve(); });
@@ -302,9 +307,12 @@ function launch(useResume) {
       return;
     }
 
-    await tell({ phase: 'close', code });
+    const reply = await tell({ phase: 'close', code });
+    let bill = '';
+    try { bill = (JSON.parse(reply || '') || {}).line || ''; } catch (_) { /* 没有就不印 */ }
     console.log('');
     console.log('\x1b[36m' + '─'.repeat(58) + '\x1b[0m');
+    if (bill) console.log('\x1b[90m  ' + bill + '\x1b[0m');
     console.log(
       code === 0
         ? '\x1b[32m  这个活儿结束了。\x1b[0m'

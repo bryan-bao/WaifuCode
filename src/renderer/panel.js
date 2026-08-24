@@ -170,10 +170,16 @@ async function refreshTerms() {
 
   box.innerHTML = '';
   for (const t of list) {
-    const st = TERM_STATUS[t.status] || TERM_STATUS.idle;
+    let st = TERM_STATUS[t.status] || TERM_STATUS.idle;
+    // 干砸的不能装作「已完成」：非零退出 = 异常收场，这是排查
+    // 「她怎么没汇报」时最先要知道的事
+    const crashed = (t.status === 'done' || t.status === 'closed') &&
+                    t.exitCode !== null && t.exitCode !== 0;
+    if (crashed) st = { cls: st.cls + ' bad', text: '异常退出（code ' + t.exitCode + '）' };
 
     const el = document.createElement('div');
-    el.className = 'term ' + st.cls;
+    el.className = 'term ' + st.cls +
+      (t.struggling ? ' strug' : '') + (t.stuckMin ? ' stuckled' : '');
     el.title = t.dir + (t.laneName ? '\n这条线：' + t.laneName : '') + '\n' +
       (t.status === 'closed'
         ? (t.laneId
@@ -295,7 +301,9 @@ async function refreshTerms() {
       st.text + ' · ' + fmtDur(t.elapsedMs) +
       (t.turns ? ' · 聊了 ' + t.turns + ' 轮' : '') +
       (t.toolCount ? ' · 动了 ' + t.toolCount + ' 次工具' : '') +
-      (t.errorCount ? ' · 报错 ' + t.errorCount + ' 次' : '');
+      (t.errorCount ? ' · 报错 ' + t.errorCount + ' 次' : '') +
+      (t.stuckMin ? ' · 卡了 ' + t.stuckMin + ' 分钟没动静' : '') +
+      (t.struggling ? ' · 连着报错' : '');
 
     // codex 的线打个小牌。汇报、金额、接着聊都有了（靠读它的会话档案）；
     // 还缺的只有护栏 —— 那要在她动手**之前**报警，档案是干完才写的，拦不了
@@ -354,13 +362,32 @@ async function refreshTerms() {
       el.appendChild(box);
     }
 
-    // 最近一次阶段汇报。没有的话就显示当初派的活，总比空着强。
-    const line = t.lastReport || t.task;
+    // 最近一次阶段汇报 > 这一轮你实际说的话 > 当初派的活。
+    // 长会话聊了二十轮后，最初那句 task 早过时了
+    const line = t.lastReport ||
+      (t.lastPrompt && t.lastPrompt !== t.task ? '这轮在干：' + t.lastPrompt : t.task);
     if (line) {
       const p = document.createElement('div');
       p.className = 'phase';
       p.textContent = line;
       el.appendChild(p);
+    }
+
+    // 在跟什么较劲 —— 光知道报错次数没法决策，报错首行才知道要不要管
+    if (t.errorCount > 0 && t.lastError) {
+      const er = document.createElement('div');
+      er.className = 'warnline';
+      er.textContent = '⚠ ' + t.lastError;
+      er.title = '这条线最近一次报错的第一行';
+      el.appendChild(er);
+    }
+
+    // 护栏喊过你的话留个底 —— 气泡几秒就没了，错过也能追溯（只留最近一次）
+    if (t.lastAlarm && t.lastAlarm.why) {
+      const al = document.createElement('div');
+      al.className = 'warnline alarm';
+      al.textContent = '⚠ 她喊过你：' + t.lastAlarm.why;
+      el.appendChild(al);
     }
 
     box.appendChild(el);
@@ -557,9 +584,13 @@ function refreshGit() {
 
     if (!s) { box.textContent = ''; box.className = 'gitinfo'; return; }
     box.className = 'gitinfo' + (s.dirty ? ' dirty' : '');
-    box.textContent = s.dirty
-      ? '⎇ ' + s.branch + ' · ' + s.dirty + ' 个文件没提交'
-      : '⎇ ' + s.branch + ' · 干净';
+    const bits = ['⎇ ' + s.branch];
+    bits.push(s.dirty ? s.dirty + ' 个文件没提交' : '干净');
+    if (s.ahead) bits.push('领先远端 ' + s.ahead);
+    if (s.behind) bits.push('落后远端 ' + s.behind);
+    if (s.lastCommit) bits.push('最近：' + s.lastCommit);
+    box.textContent = bits.join(' · ');
+    box.title = box.textContent; // 一行放不下时悬停看全文
   }, 400);
 }
 

@@ -376,7 +376,7 @@ const unquote = (w) => w.replace(/^["']|["']$/g, '');
  * · **要带 `m` 标志。** `^` 只匹配整串开头的话，`npm ci\nrm -rf D:\别的项目`
  *   这种第二行才动手的完全静默 —— 那正是最该抓的。
  */
-const RM_HEAD = /(?:^|[|;&]\s*|\bsudo\s+)(rm|rmdir|del|erase|Remove-Item|ri)\s+([^|;&\r\n]*)/gim;
+const RM_HEAD = /(?:^|[|;&]\s*|\bsudo\s+)(rm|rmdir|rd|del|erase|Remove-Item|ri)\s+([^|;&\r\n]*)/gim;
 
 // 预演，什么都不删，见到就整条放行
 const WHATIF = /(?:^|\s)(?:-WhatIf|--dry-run)(?![\w-])/i;
@@ -402,10 +402,29 @@ const DANGERS = [
   [/\bgit\s+push\b[^|;&\r\n]*\s(?:--force|-f)(?![\w-])/i, 'push', '要强推远端，别人的提交可能被盖掉'],
   [/\bgit\s+clean\b[^|;&\r\n]*\s-[a-z]*[fd][a-z]*(?![\w-])/i, 'clean', '要 git clean，没加进版本库的文件会没'],
   [/\bdrop\s+(database|table|schema)\b/i, 'drop', '要删数据库'],
-  // 必须在命令头 + 带盘符：`npm run format` 和 `dotnet format D:\proj` 都不能中招
-  [/(?:^|[|;&]\s*)format\s+[a-zA-Z]:/i, 'format', '要格式化磁盘'],
+  // 必须在命令头 + 带盘符：`npm run format` 和 `dotnet format D:\proj` 都不能中招。
+  // **m 标志是生死线**：不带的话 ^ 只认整串开头，`npm ci\nformat D:` 这种
+  // 第二行动手的静默放行 —— RM_HEAD 的注释早点名过这个坑（评审抓的）
+  [/(?:^|[|;&]\s*)format\s+[a-zA-Z]:/im, 'format', '要格式化磁盘'],
   // 同样限定命令头，不然 node graceful-shutdown.js 会中招
-  [/(?:^|[|;&]\s*)(shutdown|Stop-Computer|Restart-Computer)\b/i, 'power', '要关机或重启这台电脑'],
+  [/(?:^|[|;&]\s*)(shutdown|Stop-Computer|Restart-Computer)\b/im, 'power', '要关机或重启这台电脑'],
+  // 杀进程：用户明文立过规矩「绝不擅自结束用户进程」，监督却一直放行。
+  // 命令头限定（node stop-process.js 不中招）；光杆 kill 是 bash 内建太常见，
+  // 只抓带 -9/-KILL 的那种没商量的
+  // m 必带（多行第二行动手）；sudo 前缀照 RM_HEAD 的写法；-s KILL / -SIGKILL
+  // 就是 -9 换个拼法，一起算「没商量的那种」
+  [/(?:^|[|;&]\s*|\bsudo\s+)(taskkill|Stop-Process|pkill|killall)\b|(?:^|[|;&]\s*|\bsudo\s+)kill\s+-(?:9\b|KILL\b|SIGKILL\b|s\s+(?:SIG)?KILL\b)/im,
+   'kill', '要强杀进程 —— 这个你立过规矩要先问'],
+  // 丢没提交的改动：跟 reset --hard 同罪的两兄弟。只抓整目录形（带具体
+  // 文件名的 checkout -- file 太常见于正当回滚，报起来会狼来了）
+  // 整目录形的常见变体都要认：checkout .、checkout ./、checkout HEAD -- .、
+  // restore --source=X .（评审实测原版全放行了）。--staged 是安全的取消暂存，
+  // 负向前瞻放它过去 —— 除非同串还带 --worktree（那就真丢改动了）。
+  // 已知绕法：把 . 打引号（checkDanger 匹配前挖掉引号段）—— 引一个点太刻意，
+  // 认了；单文件形（checkout -- file）故意不拦，防狼来了
+  [/\bgit\s+(?:checkout|restore)\b(?![^|;&\r\n]*--staged(?![^|;&\r\n]*--worktree))[^|;&\r\n]*(?:\s|=)\.\/?(?=\s|$)/im,
+   'restore', '要丢掉整个目录没提交的改动'],
+  [/\bgit\s+stash\s+(?:drop|clear)\b/i, 'stash', '要扔掉 stash 里存着的改动'],
 ];
 
 /**
@@ -722,6 +741,10 @@ class TerminalManager extends EventEmitter {
       pid: null,
       startedAt: now,
       lastSeen: now,
+      // 只由「真干活的动静」更新（claude 的 hook / codex 的档案长了），
+      // 心跳不碰 —— 判「卡住」全靠它。用 lastSeen 判的话心跳每 5 秒喂一口，
+      // 45 秒的门槛从生下来就够不到（评审抓的：stuck 灯是死的）
+      lastHookAt: now,
       // codex 线重启认回来要接着上次的数（claude 的 spec 没有 codexSeen，还是 0）
       turns: (spec.codexSeen && spec.codexSeen.turns) || 0,
       toolCount: 0,
@@ -732,6 +755,10 @@ class TerminalManager extends EventEmitter {
       // 有用得多，那才是你能直接去核对的东西
       filesAll: new Map(), // 全路径 -> 动过几次
       lastPrompt: '',   // 这一轮你让她干的是什么
+      // 这俩从 spec 读回来：重启后「异常退出」的红行和「她喊过你」的留底
+      // 不能蒸发（评审抓的）
+      exitCode: spec.exitCode === undefined ? null : spec.exitCode,
+      lastAlarm: spec.lastAlarm || null,
       // 这条线烧了多少钱（美元，按官方 API 单价折算，见 cost.js）。
       // paid 是已经记进流水账的部分，差额就是还没记的
       costUsd: 0,
@@ -945,9 +972,29 @@ class TerminalManager extends EventEmitter {
         rec.status = 'done';
         rec.closedAt = Date.now();
         rec.exitCode = payload.code;
+        this._patchSpec(rec, { exitCode: payload.code }); // 重启后红行不蒸发
         this.log('[term] ' + rec.id + ' 那边的活结束了 code=' + payload.code + '（窗口还开着）');
+        // CLI 压根没起来（spawn 失败）：原因只在那个马上要被关掉的窗口里，
+        // 不喊一声的话面板上只剩一条 code=-1 的灰线，你对着它发呆
+        if (payload.error) {
+          this.emit('attention', {
+            id: rec.id, name: rec.name, kind: 'boot',
+            text: '「' + rec.name + '」的 ' + (rec.agent === 'codex' ? 'Codex' : 'Claude') + ' 没起来。',
+            detail: String(payload.error).slice(0, 120),
+          });
+        }
         this._finish(rec, payload.code);
         this.emit('change');
+        // 响应体给 term-shell 带一行总账，印在「按回车关掉」上面 ——
+        // 关窗前最后一眼正是最想看总账的时刻
+        {
+          const parts = [];
+          if (rec.costUsd > 0.004) parts.push('烧了 $' + rec.costUsd.toFixed(2));
+          if (rec.turns) parts.push(rec.turns + ' 轮');
+          const nf = (rec.filesAll || new Map()).size;
+          if (nf) parts.push('动了 ' + nf + ' 个文件');
+          if (parts.length) return { line: '这一窗：' + parts.join(' · ') };
+        }
         break;
 
       default:
@@ -967,6 +1014,7 @@ class TerminalManager extends EventEmitter {
     if (!rec) return false;
 
     rec.lastSeen = Date.now();
+    rec.lastHookAt = Date.now(); // hook 来了 = 真有动静，「卡住」计时清零
     // 她在这个窗口里换会话了（用户敲了 /resume 挑另一条、或者 /clear）——
     // 认下真身，不然「接着聊」和算钱都还盯着一个从没落盘的空 id
     if (ev.session_id && ev.session_id !== rec.sessionId) this._rebindSession(rec, ev.session_id);
@@ -978,6 +1026,7 @@ class TerminalManager extends EventEmitter {
         rec.status = 'running';
         rec.toolCount = 0;
         rec.errorCount = 0;
+        rec.lastError = null; // 上一轮跟什么较劲，这一轮重新算
         rec.files = new Set();
         // 「一轮」的边界就在这儿，护栏的计数跟着一起清 —— 别自己另造一个边界
         rec.rewrites = 0;
@@ -997,7 +1046,19 @@ class TerminalManager extends EventEmitter {
       case 'PostToolUse': {
         rec.toolCount += 1;
         const resp = ev.tool_response;
-        if (resp && (resp.is_error || resp.error)) rec.errorCount += 1;
+        if (resp && (resp.is_error || resp.error)) {
+          rec.errorCount += 1;
+          // 报错首行留下来 —— 「一直在跟 ESLint 的 no-unused-vars 较劲」比
+          // 「报了 3 次错」可决策得多。tool_response 的形状不统一（字符串 /
+          // {error} / {content:[{text}]}），全都摸一遍，摸不出来就算了
+          let raw = '';
+          if (typeof resp === 'string') raw = resp;
+          else raw = String(resp.error
+            || (Array.isArray(resp.content) ? (resp.content[0] && resp.content[0].text) : resp.content)
+            || '');
+          const first = raw.replace(/\s+/g, ' ').trim().slice(0, 160);
+          if (first) rec.lastError = first;
+        }
 
         // 记一下她动了哪些文件 —— 「改了这三个文件」比「动了 8 次工具」有用得多。
         // 走 filePathOf 而不是直接读 file_path：NotebookEdit 用的是 notebook_path，
@@ -1057,10 +1118,13 @@ class TerminalManager extends EventEmitter {
         rec.status = 'waiting';
         this.emit('change');
         // text 在这一层就拼成能直接念的中文成句 —— 这样 attention 只有一种契约，
-        // main.js 那边拿到什么就念什么，不用自己判断是哪种情况再拼一遍
+        // main.js 那边拿到什么就念什么，不用自己判断是哪种情况再拼一遍。
+        // detail 是**给眼睛的补充**（气泡带上、语音不念）：hook 消息里写着她
+        // 具体要确认什么，带出来你不用起身就能判断值不值得走过去
         this.emit('attention', {
           id: rec.id, name: rec.name, kind: 'confirm',
           text: '「' + rec.name + '」那边在等你确认。',
+          detail: msg.replace(/\s+/g, ' ').trim().slice(0, 120),
         });
         break;
       }
@@ -1234,6 +1298,10 @@ class TerminalManager extends EventEmitter {
     if (rec.warned.has(hit.kind)) return;
     rec.warned.add(hit.kind);
 
+    // 留个底：气泡几秒就没了，你回来晚了也该能在面板上看到她曾为什么喊你。
+    // 落盘 —— 重启认回这条线，留底还在
+    rec.lastAlarm = { kind: hit.kind, why: hit.why, at: Date.now() };
+    this._patchSpec(rec, { lastAlarm: rec.lastAlarm });
     rec.alarmUntil = Date.now() + ALARM_MS;
     // 立刻转身，别等下一次三秒一拍的 _sweep —— 这条消息的价值全在「立刻」
     this._pulse();
@@ -1532,6 +1600,17 @@ class TerminalManager extends EventEmitter {
         toolCount: t.toolCount,
         errorCount: t.errorCount,
         lastReport: t.lastReport,
+        // 这一轮你实际让她干什么 —— 长会话聊了二十轮后，最初那句 task 早过时了
+        lastPrompt: t.lastPrompt || '',
+        // done/closed 的线靠它分「干成了」还是「砸了」（非零 = 异常收场）
+        exitCode: (t.exitCode === undefined || t.exitCode === null) ? null : t.exitCode,
+        // 最近一次报错首行（跟什么较劲）；护栏最近一次为什么喊你（留底，可追溯）
+        lastError: t.lastError || '',
+        lastAlarm: t.lastAlarm || null,
+        // 黄红灯：跟 _pulse 同一套判据，别在面板另造一份阈值
+        struggling: t.status === 'running' && t.errorCount >= STRUGGLE_ERRORS,
+        stuckMin: (t.status === 'running' && now - (t.lastHookAt || t.startedAt) > STUCK_MS)
+          ? Math.round((now - (t.lastHookAt || t.startedAt)) / 60000) : 0,
         agent: t.agent || 'claude',
         // 面板靠它决定「接着聊」的话术：认领到了、**而且档案还在**才敢说
         // 「能接上」—— 用户清过 ~/.codex 的话，接过去实际是新开一条，
@@ -1605,6 +1684,8 @@ class TerminalManager extends EventEmitter {
       rec.status = 'running';
       this.emit('change');
     }
+    // codex 线没有 hook，「卡住」的动静判据靠档案在长
+    rec.lastHookAt = Date.now();
     if (!g.turns) return; // 轮还没完
 
     // ≥1 轮完成：把攒的一起结
@@ -1968,7 +2049,7 @@ class TerminalManager extends EventEmitter {
       else if (rec.status === 'running') {
         if (rec.errorCount >= STRUGGLE_ERRORS) state = 'struggling';
         // 状态还是 running，但这么久没有任何 hook 事件进来 —— 多半卡住了
-        else if (now - rec.lastSeen > STUCK_MS) state = 'stuck';
+        else if (now - (rec.lastHookAt || rec.startedAt) > STUCK_MS) state = 'stuck';
         else state = 'working';
       }
       if (!state) continue;
