@@ -163,6 +163,14 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-update-'));
     const upd = fs.readFileSync(path.join(__dirname, '..', 'src', 'updates.js'), 'utf8');
     check(upd.includes('pipeline(res'), '下载走 stream.pipeline，不许退回手工 pipe');
     check(upd.includes('clientFor'), 'https 源按协议挑客户端，不许写死 http');
+    // 更新说明弹窗那条链：打包收集 → 随包带 → 升级后第一次启动弹
+    const pack = fs.readFileSync(path.join(__dirname, 'pack.js'), 'utf8');
+    check(pack.includes('release-notes.json') && pack.includes('.pack-state.json'),
+          '打包会收集更新说明并记住打到哪个提交');
+    check(main.includes('seenVersion') && main.includes('release-notes.json'),
+          '升级后第一次启动弹「这版更新了什么」（seenVersion 挡着全新安装不弹）');
+    check(main.includes('delete next.update.seenVersion'),
+          '设置窗保存不许把 seenVersion 冲掉（跟 announced 同一个坑）');
   }
 
   if (failed) {

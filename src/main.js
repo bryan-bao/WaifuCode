@@ -2321,7 +2321,7 @@ function wireIpc() {
       const before = loadConfig();
       // announced（她喊过哪个新版）是她自己的小本本，不归设置窗管 —— 设置窗
       // 开着的当口她喊了一嗓子的话，保存旧快照会把这笔抹掉、下次又喊一遍
-      if (next.update) delete next.update.announced;
+      if (next.update) { delete next.update.announced; delete next.update.seenVersion; }
       const after = config.patch(next);
 
       // 语音的改动当场生效，不用重启
@@ -2642,6 +2642,27 @@ if (!app.requestSingleInstanceLock()) {
     startCursorWatch();
     startPresenceWatch();
     registerHotkey();
+
+    // 升级后第一次启动：弹一版「这个版本更新了什么」。说明是打包时从 git
+    // 提交收集的（release-notes.json 随包带着）。全新安装不弹 —— seenVersion
+    // 还是空的说明没有「从哪个版本升上来」这回事，只默默记下当前版本
+    try {
+      const cur = app.getVersion();
+      const seen = (loadConfig().update || {}).seenVersion || '';
+      if (seen && seen !== cur) {
+        const rn = JSON.parse(fs.readFileSync(path.join(ROOT, 'release-notes.json'), 'utf8'));
+        if (rn && rn.version === cur && Array.isArray(rn.notes) && rn.notes.length) {
+          dialog.showMessageBox({
+            type: 'info',
+            title: '更新到 v' + cur,
+            message: '从 v' + seen + ' 更新到 v' + cur + '，这一版：',
+            detail: rn.notes.map((n) => '· ' + n).join(String.fromCharCode(10)),
+            buttons: ['知道了'],
+          });
+        }
+      }
+      if (seen !== cur) config.patch({ update: { seenVersion: cur } });
+    } catch (_) { /* 没有说明文件就不弹，照常起 */ }
 
     // 版本更新：分发开关对齐存档；开机 20 秒后查一次，之后每 4 小时一次
     // （没填更新源的话 checkUpdate 空手就回，一次网络请求都不发）

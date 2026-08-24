@@ -265,6 +265,36 @@ step(0, '版本号');
     console.log('  ' + C.ok('✓') + ' v' + cur + ' → ' + C.b('v' + next));
     console.log(C.dim('    记得把这个版本号变更连着代码一起提交'));
   }
+
+  // --- 更新说明：这一版改了什么，随包发给朋友（装完第一次启动弹窗） -------
+  //
+  // 从 git 提交标题里收集：上次打包（.pack-state.json 记的提交）到现在之间的
+  // 全部提交。第一次打包没有起点，取最近 15 条。收集失败不拦打包 ——
+  // 只是那一版装完不弹说明窗。
+  {
+    const STATE_FILE = path.join(ROOT, '.pack-state.json');
+    const NOTES_FILE = path.join(ROOT, 'release-notes.json');
+    let sinceHash = null;
+    try { sinceHash = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).lastCommit || null; } catch (_) { /* 第一次 */ }
+    const range = sinceHash ? [sinceHash + '..HEAD'] : ['-15'];
+    const r = run('git', ['log', '--format=%s'].concat(range), { quiet: true });
+    const ver = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+    let notes = [];
+    if (r.status === 0) {
+      notes = String(r.stdout || '').split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !/^Merge\b/.test(l))
+        .slice(0, 12);
+    }
+    fs.writeFileSync(NOTES_FILE, JSON.stringify({ version: ver, notes }, null, 2), 'utf8');
+    if (notes.length) {
+      console.log('');
+      console.log('  这一版的更新说明（' + notes.length + ' 条，朋友装完第一次启动会看到）：');
+      for (const n of notes) console.log(C.dim('    · ' + n));
+    } else {
+      console.log('  ' + C.dim('没收集到更新说明（不是 git 仓库或没有新提交），这版不弹说明窗'));
+    }
+  }
 }
 
 // --- 1. 家伙事齐不齐 --------------------------------------------------------
@@ -372,6 +402,14 @@ for (const { f, size } of out) {
 
 console.log('');
 console.log('  ' + C.b('发给别人：') + '上面这两个文件，随便挑一个发过去就行。');
+// 记下这次打到哪个提交 —— 下次打包的更新说明从这儿往后收集
+{
+  const h = run('git', ['rev-parse', 'HEAD'], { quiet: true });
+  if (h.status === 0) {
+    try { fs.writeFileSync(path.join(ROOT, '.pack-state.json'), JSON.stringify({ lastCommit: String(h.stdout).trim() }), 'utf8'); } catch (_) { /* 记不上下次全量 */ }
+  }
+}
+
 console.log('  ' + C.b('发更新：') + '把安装版 exe 丢进数据目录的 updates 文件夹（开了「更新分发点」');
 console.log('  ' + C.dim('的机器上，设置 → 干活里写着完整路径），朋友那边的桌宠就能收到了。'));
 console.log('  ' + C.dim('用法写在 dist\\win-unpacked\\给使用者看.txt，安装包里也带着。'));

@@ -79,6 +79,7 @@
       "!test-*.js",
       "!*.log",
       "!config.json",
+      "!.pack-state.json",
       "!updates",
       "!update-download",
       "!package-lock.json",

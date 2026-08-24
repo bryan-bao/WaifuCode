@@ -34,3 +34,7 @@ vendor/pylibs/**/__pycache__/
 # 局域网更新：分发库和下载缓存都是每台机器自己的（里面是上百 MB 的安装包）
 updates/
 update-download/
+
+# 打包状态（上次打到哪个提交）和生成的更新说明 —— 都是打包机自己的
+.pack-state.json
+release-notes.json

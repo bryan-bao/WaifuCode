@@ -130,6 +130,7 @@ const DEFAULTS = {
     serve: false,
     port: 47200,
     announced: '',
+    seenVersion: '',   // 弹过「这版更新了什么」的版本 —— 升级后第一次启动才弹
   },
 
   // 情绪动作：心情一变就配个身体动作，不光是换张脸
