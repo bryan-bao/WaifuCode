@@ -126,6 +126,15 @@ console.log('\n[5] 渲染层调的 window.waifu.xxx()，preload 里得有');
           : 'stage.js 用到的 mock-preload 都有（' + stageCalls.size + ' 个）');
 }
 
+console.log("\n[7] 标题栏拖拽区里的可点元素必须豁免 no-drag");
+{
+  // header 整条是 -webkit-app-region: drag，落在里面的元素点击会被窗口拖拽
+  // **静默吃掉** ——「点我更新」死点没反应就是栽在这儿（实机反馈，2026-08-24）
+  const phtml = read('src/renderer/panel.html');
+  const verBlock = phtml.slice(phtml.indexOf('#ver {'), phtml.indexOf('#ver {') + 400);
+  check(verBlock.includes('no-drag'), '#ver（版本号/点我更新）豁免了拖拽');
+}
+
 console.log('\n[6] 拖动她不许用 setPosition / 现读现写尺寸');
 {
   // 显示缩放不是 100% 的机器上，setPosition（以及 getSize 读回再写）每趟

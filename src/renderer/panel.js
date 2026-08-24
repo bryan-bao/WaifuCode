@@ -822,9 +822,15 @@ $('ver').onclick = async () => {
   if (!updVersion || verBusy) return;
   verBusy = true;
   msg('下载新版 ' + updVersion + ' 中……下好她会拉起安装器然后先退出', 'ok', 600000);
-  const r = await window.waifu.updateApply();
-  verBusy = false;
-  if (!r || !r.ok) msg((r && r.error) || '没下下来', 'err');
+  // finally 是必须的：中途抛了异常还不解锁的话，按钮从此永久死掉
+  try {
+    const r = await window.waifu.updateApply();
+    if (!r || !r.ok) msg((r && r.error) || '没下下来', 'err');
+  } catch (e) {
+    msg('更新没走通：' + ((e && e.message) || e), 'err');
+  } finally {
+    verBusy = false;
+  }
 };
 
 $('docs').onclick = () => window.waifu.openDocs();

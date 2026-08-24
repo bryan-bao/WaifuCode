@@ -302,7 +302,13 @@
   }
   #msg.ok { color: var(--acc); }
   #msg.err { color: var(--bad); }
-  #ver { color: var(--dim); font-size: 11px; margin-left: 2px; }
+  #ver {
+    color: var(--dim); font-size: 11px; margin-left: 2px;
+    /* 标题栏整条是拖拽区（-webkit-app-region: drag），落在里面的元素点击
+       会被窗口拖拽整个吃掉 —— 「点我更新」死点没反应就是栽在这儿（实机反馈）。
+       跟 header button 一样豁免出来 */
+    -webkit-app-region: no-drag;
+  }
   #ver.upd {
     color: var(--acc); border: 1px solid var(--acc); border-radius: var(--r-s);
     padding: 1px 7px; cursor: pointer;
