@@ -60,7 +60,7 @@ const STATES = ['normal', 'working', 'happy', 'proud', 'frustrated', 'sad',
                 'shy', 'lonely', 'tired', 'sleepy', 'surprised', 'excited',
                 'angry', 'playful', 'scorn', 'curious', 'panic', 'bored'];
 
-// --- Hiyori（原来就有的那份，一个字没动）---------------------------------
+// --- Hiyori（2026-08-24 按联络表实测把还有余量的几处推狠了：嘴张大、腮红加深）---------------------------------
 const HIYORI = {
   normal: { ParamMouthForm: 0.3 },
 
@@ -73,8 +73,8 @@ const HIYORI = {
   happy: {
     ParamEyeLOpen: -1, ParamEyeROpen: -1,
     ParamEyeLSmile: 1, ParamEyeRSmile: 1,
-    ParamMouthForm: 1, ParamMouthOpenY: 0.55,
-    ParamCheek: 0.35,
+    ParamMouthForm: 1, ParamMouthOpenY: 0.9,
+    ParamCheek: 0.55,
     ParamHairAhoge: 0.8,
     ParamBrowLY: 0.4, ParamBrowRY: 0.4,
   },
@@ -141,7 +141,7 @@ const HIYORI = {
 
   surprised: {
     ParamEyeLOpen: 1, ParamEyeROpen: 1,
-    ParamMouthOpenY: 0.9, ParamMouthForm: -0.3,
+    ParamMouthOpenY: 1, ParamMouthForm: -0.3,
     ParamHairAhoge: 1,
     ParamBrowLY: 1, ParamBrowRY: 1,
   },
@@ -149,8 +149,8 @@ const HIYORI = {
   excited: {
     ParamEyeLOpen: 0.45, ParamEyeROpen: 0.45,
     ParamEyeLSmile: 0.5, ParamEyeRSmile: 0.5,
-    ParamMouthForm: 0.9, ParamMouthOpenY: 0.5,
-    ParamCheek: 0.3,
+    ParamMouthForm: 0.9, ParamMouthOpenY: 0.95,
+    ParamCheek: 0.5,
     ParamHairAhoge: 0.85,
     ParamBrowLY: 0.6, ParamBrowRY: 0.6,
   },
@@ -161,16 +161,17 @@ const HIYORI = {
     ParamBrowLY: -1, ParamBrowRY: -1,
     ParamBrowLForm: -1, ParamBrowRForm: -1,
     ParamBrowLAngle: -1, ParamBrowRAngle: -1,
-    ParamMouthForm: -2, ParamMouthOpenY: 0.85,
-    ParamCheek: 0.5,
+    ParamMouthForm: -2, ParamMouthOpenY: 1,
+    ParamCheek: 0.9,
     ParamHairAhoge: 1,
   },
 
   // 搞怪：单眼眨（左闭右睁）+ 咧嘴 + 呆毛翘
   playful: {
-    ParamEyeLOpen: -1, ParamEyeROpen: 0.3,
+    // 右眼 +0.3 是没用的：开合 0~1 默认 1，正向 Add 直接饱和 —— 改成 0
+    ParamEyeLOpen: -1, ParamEyeROpen: 0,
     ParamEyeLSmile: 1,
-    ParamMouthForm: 1, ParamMouthOpenY: 0.5,
+    ParamMouthForm: 1, ParamMouthOpenY: 0.8,
     ParamCheek: 0.2,
     ParamHairAhoge: 1,
     ParamBrowLY: 0.3, ParamBrowRY: -0.2,   // 一高一低，坏笑的眉
@@ -180,10 +181,10 @@ const HIYORI = {
   // 鄙夷：半垂眼 + 俯视（看不起的核心）+ 单边挑眉 + 嘴角撇下去
   scorn: {
     ParamEyeLOpen: -0.62, ParamEyeROpen: -0.62,
-    ParamEyeBallY: -0.5, ParamEyeBallX: -0.35,
+    ParamEyeBallY: -0.55, ParamEyeBallX: -0.7,
     ParamBrowLY: 0.55, ParamBrowRY: -0.6,  // 一挑一压，最典型的不屑
     ParamBrowLAngle: -0.5, ParamBrowRAngle: -0.2,
-    ParamMouthForm: -1.2, ParamMouthOpenY: -0.1,
+    ParamMouthForm: -1.4, ParamMouthOpenY: -0.1,
   },
 
   // 好奇：眼睛睁大一点 + 抬眉 + 视线偏一侧（配合歪头）+ 嘴微张
@@ -209,7 +210,7 @@ const HIYORI = {
   // 无聊：半垂眼 + **视线飘到一边**（跟 tired 的区别就在这儿）+ 嘴平 + 眉塌
   bored: {
     ParamEyeLOpen: -0.5, ParamEyeROpen: -0.5,
-    ParamEyeBallX: -0.8, ParamEyeBallY: -0.15,
+    ParamEyeBallX: -1, ParamEyeBallY: -0.15,
     ParamBrowLY: -0.55, ParamBrowRY: -0.55,
     ParamMouthForm: -0.6, ParamMouthOpenY: 0.05,
     ParamHairAhoge: -0.7,

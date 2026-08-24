@@ -808,6 +808,24 @@ app.whenReady().then(async () => {
     }
   }
 
+  // --- 情绪符号：头顶真的冒出来（跟聊天换脸走同一条链，静默失效就靠这两条守）--
+  {
+    win.webContents.send('mock', { channel: 'perform:face', payload: { name: 'angry' } });
+    await wait(350);
+    const mk = await win.webContents.executeJavaScript(`(() => {
+      const el = document.getElementById('mood-mark');
+      return el ? { t: el.textContent, pop: el.classList.contains('pop') } : null;
+    })()`);
+    check(!!mk && mk.t === '💢' && mk.pop, '情绪符号：生气的 💢 真的冒出来了（元素在、动画在放）');
+    // 同一情绪 8 秒内不重复冒：pop 类 1.9 秒后被摘，马上再发不该重新挂上
+    await wait(1900);
+    win.webContents.send('mock', { channel: 'perform:face', payload: { name: 'angry' } });
+    await wait(300);
+    const again = await win.webContents.executeJavaScript(
+      `document.getElementById('mood-mark').classList.contains('pop')`);
+    check(!again, '同一情绪 8 秒内不重复冒（不然连着三句气话就成弹幕了）');
+  }
+
   if (errors.length) {
     console.log('\n页面报的错：');
     for (const e of errors.slice(0, 8)) console.log('  ' + e);

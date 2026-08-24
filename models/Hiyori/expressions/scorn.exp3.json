@@ -15,12 +15,12 @@
     },
     {
       "Id": "ParamEyeBallY",
-      "Value": -0.5,
+      "Value": -0.55,
       "Blend": "Add"
     },
     {
       "Id": "ParamEyeBallX",
-      "Value": -0.35,
+      "Value": -0.7,
       "Blend": "Add"
     },
     {
@@ -45,7 +45,7 @@
     },
     {
       "Id": "ParamMouthForm",
-      "Value": -1.2,
+      "Value": -1.4,
       "Blend": "Add"
     },
     {

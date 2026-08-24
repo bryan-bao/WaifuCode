@@ -1,6 +1,6 @@
 {
   "name": "waifu-code",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "二次元 Claude Code 桌面助手 —— 有心情、能派活、独立会话",
   "main": "src/main.js",
   "scripts": {
@@ -79,6 +79,8 @@
       "!test-*.js",
       "!*.log",
       "!config.json",
+      "!updates",
+      "!update-download",
       "!package-lock.json",
       "!workPosture",
       "!*.png",

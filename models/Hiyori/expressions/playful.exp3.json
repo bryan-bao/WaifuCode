@@ -10,7 +10,7 @@
     },
     {
       "Id": "ParamEyeROpen",
-      "Value": 0.3,
+      "Value": 0,
       "Blend": "Add"
     },
     {
@@ -25,7 +25,7 @@
     },
     {
       "Id": "ParamMouthOpenY",
-      "Value": 0.5,
+      "Value": 0.8,
       "Blend": "Add"
     },
     {

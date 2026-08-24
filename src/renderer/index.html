@@ -25,6 +25,25 @@
      从她嘴边冒出来，大小贴着内容走 —— 一句短的就是个小圆块，
      话长了才撑到最大宽度换行。位置每帧跟着嘴巴，她跳舞时气泡也跟着晃。
      具体坐标由 stage.js 的 positionBubble() 算。 */
+  #mood-mark {
+    position: absolute;
+    font-size: 34px;
+    line-height: 1;
+    pointer-events: none;
+    opacity: 0;
+    z-index: 30;
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+    will-change: transform, opacity;
+  }
+  #mood-mark.pop { animation: mark-pop 1.8s ease-out forwards; }
+  @keyframes mark-pop {
+    0%   { opacity: 0; transform: translateY(6px)  scale(0.4); }
+    14%  { opacity: 1; transform: translateY(-2px) scale(1.18); }
+    26%  { opacity: 1; transform: translateY(-4px) scale(1); }
+    70%  { opacity: 1; transform: translateY(-10px) scale(1); }
+    100% { opacity: 0; transform: translateY(-18px) scale(0.92); }
+  }
+
   #bubble {
     position: absolute;
     left: 0;

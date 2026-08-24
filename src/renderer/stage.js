@@ -48,6 +48,7 @@ let look = null;    // 眼神和色调，见 look.js
 // 设置面板「她」那页的「情绪动作」开关。以前这个值压根没传到渲染层来，
 // 所以那个勾选框勾不勾都一样 —— 现在 pet:get-config 会带过来了。
 let gestureOn = true;
+let marksOn = true; // 情绪符号（头顶冒 💢/💧/❓…），设置「她」那页可关
 
 // ---------------------------------------------------------------------------
 // 启动
@@ -76,6 +77,7 @@ async function boot() {
   modelDir = normPath(cfg.modelPath).split('/').slice(0, -1).join('/');
   profile = cfg.profile;
   gestureOn = !(cfg.gesture && cfg.gesture.enabled === false);
+  marksOn = !(cfg.gesture && cfg.gesture.marks === false);
 
   console.log('[stage] 模型: ' + (profile && profile.name) + ' <- ' + modelUrl);
   console.log('[stage] 自检 model3.json -> ' + (await probe(modelUrl)));
@@ -742,6 +744,49 @@ function stopThinking() {
   if (tempPosture === 'think') setTempPosture(null);
 }
 
+// ─── 情绪符号 ────────────────────────────────────────────────────────────────
+// 头顶短暂冒一个动漫符号（💢 生气、💧 难过、❓ 好奇…）。
+// 【为什么要有这个】表情参数在桌宠尺寸下先天吃亏：厚刘海的模型眉毛全被盖住、
+// 嘴就几个像素，量出来 18 张脸的画面变化全在 0.5%~1.4% —— 参数已经推到极限
+// 还是含蓄。小尺寸下真正一眼可读的是二次元的老办法：冒符号。零成本。
+const MOOD_MARKS = {
+  happy: '✨', excited: '🎵', proud: '✨',
+  sad: '💧', lonely: '💧', shy: '🌸',
+  tired: '💤', sleepy: '💤',
+  surprised: '❗', curious: '❓', panic: '💦',
+  angry: '💢', frustrated: '💢',
+  playful: '⭐', scorn: '哼', bored: '…',
+};
+let markEl = null;
+let markTimer = null;
+let lastMark = { s: '', at: 0 };
+
+function moodMark(state) {
+  if (!marksOn || !model) return;
+  const ch = MOOD_MARKS[state];
+  if (!ch) return; // normal / working 不冒 —— 平静不是一种「事件」
+  const now = Date.now();
+  // 同一情绪 8 秒内只冒一次 —— 聊天连着三句都生气，冒三个就成弹幕了
+  if (lastMark.s === state && now - lastMark.at < 8000) return;
+  lastMark = { s: state, at: now };
+  if (!markEl) {
+    markEl = document.createElement('div');
+    markEl.id = 'mood-mark';
+    document.body.appendChild(markEl);
+  }
+  // 挂在头旁边（外接框顶部 headRatio 那段算头，跟摸头判定同一套几何）
+  const b = model.getBounds();
+  const ratio = (profile && profile.headRatio) || 0.28;
+  markEl.textContent = ch;
+  markEl.style.left = Math.round(b.x + b.width * 0.7) + 'px';
+  markEl.style.top = Math.round(b.y + b.height * ratio * 0.1) + 'px';
+  markEl.classList.remove('pop'); // 先摘再挂，动画才会重新触发
+  void markEl.offsetWidth;
+  markEl.classList.add('pop');
+  clearTimeout(markTimer);
+  markTimer = setTimeout(() => { if (markEl) markEl.classList.remove('pop'); }, 1900);
+}
+
 let currentFace = null;
 
 function setExpression(nameOrIndex) {
@@ -1052,6 +1097,7 @@ window.waifu.on('greet:thinking', () => thinking());
 window.waifu.on('greet:say', (e) => {
   if (!e || !e.say) return;
   const face = faceFor(e.face) || faceFor(moodState);
+  if (e.face) moodMark(e.face);
   if (face) setExpression(face);
   // hold 给 0 表示「挂着别自动收」—— 玩游戏出题时必须这样，
   // 不然你还在想，题目自己没了
@@ -1101,6 +1147,7 @@ window.waifu.on('mood:change', (e) => {
   // gesture 自己会挑：正在跳舞就不插队，没有对应动作就不动。
   // gestureOn 是设置面板「她」那页的开关，以前这个开关全项目没人读，勾不勾都一样。
   if (e.changed && dancer && gestureOn) dancer.gesture(e.state);
+  if (e.changed) moodMark(e.state);
 });
 
 // ---------------------------------------------------------------------------
@@ -1176,6 +1223,7 @@ window.waifu.on('chat:done', (e) => {
   if (e.mood) {
     const face = faceFor(e.mood);
     if (face) setExpression(face);
+    moodMark(e.mood);
 
     // normal 不演动作也不掰姿态：每句话都来一下会像抽风
     if (e.mood !== 'normal') {
@@ -1452,6 +1500,7 @@ window.waifu.on('perform:face', (e) => {
   const f = faceFor(e.name) || e.name;
   if (!f) return;
   setExpression(f);
+  moodMark(e.name);
   clearTimeout(faceTimer);
   faceTimer = setTimeout(() => {
     const back = faceFor(moodState);

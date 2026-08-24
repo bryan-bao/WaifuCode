@@ -226,6 +226,7 @@ function fillHer() {
   $('ptext').oninput = () => set('persona.text', $('ptext').value);
 
   toggle($('sw-gesture'), get('gesture.enabled', true), (v) => set('gesture.enabled', v));
+  toggle($('sw-marks'), get('gesture.marks', true), (v) => set('gesture.marks', v));
   slider('gestGap', 'gesture.minGapSec', { scale: 1, fmt: (n) => n + '秒' });
 }
 

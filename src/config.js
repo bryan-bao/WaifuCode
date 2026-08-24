@@ -135,6 +135,7 @@ const DEFAULTS = {
   // 情绪动作：心情一变就配个身体动作，不光是换张脸
   gesture: {
     enabled: true,
+    marks: true,   // 情绪符号：头顶冒 💢/💧/❓…（小尺寸下最好读的情绪信号）
     minGapSec: 8, // 两个动作之间至少隔这么久，免得她一直抽搐
   },
 

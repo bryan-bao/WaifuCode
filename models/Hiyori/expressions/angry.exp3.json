@@ -50,12 +50,12 @@
     },
     {
       "Id": "ParamMouthOpenY",
-      "Value": 0.85,
+      "Value": 1,
       "Blend": "Add"
     },
     {
       "Id": "ParamCheek",
-      "Value": 0.5,
+      "Value": 0.9,
       "Blend": "Add"
     },
     {
