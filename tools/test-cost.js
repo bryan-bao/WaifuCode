@@ -143,6 +143,51 @@ console.log('\n[5] 不是她的东西一律不算');
         '你说的话、坏行、没有 usage 的行，都不算钱');
 }
 
+console.log('\n[+] 四桶拆账与按模型分桶（同一遍扫描出的，账要能对上）');
+{
+  const dir = path.join(HOME, '.claude', 'projects', 'D--Buckets');
+  fs.mkdirSync(dir, { recursive: true });
+  const sid = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+  fs.writeFileSync(path.join(dir, sid + '.jsonl'), [
+    JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-5', usage: {
+      input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 2000, cache_creation_input_tokens: 3000 } } }),
+    JSON.stringify({ type: 'assistant', message: { model: 'claude-sonnet-5', usage: {
+      input_tokens: 100, output_tokens: 200 } } }),
+    '',
+  ].join('\n'), 'utf8');
+  const r = cost.ofSession(sid);
+  const sum = r.parts.input + r.parts.output + r.parts.cacheRead + r.parts.cacheWrite;
+  check(near(sum, r.total), '四桶加起来 = 总数（差一分钱都是账错了）');
+  check(r.tokens.input === 1100 && r.tokens.cacheRead === 2000 && r.tokens.cacheWrite === 3000,
+        'token 也按桶数着（input 1100 / read 2000 / write 3000）');
+  check(near(r.byModel['claude-opus-5'] + r.byModel['claude-sonnet-5'], r.total),
+        '按模型分桶的钱加起来也 = 总数');
+  // 命中率分母必须含 cacheWrite —— 不含的话真实会话永远 ~100%（input 只是
+  // 「既没读也没写缓存」的零头），仪表就是死的（评审实测抓的）
+  check(cost.cacheHit(r.tokens) === 33, '缓存命中 33%（2000 / 6100，分母含 cacheWrite）');
+  check(cost.cacheHit({ input: 2, cacheRead: 27265, cacheWrite: 20177 }) === 57,
+        '真实量级（input 个位数）也算得出有意义的数，不是恒 100%');
+  check(cost.cacheHit(null) === null && cost.cacheHit({}) === null, '没数据就 null，不编');
+}
+
+console.log('\n[+] 自动线名：从会话尾巴抠「你最后说的话」');
+{
+  const dir = path.join(HOME, '.claude', 'projects', 'D--Hint');
+  fs.mkdirSync(dir, { recursive: true });
+  const sid = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+  fs.writeFileSync(path.join(dir, sid + '.jsonl'), [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: '把支付回调修一下' } }),
+    JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-5', content: [{ type: 'text', text: '好' }] } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'x' }] } }),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: '<system-reminder>杂音</system-reminder>' } }),
+    '',
+  ].join('\n'), 'utf8');
+  check(cost.lastUserPrompt(sid) === '把支付回调修一下',
+        '抠出的是人话，工具结果和 <> 开头的杂音都跳过');
+  check(cost.lastUserPrompt('没有这条会话') === '', '找不到就空着，不编');
+}
+
+console.log('');
 console.log('');
 console.log(bad === 0 ? '\x1b[32m全过了\x1b[0m' : '\x1b[31m' + bad + ' 项没过\x1b[0m');
 process.exit(bad === 0 ? 0 : 1);

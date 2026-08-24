@@ -191,6 +191,19 @@ console.log('\n[9] 每条的表情都得是真表情（乱造一个的话脸不�
         '每条至少两句轮着说，不当复读机');
 }
 
+console.log('\n[+] 账本里程碑：烧满一百刀、聊满一千轮，各说一句');
+{
+  const m = new Mood({ storeDir: freshStore(), getTotals: () => ({ costUsd: 120, turns: 1200 }) });
+  const win = m._milestone();
+  check(Boolean(win) && win.id === 'turns1000',
+        '头一回对齐只说最有分量的：turns1000（拿到 ' + (win && win.id) + '）');
+  check(m.hit.has('usd100'), 'usd100 一并记上，不再逐日补发');
+  const m2 = new Mood({ storeDir: freshStore() });
+  check(m2._milestone() === null, '没注入账本就一条不响 —— 里程碑绝不读真实数据目录');
+;
+}
+
+console.log('');
 console.log('');
 console.log(bad === 0 ? '\x1b[32m全过了\x1b[0m' : '\x1b[31m' + bad + ' 项没过\x1b[0m');
 process.exit(bad === 0 ? 0 : 1);

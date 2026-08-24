@@ -377,6 +377,10 @@
   .term.strug .led { background: #f87171; box-shadow: 0 0 7px #f87171; animation: pulse 1.2s ease-in-out infinite; }
   .term.stuckled .led { background: var(--warn); box-shadow: 0 0 7px var(--warn); }
   .gitinfo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #lanes { margin-top: 4px; }
+  #lanes .chip { margin-right: 4px; }
+  .daily { font-size: 11px; color: var(--dim); margin-top: 5px; line-height: 1.8; }
+  .daily b { color: var(--fg); }
   .term .warnline {
     font-size: 11px; color: var(--bad); margin-top: 3px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -467,6 +471,7 @@
       </div>
       <!-- 派活之前先看一眼在哪个分支、干不干净。不是 git 仓库就整条不出现 -->
       <div class="gitinfo" id="gitinfo"></div>
+      <div id="lanes"></div>
       <div class="chips" id="recent"></div>
 
       <label>要她做什么</label>
@@ -528,6 +533,7 @@
       <div id="face">此刻状态：<b id="state">–</b><span id="hint"></span></div>
 
       <div id="today">今天还没开工。</div>
+      <div id="daily" class="daily"></div>
 
       <label>她手上的活<span class="count zero" id="term-count">0</span></label>
       <div id="terms"><div class="empty">还没派活。点一条就能把那个终端调出来看现场</div></div>

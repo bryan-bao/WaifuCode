@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld('waifu', {
   openTerminal: (opts) => ipcRenderer.invoke('session:open-terminal', opts),
   listSessions: () => ipcRenderer.invoke('session:list'),
   listProjects: () => ipcRenderer.invoke('session:projects'),
+  // 这个项目留着的线（能「接着聊」回去的那几条）
+  lanesFor: (dir) => ipcRenderer.invoke('session:lanes', dir),
   // 打开这个项目的小抄（她攒的，你能看能改能清）
   openNotes: (dir) => ipcRenderer.invoke('notes:open', dir),
   stopSession: (key) => ipcRenderer.invoke('session:stop', key),

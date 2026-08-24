@@ -23,7 +23,9 @@ const NODE = process.execPath; // hook 的执行环境未必有 node 在 PATH �
 // 但这张表里一直没有它 —— 于是那段代码从来没被执行过，
 // 「你把终端窗口关了」这件事她其实是靠心跳超时慢慢猜出来的。
 // 装了它之后窗口一关就立刻知道。
-const EVENTS = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionEnd'];
+// PreCompact 是后补的：上下文压缩 = 她开始忘事 + 账单大头的信号点，
+// 装上它那一刻她才提醒得了你「该收尾开新线了」
+const EVENTS = ['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionEnd', 'PreCompact'];
 
 const REMOVE = process.argv.includes('--remove');
 

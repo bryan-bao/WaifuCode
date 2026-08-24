@@ -303,7 +303,8 @@ async function refreshTerms() {
       (t.toolCount ? ' · 动了 ' + t.toolCount + ' 次工具' : '') +
       (t.errorCount ? ' · 报错 ' + t.errorCount + ' 次' : '') +
       (t.stuckMin ? ' · 卡了 ' + t.stuckMin + ' 分钟没动静' : '') +
-      (t.struggling ? ' · 连着报错' : '');
+      (t.struggling ? ' · 连着报错' : '') +
+      (t.compactions ? ' · 压缩过 ' + t.compactions + ' 次（该收尾开新线了）' : '');
 
     // codex 的线打个小牌。汇报、金额、接着聊都有了（靠读它的会话档案）；
     // 还缺的只有护栏 —— 那要在她动手**之前**报警，档案是干完才写的，拦不了
@@ -325,7 +326,20 @@ async function refreshTerms() {
       const c = document.createElement('span');
       c.className = 'cost';
       c.textContent = cost;
-      c.title = '这条线到现在烧了多少（按官方 API 单价折算）';
+      // 悬停给明细：钱烧在哪、缓存有没有在干活 ——「省钱主战场」的仪表
+      const lines = ['这条线到现在烧了多少（按官方 API 单价折算）'];
+      // 明细跟牌面同币种 —— 牌面是 ¥，四桶写 $ 的话悬停一对账差 7 倍（评审抓的）
+      const f = (v) => money(v) || '¥0';
+      if (t.costParts) {
+        lines.push('输入 ' + f(t.costParts.input) + ' · 输出 ' + f(t.costParts.output));
+        lines.push('缓存写 ' + f(t.costParts.cacheWrite) + ' · 缓存读 ' + f(t.costParts.cacheRead));
+      }
+      if (t.costHit != null) lines.push('缓存命中 ' + t.costHit + '%（高 = 省钱；掉下去多半是改了小抄或换了目录）');
+      if (t.costModels && t.costModels.length) {
+        const short = (m) => String(m).replace(/^claude-/, '').replace(/-\d{8}$/, '');
+        lines.push('大头：' + t.costModels.map((e) => short(e[0]) + ' ' + f(e[1])).join('，'));
+      }
+      c.title = lines.join('\n');
       meta.appendChild(c);
     }
 
@@ -409,11 +423,16 @@ async function refreshTerms() {
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+let todayData = null; // 日报数据（briefs/lanes/spanMin 每次刷新都算好了，点开才用）
+
 async function refreshToday() {
   const box = $('today');
   if (!box) return;
   const r = await window.waifu.journalToday();
   const t = r && r.today;
+  todayData = t || null;
+  box.style.cursor = 'pointer';
+  box.title = '点一下展开：认识以来的总账 + 今天的日报';
   if (!t) { box.textContent = '今天还没开工。'; return; }
 
   const bits = [];
@@ -443,6 +462,42 @@ async function refreshToday() {
   box.innerHTML = head + stuck + '<br>' + cost +
                   (note ? '<span class="note">' + note + '</span>' : '') +
                   (t.milestones || []).map((m) => '<span class="mark">🎉 ' + esc(m) + '</span>').join('');
+}
+
+// 「今天」点开：认识以来的总账 + standup 式日报。数据全是现成的，看一百遍不花钱
+async function toggleDaily() {
+  const box = $('daily');
+  if (!box) return;
+  if (box.innerHTML) { box.innerHTML = ''; return; }
+  const rows = [];
+  try {
+    const tot = await window.waifu.journalTotals();
+    if (tot) {
+      // 终身数用 lifetime（不受 90 天清理影响）；天数按 since 算 ——
+      // 拿幸存文件数当「认识天数」的话满 91 天就不涨了（评审抓的）
+      const life = tot.life || { turns: tot.turns, tasks: tot.tasks + tot.terms, costUsd: tot.costUsd };
+      rows.push('认识以来：<b>' + (tot.sinceDays || tot.days) + '</b> 天 · 派过 <b>' + life.tasks +
+        '</b> 个活 · 聊了 <b>' + life.turns + '</b> 轮 · 一共花了 <span class="money">' +
+        (money(life.costUsd) || '¥0') + '</span>');
+    }
+  } catch (_) { /* 总账拿不到就只出日报 */ }
+  const t = todayData;
+  if (t) {
+    if (t.spanMin) rows.push('今天从第一笔到最后一笔跨了 ' + fmtDur(t.spanMin * 60000));
+    if (t.lanes && t.lanes.length) {
+      rows.push('各条线：' + t.lanes.slice(0, 3).map((l) =>
+        esc(l.lane || l.project || '?') + ' ' + l.turns + ' 轮' +
+        (l.errors ? '（报错 ' + l.errors + '）' : '')).join(' · '));
+    }
+    if (t.briefs && t.briefs.length) {
+      rows.push('她今天的汇报：');
+      for (const b of t.briefs.slice(-6)) {
+        const hm = new Date(b.at).toTimeString().slice(0, 5);
+        rows.push('<span class="note">' + hm + '</span> ' + esc(b.text));
+      }
+    }
+  }
+  box.innerHTML = rows.length ? rows.join('<br>') : '今天还没什么可报的。';
 }
 
 async function refreshRecent() {
@@ -575,10 +630,17 @@ function refreshGit() {
     const box = $('gitinfo');
     if (!box) return;
     const dir = $('dir').value.trim();
-    if (!dir) { box.textContent = ''; box.className = 'gitinfo'; return; }
+    const lanesBox = $('lanes');
+    if (!dir) {
+      box.textContent = ''; box.className = 'gitinfo';
+      if (lanesBox) lanesBox.innerHTML = ''; // 上一个项目的线别赖着
+      return;
+    }
 
     // 你可能在结果回来之前又改了目录 —— 只认最后一次问的那个答案
     const mine = ++gitSeq;
+    // 线的列表不吃 git —— 非 git 项目的旧线也要能接着聊，所以先于 git 状态跑
+    renderLanes(dir, mine);
     const s = await window.waifu.projectStatus(dir);
     if (mine !== gitSeq) return;
 
@@ -592,6 +654,41 @@ function refreshGit() {
     box.textContent = bits.join(' · ');
     box.title = box.textContent; // 一行放不下时悬停看全文
   }, 400);
+}
+
+// 这个项目留着的线（能真接回去的那几条）。没名字的用「上次聊到什么」当名。
+// 独立于 git 状态 —— 非 git 目录也有线可接
+async function renderLanes(dir, mine) {
+    try {
+      const lanes = await window.waifu.lanesFor(dir);
+      if (mine !== gitSeq) return;
+      const lb = $('lanes');
+      if (lb) {
+        lb.innerHTML = '';
+        for (const l of lanes) {
+          if (!l.alive) continue; // 会话记录都没了的线，接过去也是新开，别骗人
+          const c = document.createElement('span');
+          c.className = 'chip';
+          c.textContent = '↻ ' + (l.name || l.hint || '一条旧线');
+          c.title = '这个项目留着的线，点一下开个终端接着聊（她记得聊到哪儿）\n' +
+            '最后用过：' + String(l.lastRun || '').slice(0, 16).replace('T', ' ') +
+            (l.turns ? ' · 聊过 ' + l.turns + ' 轮' : '');
+          c.onclick = async () => {
+            const r = await window.waifu.openTerminal({
+              projectPath: dir, laneId: l.laneId, laneName: l.name, task: '',
+              // 这里列的全是 claude 侧 alive 的线（codex 线的会话 id 在
+              // ~/.claude 不存在，天然被 alive 过滤）—— 不写死 agent 的话，
+              // 「用谁来干」切过 codex 的机器上会静默开一条全新 codex 会话，
+              // 气泡还谎报「接上了」（评审抓的，跟「再来」按钮同一个坑）
+              agent: 'claude',
+            });
+            if (r && r.ok) { msg('接上「' + (l.name || l.hint || '那条线') + '」了', 'ok'); refreshTerms(); }
+            else showErr(r, '没接上');
+          };
+          lb.appendChild(c);
+        }
+      }
+    } catch (_) { /* 列不出来就空着 */ }
 }
 
 /**
@@ -700,6 +797,7 @@ window.waifu.on('session:done', (e) => {
 
 // 终端那边有任何风吹草动都立刻反映到列表上
 window.waifu.on('term:change', () => refreshTerms());
+$('today').onclick = toggleDaily; // 点「今天」展开总账和日报
 // 版本号：平时安安静静待在标题旁，探到新版就变成能点的更新按钮
 let updVersion = null;
 function showVer(cur, upd) {

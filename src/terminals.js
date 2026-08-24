@@ -1129,6 +1129,17 @@ class TerminalManager extends EventEmitter {
         break;
       }
 
+      // 上下文满了在压缩 —— 这正是「她开始忘事、账单开始飙」的信号点，
+      // 也是收尾开新线的最佳时机。原来这个时刻完全静默
+      case 'PreCompact':
+        rec.compactions = (rec.compactions || 0) + 1;
+        this.emit('attention', {
+          id: rec.id, name: rec.name, kind: 'compact',
+          text: '「' + rec.name + '」那条线上下文满了，正在压缩 —— 长会话开始忘事了，考虑收尾开条新线。',
+        });
+        this.emit('change');
+        break;
+
       case 'Stop':
         rec.status = 'idle';
         // 一轮完事了，记一笔流水。
@@ -1354,6 +1365,7 @@ class TerminalManager extends EventEmitter {
           // 别把算好的抹成 0 —— 那可能是关窗结算前的最后一次机会
           if (u) {
             rec.codexReadAt = mt;
+            rec.codexTok = u.totals || null; // 命中率仪表用（cached_input / input）
             rec.costUsd = u.usd;
           }
         } catch (_) { /* 文件被清了就停在上次的数 */ }
@@ -1368,8 +1380,16 @@ class TerminalManager extends EventEmitter {
       // 减基线就成了负数（面板上蹦出个负金额）。钱是只增不减的东西，
       // 卡在已经算出来的那个数上
       // ponytail: 卡地板，代价是文件被换掉后新会话的钱要涨过旧基线才看得见
+      const u = cost.ofSession(rec.sessionId);
       rec.costUsd = Math.max(rec.costUsd || 0, (rec.costCarry || 0) +
-                    cost.ofSession(rec.sessionId).total - (rec.costBase || 0));
+                    u.total - (rec.costBase || 0));
+      // 明细描述的是**这份档案整体**（含接手前的历史）——算命中率和「大头是谁」
+      // 足够；别为窗口级精确再养一套四桶账
+      // 拷一份 —— u.parts 那仨是 cost.js 内部累加器的**活引用**，直接存的话
+      // closed 老线的悬停明细会跟着接手的新线继续涨（评审抓的）
+      rec.costParts = u.parts ? { ...u.parts } : null;
+      rec.costTokens = u.tokens ? { ...u.tokens } : null;
+      rec.costModels = u.byModel ? { ...u.byModel } : null;
     } catch (_) { /* 读不到就当没有，绝不能因为算钱把列表搞挂 */ }
   }
 
@@ -1607,6 +1627,22 @@ class TerminalManager extends EventEmitter {
         // 最近一次报错首行（跟什么较劲）；护栏最近一次为什么喊你（留底，可追溯）
         lastError: t.lastError || '',
         lastAlarm: t.lastAlarm || null,
+        // 钱的明细：四桶、命中率、大头模型（悬停在金额上看）
+        costParts: t.costParts || null,
+        costHit: (() => {
+          // claude 侧公式在 cost.cacheHit（分母必须含 cacheWrite，理由见那边）；
+          // codex 的 cached 本来就是 input 的子集，cached/input 语义已对齐
+          const h = cost.cacheHit(t.costTokens);
+          if (h != null) return h;
+          if (t.codexTok && t.codexTok.input_tokens > 0) {
+            return Math.round((100 * (t.codexTok.cached_input_tokens || 0)) / t.codexTok.input_tokens);
+          }
+          return null;
+        })(),
+        costModels: t.costModels
+          ? Object.entries(t.costModels).sort((a, b) => b[1] - a[1]).slice(0, 2)
+          : null,
+        compactions: t.compactions || 0,
         // 黄红灯：跟 _pulse 同一套判据，别在面板另造一份阈值
         struggling: t.status === 'running' && t.errorCount >= STRUGGLE_ERRORS,
         stuckMin: (t.status === 'running' && now - (t.lastHookAt || t.startedAt) > STUCK_MS)

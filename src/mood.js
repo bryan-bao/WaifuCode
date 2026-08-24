@@ -108,6 +108,15 @@ const MILESTONES = [
   { id: (s) => 'day' + Math.floor(s.days / 100) * 100, state: 'happy',
     test: (s) => s.days >= 200,
     lines: ['又是一百天。', '我们认识挺久了啊。'] },
+
+  // 账本向的两条（usd/turns 由 main 注入 journal.totals，见 _milestone）：
+  // 花钱这件事也该有存在感 —— 每满一百美元、聊满一千轮，各值得说一句
+  { id: (s) => 'usd' + Math.floor(s.usd / 100) * 100, state: 'surprised',
+    test: (s) => s.usd >= 100,
+    lines: ['算了笔账，我们烧的算力又满一百美元一个台阶了…都是真金白银陪你写的代码。',
+            '账本上又过一百刀了。这些钱换来的代码可得好好用啊。'] },
+  { id: 'turns1000', state: 'proud', test: (s) => s.turns >= 1000,
+    lines: ['我们聊过一千轮了。一千轮！', '第一千轮了，谁能想到呢。'] },
 ];
 
 /**
@@ -118,9 +127,12 @@ const MILESTONES = [
  * 连轴转会累，半天没人理会闹脾气，半夜会困。
  */
 class Mood extends EventEmitter {
-  constructor({ storeDir }) {
+  constructor({ storeDir, getTotals }) {
     super();
     this.file = path.join(storeDir, 'mood.json');
+    // 账本总数（journal.totals）由 main 注入 —— 不直接 require('./journal')：
+    // 测试造 Mood 时会读到真实数据目录，账本里程碑就永远不可测了
+    this.getTotals = getTotals || null;
 
     // 默认值：刚认识，心情中性，精力充沛
     this.energy = 80;
@@ -739,12 +751,16 @@ class Mood extends EventEmitter {
     const today = dayKey();
     if (this.lastHitDay === today) return null;
 
+    let jt = null;
+    try { jt = this.getTotals ? this.getTotals() : null; } catch (_) { /* 账本坏了不拦里程碑 */ }
     const s = {
       days: Math.floor((Date.now() - this.firstMet) / 86400000),
       tasks: this.tasksDone,
       streak: this.streak,
       aff: this.affection,
       nights: this.nights,
+      usd: jt ? Math.floor(jt.costUsd || 0) : 0,
+      turns: jt ? jt.turns || 0 : 0,
     };
 
     const reached = [];

@@ -912,6 +912,21 @@ const specOf = (id, name) => ({
     tm.items.delete('w991');
   }
 
+  console.log(String.fromCharCode(10) + '[23] 上下文压缩（PreCompact）她要吱一声');
+  {
+    const rec = tm._makeRecord({ id: 'w992', name: '压', dir: process.cwd(), title: 'x' }, {});
+    rec.status = 'running';
+    tm.items.set('w992', rec);
+    let heard = null;
+    tm.once('attention', (e) => { heard = e; });
+    tm.onHookEvent({ waifuTermId: 'w992', hook_event_name: 'PreCompact' });
+    check(rec.compactions === 1, '压缩次数记上了');
+    check(Boolean(heard) && heard.kind === 'compact' && heard.text.includes('收尾'),
+          '她吱声了，还提醒收尾开新线（' + (heard && heard.text.slice(0, 24)) + '…）');
+    check(tm.list().find((t) => t.id === 'w992').compactions === 1, 'list() 也吐出来（面板要显示）');
+    tm.items.delete('w992');
+  }
+
   tm.dispose();
   tm2.dispose();
   console.log('\n' + (bad ? '\x1b[31m有 ' + bad + ' 项没过\x1b[0m' : '\x1b[32m全过了\x1b[0m'));

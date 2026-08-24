@@ -60,9 +60,11 @@ function priceOf(model) {
   return FALLBACK_PRICE;
 }
 
-/** 一轮回复值多少钱 */
-function usdOf(usage, model) {
-  if (!usage) return 0;
+/**
+ * 一轮回复的钱，四桶拆开（输入/输出/缓存读/缓存写），美元和 token 各一份。
+ * 「省钱主战场」的仪表全从这儿来 —— usdOf 只是把四桶加起来，算法一个字没变。
+ */
+function partsOf(usage, model) {
   const [inPrice, outPrice] = priceOf(model);
   const M = 1e6;
 
@@ -74,16 +76,32 @@ function usdOf(usage, model) {
   const w5 = n(cc.ephemeral_5m_input_tokens);
   const w1h = n(cc.ephemeral_1h_input_tokens);
   const ccTotal = n(usage.cache_creation_input_tokens);
+  const wTok = (w5 || w1h) ? w5 + w1h : ccTotal;
   const writeCost = (w5 || w1h)
     ? (w5 * inPrice * 1.25 + w1h * inPrice * 2) / M
     : (ccTotal * inPrice * 1.25) / M;
 
-  return (
-    (n(usage.input_tokens) * inPrice) / M +
-    (n(usage.output_tokens) * outPrice) / M +
-    (n(usage.cache_read_input_tokens) * inPrice * 0.1) / M +
-    writeCost
-  );
+  return {
+    usd: {
+      input: (n(usage.input_tokens) * inPrice) / M,
+      output: (n(usage.output_tokens) * outPrice) / M,
+      cacheRead: (n(usage.cache_read_input_tokens) * inPrice * 0.1) / M,
+      cacheWrite: writeCost,
+    },
+    tok: {
+      input: n(usage.input_tokens),
+      output: n(usage.output_tokens),
+      cacheRead: n(usage.cache_read_input_tokens),
+      cacheWrite: wTok,
+    },
+  };
+}
+
+/** 一轮回复值多少钱 */
+function usdOf(usage, model) {
+  if (!usage) return 0;
+  const p = partsOf(usage, model).usd;
+  return p.input + p.output + p.cacheRead + p.cacheWrite;
 }
 
 const HOME = process.env.CLAUDE_HOME || os.homedir();
@@ -129,7 +147,9 @@ function findTranscript(sessionId) {
  * 尾巴上那半行要留到下次：读到的最后一行很可能被截断在半路，
  * 现在解析它就是丢一轮的钱。
  */
-const state = new Map(); // file -> { at, total, tail }
+const state = new Map(); // file -> { at, total, tail, parts, tok, byModel }
+
+const zero4 = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
 function scanFile(file) {
   let size = 0;
@@ -141,9 +161,10 @@ function scanFile(file) {
 
   let st = state.get(file);
   // 文件变短了 = 被换掉了（清过、或者 id 撞了），从头重来
-  if (!st || size < st.at) st = { at: 0, total: 0, tail: '' };
+  if (!st || size < st.at) st = { at: 0, total: 0, tail: '', parts: zero4(), tok: zero4(), byModel: {} };
+  if (!st.parts) { st.parts = zero4(); st.tok = zero4(); st.byModel = {}; } // 老条目升级
 
-  if (size === st.at) return { total: st.total, delta: 0 };
+  if (size === st.at) return { total: st.total, delta: 0, parts: st.parts, tokens: st.tok, byModel: st.byModel };
 
   let chunk = '';
   try {
@@ -156,7 +177,7 @@ function scanFile(file) {
       fs.closeSync(fd);
     }
   } catch (_) {
-    return { total: st.total, delta: 0 };
+    return { total: st.total, delta: 0, parts: st.parts, tokens: st.tok, byModel: st.byModel };
   }
 
   const lines = (st.tail + chunk).split('\n');
@@ -168,12 +189,24 @@ function scanFile(file) {
     try {
       const j = JSON.parse(line);
       const m = j.message;
-      if (j.type === 'assistant' && m && m.usage) delta += usdOf(m.usage, m.model);
+      if (j.type === 'assistant' && m && m.usage) {
+        // 四桶拆开攒 + 按模型分桶 ——「这钱是谁烧的、烧在哪」的答案就在
+        // 同一遍扫描里，不另开文件不多读一个字节
+        const p = partsOf(m.usage, m.model);
+        const usd = p.usd.input + p.usd.output + p.usd.cacheRead + p.usd.cacheWrite;
+        delta += usd;
+        for (const k of ['input', 'output', 'cacheRead', 'cacheWrite']) {
+          st.parts[k] += p.usd[k];
+          st.tok[k] += p.tok[k];
+        }
+        const mod = String(m.model || '?');
+        st.byModel[mod] = (st.byModel[mod] || 0) + usd;
+      }
     } catch (_) { /* 半行、或者不是我们认识的格式，跳过 */ }
   }
 
-  state.set(file, { at: size, total: st.total + delta, tail });
-  return { total: st.total + delta, delta };
+  state.set(file, { at: size, total: st.total + delta, tail, parts: st.parts, tok: st.tok, byModel: st.byModel });
+  return { total: st.total + delta, delta, parts: st.parts, tokens: st.tok, byModel: st.byModel };
 }
 
 /**
@@ -186,4 +219,52 @@ function ofSession(sessionId) {
   return scanFile(f);
 }
 
-module.exports = { ofSession, usdOf, priceOf, PRICE };
+/**
+ * 这条会话最后一句「你说的话」—— 给没起名的线当自动线名（「上次聊到：修支付
+ * 回调」比一串时间戳认得快）。只读文件尾巴 256KB（长回复会把最后那句人话顶得很远），找不到就空着，绝不编。
+ */
+function lastUserPrompt(sessionId) {
+  const f = findTranscript(sessionId);
+  if (!f) return '';
+  try {
+    const size = fs.statSync(f).size;
+    const fd = fs.openSync(f, 'r');
+    let chunk = '';
+    try {
+      const buf = Buffer.allocUnsafe(Math.min(262144, size));
+      fs.readSync(fd, buf, 0, buf.length, Math.max(0, size - buf.length));
+      chunk = buf.toString('utf8');
+    } finally { fs.closeSync(fd); }
+    const lines = chunk.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"type":"user"')) continue;
+      try {
+        const j = JSON.parse(lines[i]);
+        if (j.type !== 'user' || !j.message) continue;
+        const c = j.message.content;
+        let text = typeof c === 'string' ? c
+          : Array.isArray(c) ? String((c.find((b) => b && b.type === 'text') || {}).text || '') : '';
+        text = text.replace(/\s+/g, ' ').trim();
+        // IDE 上下文、斜杠命令、工具结果这些不是「你说的话」
+        if (!text || text.startsWith('<') || text.startsWith('/') || text.startsWith('[')) continue;
+        return text.slice(0, 40);
+      } catch (_) { /* 半行跳过 */ }
+    }
+  } catch (_) { /* 读不了就空着 */ }
+  return '';
+}
+
+/**
+ * 缓存命中率（%）。分母是**整个 prompt 侧**：input + cacheRead + cacheWrite ——
+ * 漏掉 cacheWrite 的话仪表是死的：Anthropic 的 input_tokens 只是「既没读也没写
+ * 缓存」的零头（真实会话每轮个位数），cacheRead/(input+cacheRead) 永远 ~100%。
+ * 改小抄/换目录造成的失效全记在 cacheWrite 里，它必须在分母上，指针才会动。
+ */
+function cacheHit(tok) {
+  if (!tok) return null;
+  const denom = (tok.input || 0) + (tok.cacheRead || 0) + (tok.cacheWrite || 0);
+  if (denom <= 0) return null;
+  return Math.round((100 * (tok.cacheRead || 0)) / denom);
+}
+
+module.exports = { ofSession, usdOf, partsOf, priceOf, PRICE, lastUserPrompt, cacheHit };

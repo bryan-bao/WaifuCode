@@ -705,6 +705,12 @@ function wireEvents() {
       project: e.name, ok: e.ok, ms: e.elapsedMs,
       tools: e.toolCount, errors: e.errorCount, costUsd: e.costUsd,
     });
+    // 顺手记小抄：后台线断档（会话丢了换新 id）时记忆全押在 --resume 上，
+    // 小抄正是为断档设计的兜底 —— 这条链原来没接。干砸的不记，别攒垃圾
+    if (e.ok && e.dir && e.summary && e.summary !== '（没有输出）') {
+      try { notes.append(e.dir, { task: e.task, text: String(e.summary).slice(0, 200) }); }
+      catch (_) { /* 小抄记不上不拦收工 */ }
+    }
     send('session:done', e);
   });
 
@@ -2164,6 +2170,23 @@ function wireIpc() {
   }));
   ipcMain.handle('journal:totals', () => journal.totals());
 
+  // 「这个项目留着的线」：后端 lanes() 早就在了，只差这条 IPC。
+  // 没名字的线拿「上次聊到什么」当名 —— 光靠时间戳认不出哪条是哪条
+  ipcMain.handle('session:lanes', (_e, dir) => {
+    try {
+      const d = String(dir || '').trim();
+      if (!d || !fs.existsSync(d)) return [];
+      return sessions.lanes(d).slice(0, 5).map((l) => ({
+        laneId: l.id,
+        name: l.name || '',
+        lastRun: l.lastRun || '',
+        alive: Boolean(l.alive),
+        turns: l.turns || 0,
+        hint: l.name ? '' : cost.lastUserPrompt(l.sessionId),
+      }));
+    } catch (_) { return []; }
+  });
+
   // --- 开着的终端 ---
 
   ipcMain.handle('term:list', () => (terminals ? terminals.list() : []));
@@ -2559,7 +2582,12 @@ if (!app.requestSingleInstanceLock()) {
     fs.mkdirSync(STORE, { recursive: true });
     // 三个月前的流水清一次。启动时来这么一下就够，不用起定时器
     journal.sweep();
-    mood = new Mood({ storeDir: STORE });
+    // getTotals 给账本里程碑用（烧满一百刀、聊满一千轮）—— 注入而不是让
+    // mood 自己 require：测试环境里 journal 读的是真实数据目录，注入才可控
+    // 喂终身账（lifetime.json，读一个小文件）—— 千万别喂 totals()：
+    // 那是全量扫 90 个日流水的，里程碑每分钟问一次会把主进程问出卡顿；
+    // 而且它是 90 天滚动窗口，「烧满一百刀」的终身语义就不对了（评审抓的）
+    mood = new Mood({ storeDir: STORE, getTotals: () => journal.lifetime() });
     sessions = new SessionManager({
       storeDir: STORE,
       getConfig: loadConfig,

@@ -169,10 +169,46 @@ function add(type, data) {
     since();
     const rec = { at: new Date().toISOString(), type: String(type), ...sanitize(data || {}) };
     fs.appendFileSync(fileOf(), JSON.stringify(rec) + '\n', 'utf8');
+    bumpLifetime(rec);
     return rec;
   } catch (_) {
     return null;
   }
+}
+
+// ─── 终身账本 ────────────────────────────────────────────────────────────────
+// 日流水 90 天就 sweep 掉，「认识以来一共…」和账本里程碑要的是**终身数** ——
+// 单独一个小文件按笔累加，读它不用扫盘（里程碑每分钟问一次，扫 90 个文件
+// 是评审抓出来的主进程同步热点）。首次出现时拿现存流水补一发底账。
+const LIFE_FILE = path.join(DIR, 'lifetime.json');
+let lifeCache = null;
+
+function lifetime() {
+  if (lifeCache) return { ...lifeCache };
+  try {
+    lifeCache = JSON.parse(fs.readFileSync(LIFE_FILE, 'utf8'));
+  } catch (_) {
+    // 还没有底账：拿现存的日流水（最多 90 天）补一发。比真实终身数只少不多
+    const agg = summarize(days().flatMap((d) => read(d)));
+    lifeCache = { turns: agg.turns, tasks: agg.tasks + agg.terms, costUsd: agg.costUsd };
+    saveLifetime();
+  }
+  if (typeof lifeCache.turns !== 'number') lifeCache = { turns: 0, tasks: 0, costUsd: 0 };
+  return { ...lifeCache };
+}
+
+function bumpLifetime(rec) {
+  try {
+    lifetime(); // 保证 lifeCache 就绪
+    if (rec.type === 'turn') lifeCache.turns += 1;
+    if (rec.type === 'task-done' || rec.type === 'term-open') lifeCache.tasks += 1;
+    if (typeof rec.costUsd === 'number' && isFinite(rec.costUsd)) lifeCache.costUsd += rec.costUsd;
+    saveLifetime();
+  } catch (_) { /* 底账坏了不拦记流水 */ }
+}
+
+function saveLifetime() {
+  try { fs.writeFileSync(LIFE_FILE, JSON.stringify(lifeCache), 'utf8'); } catch (_) { /* 下次再写 */ }
 }
 
 /**
@@ -343,6 +379,14 @@ function totals() {
   const agg = summarize(all.flatMap((d) => read(d)));
   return {
     since: since(),
+    // 「认识多少天」按 since 算（那个文件永不过期），不按幸存文件数 ——
+    // 日流水 90 天就删，用文件数的话天数封顶 91，「认识以来」就成了谎话
+    sinceDays: (() => {
+      try { return Math.max(all.length, Math.floor((Date.now() - +new Date(since())) / 86400000) + 1); }
+      catch (_) { return all.length; }
+    })(),
+    // 终身账（lifetime.json 按笔累加，不受 90 天清理影响）
+    life: lifetime(),
     days: all.length,
     terms: agg.terms,
     turns: agg.turns,
@@ -372,5 +416,5 @@ function sweep(keepDays = KEEP_DAYS) {
 
 module.exports = {
   add, read, days, summarize, today, month, totals, sweep, since,
-  dayKey, redact, DIR, KEEP_DAYS,
+  dayKey, redact, DIR, KEEP_DAYS, lifetime,
 };

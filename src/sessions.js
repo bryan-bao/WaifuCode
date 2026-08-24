@@ -250,9 +250,12 @@ class SessionManager extends EventEmitter {
     return rec.lanes;
   }
 
-  /** 这个目录下留着的分线，最近用过的排前面 */
+  /** 这个目录下留着的分线，最近用过的排前面。
+   *  **只读**：没记录的目录直接空手回 —— _recordFor 会创建并落盘，
+   *  面板每次刷新都问一遍的话，registry 里全是随手敲的目录（评审抓的） */
   lanes(dir) {
-    const rec = this._recordFor(dir);
+    const rec = this.registry[this._keyOf(dir)];
+    if (!rec) return [];
     return this._lanesOf(rec)
       .map((l) => ({ ...l, alive: sessionExists(dir, l.sessionId) }))
       .sort((a, b) => String(b.lastRun || '').localeCompare(String(a.lastRun || '')));
@@ -527,7 +530,7 @@ class SessionManager extends EventEmitter {
       session.status = 'failed';
       this.sessions.delete(key);
       this.emit('done', {
-        key, name: rec.name, ok: false,
+        key, name: rec.name, dir, task, ok: false,
         summary: '起不来: ' + err.message,
       });
     });
@@ -544,6 +547,8 @@ class SessionManager extends EventEmitter {
       this.emit('done', {
         key,
         name: rec.name,
+        dir,
+        task,
         ok,
         code,
         elapsedMs: Date.now() - session.startedAt,
