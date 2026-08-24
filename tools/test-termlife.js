@@ -867,6 +867,15 @@ const specOf = (id, name) => ({
     tmA.dispose();
   }
 
+  console.log(String.fromCharCode(10) + "[21] 聚焦不许凭空造窗口（wt -w 对不存在的名字是「新建」不是报错）");
+  {
+    const src = fs.readFileSync(path.join(__dirname, "..", "src", "terminals.js"), "utf8");
+    const lc = src.slice(src.indexOf("_launchConhost(spec, env, launcher) {"), src.indexOf("_launchConhost(spec, env, launcher) {") + 1200);
+    check(lc.includes("spec.windowName = null"), "conhost 开的窗必须清掉 windowName —— 留着 focus 就会 wt -w 造空窗");
+    const fo = src.slice(src.indexOf("async focus(id)"), src.indexOf("async focus(id)") + 1200);
+    check(fo.includes("pidAlive(rec.pid)"), "focus 的 wt 路要先探 pid —— 窗口没了还 focus-tab 就是造一个新空窗");
+  }
+
   tm.dispose();
   tm2.dispose();
   console.log('\n' + (bad ? '\x1b[31m有 ' + bad + ' 项没过\x1b[0m' : '\x1b[32m全过了\x1b[0m'));

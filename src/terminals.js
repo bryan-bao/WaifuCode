@@ -874,6 +874,17 @@ class TerminalManager extends EventEmitter {
   }
 
   _launchConhost(spec, env, launcher) {
+    // conhost 的窗口没有 wt 那套「具名窗口」——windowName 留着的话，之后
+    // focus() 会去跑 `wt -w waifu-xx focus-tab`，而 wt 对不存在的名字
+    // **不报错，直接新建一个那个名字的空终端窗口**：每点一次「看现场」
+    // 就凭空多一个命令行窗口（实机撞过）。清掉，聚焦走按标题那条路
+    spec.windowName = null;
+    const rec = this.items.get(spec.id);
+    if (rec) {
+      rec.windowName = null;
+      try { this._patchSpec(rec, { windowName: null }); } catch (_) { /* 落不上盘影响的只是重启后 */ }
+    }
+
     // start 的第一个带引号参数会被当成窗口标题，所以必须显式给一个，
     // 否则它会把后面的路径误当标题，命令直接跑飞。
     // /MIN 要放在标题**前面** —— 它是 start 自己的开关，跑到标题后面就成了
@@ -1716,7 +1727,11 @@ class TerminalManager extends EventEmitter {
     const rec = this.items.get(id);
     if (!rec) return { ok: false, error: '没这个终端' };
 
-    if (this.wt && rec.windowName) {
+    // pid 都探不活了，窗口八成已经没了 —— 这时候还跑 `wt -w <名> focus-tab`，
+    // wt 对不存在的名字**不报错，是新建一个空终端窗口**，你点一次多一个。
+    // pid 有被顶号误报「活着」的可能，那只是让这道闸偶尔放行，
+    // 后面按标题那条会兜住「窗口其实没了」的结论
+    if (this.wt && rec.windowName && (!rec.pid || pidAlive(rec.pid))) {
       try {
         // 这一步很快（几百毫秒），先让窗口浮上来
         await run(this.wt, ['-w', rec.windowName, 'focus-tab'], 4000);
