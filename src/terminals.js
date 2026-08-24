@@ -670,6 +670,10 @@ class TerminalManager extends EventEmitter {
       status: task && task.trim() ? 'running' : 'idle',
     });
     this.items.set(id, rec);
+    // 「接着聊」开的新窗口就是那条线的延续 —— 同一条线已经关掉的旧行收走。
+    // 不收的话面板上同名两行（一暗一亮），看着像没接上（实机反馈的）。
+    // 只收 closed：done 的窗口还开着，那行还能点过去看结果
+    if (spec.laneId) this._retireLane(spec.laneId, id);
 
     this._launch(spec);
     this.emit('change');
@@ -1905,6 +1909,20 @@ class TerminalManager extends EventEmitter {
     for (const ext of ['.json', '.cmd']) {
       try { fs.unlinkSync(path.join(this.specDir, id + ext)); } catch (_) { /* 本来就没有也无所谓 */ }
     }
+  }
+
+  // 同一条线被新窗口接走了：把它已经 closed 的旧行收掉（历史都在新窗口里续写）
+  _retireLane(laneId, keepId) {
+    let removed = false;
+    for (const [oldId, r] of [...this.items]) {
+      if (oldId !== keepId && r.laneId === laneId && r.status === 'closed') {
+        this.items.delete(oldId);
+        this._cleanFiles(oldId);
+        this.log('[term] ' + oldId + ' 的线被 ' + keepId + ' 接走了，旧行收起');
+        removed = true;
+      }
+    }
+    return removed;
   }
 
   // 从列表里去掉。不动那个窗口 —— 用户只是不想在面板上看见它了。

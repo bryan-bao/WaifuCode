@@ -927,6 +927,18 @@ const specOf = (id, name) => ({
     tm.items.delete('w992');
   }
 
+  console.log(String.fromCharCode(10) + '[24] 「接着聊」接走的线，旧的暗行要自动收掉');
+  {
+    const mk = (id, st) => { const r = tm._makeRecord({ id, name: '线', dir: process.cwd(), title: 'x', laneId: 'L-abc' }, {}); r.status = st; tm.items.set(id, r); return r; };
+    mk('w993', 'closed');   // 上次干完关掉的
+    mk('w994', 'closed');   // 更早一次的
+    mk('w995', 'done');     // 窗口还开着的 —— 不许收
+    tm._retireLane('L-abc', 'w996');
+    check(!tm.items.has('w993') && !tm.items.has('w994'), '两条 closed 的旧行都收了');
+    check(tm.items.has('w995'), 'done 的不收 —— 窗口还开着，那行还能点过去看结果');
+    tm.items.delete('w995');
+  }
+
   tm.dispose();
   tm2.dispose();
   console.log('\n' + (bad ? '\x1b[31m有 ' + bad + ' 项没过\x1b[0m' : '\x1b[32m全过了\x1b[0m'));
