@@ -38,6 +38,10 @@ const { SessionManager, resolveClaudeBin, claudeInstalled } = require('./session
 const agents = require('./agents');
 // 局域网版本更新：查新版/下载校验/当分发点，协议和边界见模块头注释
 const updates = require('./updates');
+// 算钱那套。**必须在这儿 require**：session:lanes 用它给没起名的线取名，
+// 漏了的话一碰到没名字的线就 ReferenceError → 被 catch 吞掉 → 整排
+// 「留着的线」静默消失（排查抓的，跟 registerHotkey 一个死法）
+const cost = require('./cost');
 // 手机工作台：扫码进的手机页（派活 + SSE 实时进度 + 远程放行）
 const mobile = require('./mobile');
 // 出门模式：cloudflared 免费隧道，把手机工作台暴露成临时公网地址
@@ -424,7 +428,17 @@ function createSettingsWindow() {
 
   settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
   settingsWin.once('ready-to-show', () => settingsWin.show());
-  settingsWin.on('closed', () => { settingsWin = null; });
+  settingsWin.on('closed', () => {
+    settingsWin = null;
+    // 预览是真作用在她身上的（拖大小、换色调当场就变）。点「取消」或直接
+    // 关窗口时不还原的话：屏幕上是新样子、存档里是旧值，下次打开设置
+    // 滑块跟她对不上，你会以为设置面板读错了（排查抓的）
+    try {
+      const cfg = loadConfig();
+      send('look:apply', cfg.look || {});
+      applyPetScale(petScaleOf(cfg));
+    } catch (_) { /* 还原不了就等下次重启 */ }
+  });
   settingsWin.webContents.on('console-message', (_e, _l, m) => log('[settings] ' + m));
 }
 
@@ -1522,6 +1536,18 @@ function installAgent(agent) {
     }
     if (ok) {
       log('[install] ' + name + ' 装好了');
+      // **把新装的路径推给三个长命对象**：它们各存了一份启动那刻解析的 bin，
+      // 不推的话装完照样是 spawn ENOENT，用户得重启才好 —— 而她刚说完
+      // 「装好啦，再点一次就能开工」（排查抓的）
+      if (agent !== 'codex') {
+        try {
+          const fresh = resolveClaudeBin();
+          if (terminals) terminals.claudeBin = fresh;
+          if (chat) chat.claudeBin = fresh;
+          if (greeter) greeter.claudeBin = fresh;
+          log('[install] claude 路径已更新给正在跑的那几摊: ' + fresh);
+        } catch (e) { log('[install] 路径推不过去（重启一次就好）: ' + e.message); }
+      }
       send('session:say', {
         name: '',
         text: name + ' 装好啦！再点一次「派活 / 开终端」就能开工。'
@@ -2493,7 +2519,12 @@ function wireIpc() {
         turns: l.turns || 0,
         hint: l.name ? '' : cost.lastUserPrompt(l.sessionId),
       }));
-    } catch (_) { return []; }
+    } catch (err) {
+      // 空数组 = 「这个项目没留着线」，跟「读挂了」在协议上分不开 ——
+      // 不记一行的话，出了问题连查都没得查（排查抓的）
+      log('[session] 这个项目的线读不出来: ' + err.message);
+      return [];
+    }
   });
 
   // --- 开着的终端 ---
@@ -2564,7 +2595,10 @@ function wireIpc() {
         branch: branch.trim(), dirty, ahead, behind,
         lastCommit: String(last || '').trim().slice(0, 60),
       };
-    } catch (_) {
+    } catch (err) {
+      // null 在这条协议里的意思是「不是 git 仓库」。真出错也返回 null 的话，
+      // 面板就装作这目录没被 git 管着 —— 至少留一行，别静默（排查抓的）
+      log('[git] 查不了这个目录: ' + err.message);
       return null;
     }
   });
@@ -2633,6 +2667,14 @@ function wireIpc() {
       if (next.update) { delete next.update.announced; delete next.update.seenVersion; }
       const after = config.patch(next);
 
+      // 【下面每一步都各自兜住。】盘在上面那句 config.patch 就已经写了 ——
+      // 这儿再抛，用户看到的是「没存上」（其实存了），而且排在抛点后面的
+      // 步骤一件都不做：快捷键没重挂、角色没重载。一个不相干的小毛病
+      // 不该让整串生效逻辑连坐（排查抓的）
+      const step = (what, fn) => {
+        try { fn(); } catch (e) { log('[settings] ' + what + ' 没做成: ' + e.message); }
+      };
+
       // 语音的改动当场生效，不用重启
       if (voice) {
         Object.assign(voice.cfg, after.voice || {});
@@ -2643,13 +2685,23 @@ function wireIpc() {
       }
 
       // 「她的大小」：预览时窗口已经跟着了，这一步是落定（换角色那条路也得走到）
-      applyPetScale(petScaleOf(after));
+      step('调大小', () => applyPetScale(petScaleOf(after)));
 
       // 更新分发开关跟着存档走
-      syncUpdateServe(after);
+      step('更新分发开关', () => syncUpdateServe(after));
 
       // 快捷键改了就当场重挂（不用重启）
-      if (JSON.stringify(before.hotkey || {}) !== JSON.stringify(after.hotkey || {})) registerHotkey();
+      step('重挂快捷键', () => {
+        if (JSON.stringify(before.hotkey || {}) !== JSON.stringify(after.hotkey || {})) registerHotkey();
+      });
+
+      // 情绪动作 / 情绪符号这两个开关，渲染层只在开机时读过一次 ——
+      // 改了不重载的话存档对了、行为没换，跟快捷键那个坑一模一样（排查抓的）
+      step('情绪开关生效', () => {
+        if (JSON.stringify(before.gesture || {}) !== JSON.stringify(after.gesture || {})) {
+          if (petWin && !petWin.isDestroyed()) petWin.reload();
+        }
+      });
 
       // 换角色：重新加载渲染层就行，整个应用不用重启
       if (before.modelPath !== after.modelPath) {
