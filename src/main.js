@@ -48,6 +48,9 @@ const recap = require('./recap');
 const { remindStore } = require('./remind');
 // 桌面感知：拖文件分类、久未提交状态机、全屏判定
 const desk = require('./desk');
+// 「关于你」的小本子 + 她写的周记
+const { aboutStore } = require('./about');
+const diary = require('./diary');
 // 手机工作台：扫码进的手机页（派活 + SSE 实时进度 + 远程放行）
 const mobile = require('./mobile');
 // 出门模式：cloudflared 免费隧道，把手机工作台暴露成临时公网地址
@@ -100,6 +103,7 @@ let terminals = null;
 let performer = null;
 let greeter = null;
 let reminders = null;      // 口头提醒的小本子（「三点提醒我开会」）
+let about = null;          // 「关于你」的小本子（她聊天时听到就记）
 let play = null;
 // 玩游戏 / 番茄钟期间她该闭嘴：情绪台词、主动搭话、提议唱跳全压住。
 // 一边让你专注一边在旁边碎碎念，那这个功能就是反效果。
@@ -1298,6 +1302,46 @@ function checkGitDirty(p) {
     });
 }
 
+// ─── 她写的周记 ─────────────────────────────────────────────────────────────
+let diaryBusy = false;
+
+async function tryDiary() {
+  try {
+    if (diaryBusy) return;
+    if (new Date().getDay() !== 1) return;              // 只在周一
+    if (awaySince || hushed() || (play && play.busy)) return;
+    const weekKey = journal.dayKey();                    // 这个周一的日期就是这周的钥匙
+    if (dayMarks().diary === weekKey) return;
+    const facts = diary.weekFacts({ readDay: journal.read, dayKeyOf: journal.dayKey });
+    if (!facts) { markDay('diary'); return; }            // 这周没干什么，跳过也算写过
+    diaryBusy = true;
+    markDay('diary');                                    // 先记号 —— 失败也别这周反复烧钱重试
+    const r = await diary.write({
+      claudeBin: resolveClaudeBin(),
+      getConfig: loadConfig,
+      persona: (loadConfig().persona || {}).text || '',
+      facts,
+      aboutBits: about ? about.sample(2) : [],
+      log,
+    });
+    diaryBusy = false;
+    if (!r) { log('[diary] 这周没写出来，下周一再说'); return; }
+    const file = path.join(STORE, 'diary', weekKey + '.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, r.text + '\n', 'utf8');
+    journal.add('diary', { costUsd: r.costUsd || 0 });
+    log('[diary] 写好了 ' + file + '（$' + (r.costUsd || 0).toFixed(4) + '）');
+    send('greet:say', {
+      say: '我写了这周的周记，要看吗？', face: 'shy', hold: 25000,
+      offer: { kind: 'diary', label: '看看', file },
+    });
+    speakLine('我写了这周的周记，要看吗？', { maxLen: 30 });
+  } catch (err) {
+    diaryBusy = false;
+    log('[diary] 出岔子: ' + err.message);
+  }
+}
+
 // 全局快捷键。**必须是顶层函数**：设置里改完键要当场重挂，而那条路在
 // wireIpc 里 —— 原来它嵌在 createTray 里，跨作用域调用直接 ReferenceError，
 // 被 handler 的 try/catch 吞掉，表现是「保存好了但按了没反应」（实机踩过）
@@ -1634,6 +1678,8 @@ async function greetOnTouch(kind) {
     songs: songs.map((s) =>
       s.title + (s.artist ? '（' + s.artist + '）' : '') + (s.bpm ? ' ' + s.bpm + 'BPM' : '')),
     projects: sessions ? sessions.recentProjects() : [],
+    // 小本子随机抽两条 —— 搭话像认识很久的人，靠的就是这个
+    about: about ? about.sample(2) : [],
     // 私聊窗口刚聊过的话。桌面上这个她和聊天框里那个她**是同一个人**，
     // 不带这个的话，你刚在聊天框跟她说完话、回头戳一下桌面上的她，
     // 她会一脸茫然地重新自我介绍
@@ -2411,6 +2457,12 @@ function acceptOffer(offer) {
       break;
     }
 
+    case 'diary': {
+      // 周记写好了，点「看看」直接开文件
+      if (offer.file && fs.existsSync(offer.file)) shell.openPath(offer.file);
+      break;
+    }
+
     case 'commitmsg': {
       // git 值日生的「拟一条」。派个终端去看 diff 写提交信息 ——
       // 花钱的是这一下（正常派活的价），点按钮 = 你同意了
@@ -2711,6 +2763,12 @@ function wireIpc() {
       ...workItem,
       { label: '派个活…', click: () => createPanel() },
       { label: '截个图（复制）…', click: () => openShot() },
+      { label: '她记的关于你的事…', click: () => {
+        // 明文可翻可删：错了的记忆你能直接删那行，她就忘了
+        if (!about) return;
+        if (!fs.existsSync(about.file)) about.add('（这儿还空着 —— 聊天里提到你自己的事她就会记）');
+        shell.openPath(about.file);
+      } },
       { label: '跟她聊聊…', click: () => createChatWindow() },
       { label: '设置…', click: () => createSettingsWindow() },
       { type: 'separator' },
@@ -3376,6 +3434,7 @@ if (!app.requestSingleInstanceLock()) {
       claudeBin: resolveClaudeBin(),
       getConfig: loadConfig,
     });
+    about = aboutStore(path.join(STORE, 'about-you.md'));
     chat = new Chat({
       storeDir: STORE,
       log,
@@ -3383,6 +3442,14 @@ if (!app.requestSingleInstanceLock()) {
       getConfig: loadConfig,
       // 把心情接进聊天：她烦躁的时候说出来的话就该不一样
       getMoodDesc: () => (mood ? mood.describe() : ''),
+      // 小本子喂回给她 —— 记得才谈得上「自然提起」，也防她重复记
+      getAbout: () => about.forPrompt(),
+    });
+    // 她在回复里附了 <<MEM:...>>（听到了关于他的事）→ 记进小本子。
+    // 不额外说话 —— 回复本身已经自然接过话头了，再蹦一句「记下了」很出戏
+    chat.on('memory', (t) => {
+      const r = about.add(t);
+      if (r.ok) log('[about] 记了一条：' + r.text);
     });
     performer = new Performer({ log, storeDir: STORE });
     greeter = new Greeter({ log, claudeBin: resolveClaudeBin(), getConfig: loadConfig });
@@ -3440,6 +3507,12 @@ if (!app.requestSingleInstanceLock()) {
       } catch (err) { log('[remind] 查提醒出错: ' + err.message); }
     }, 30 * 1000);
     if (remindTimer.unref) remindTimer.unref();
+
+    // 她写的周记：每周一你在电脑前时写一篇（一周一次、几分钱、写不出拉倒）。
+    // 15 分钟查一拍条件，真正动笔在 tryDiary 里
+    const diaryTimer = setInterval(() => { tryDiary(); }, 15 * 60 * 1000);
+    if (diaryTimer.unref) diaryTimer.unref();
+    setTimeout(() => { tryDiary(); }, 90 * 1000); // 开机也查一次（周一早上第一次开机）
 
     // 收工那句：深夜（23 点后到凌晨 5 点前）你还在敲，她打个哈欠带一句今日总结。
     // 一天一次；quiet / 没干正事 / 人不在，都不说

@@ -127,11 +127,21 @@ function extractMood(text) {
 
 /** 这段文字里第一个「给程序看的标记」从哪儿开始（没有就是 -1） */
 function tagStart(s) {
-  const a = s.indexOf('<<ACT');
-  const b = s.indexOf('<<M:');
-  if (a < 0) return b;
-  if (b < 0) return a;
-  return Math.min(a, b);
+  const marks = ['<<ACT', '<<M:', '<<MEM:'].map((m) => s.indexOf(m)).filter((i) => i >= 0);
+  return marks.length ? Math.min(...marks) : -1;
+}
+
+// 「关于他」的记忆标记：<<MEM:他讨厌 BOM>>。跟动作一个路数 ——
+// 在回复的同一口气里附带，记忆这件事不另花一次调用的钱
+const MEM_RE = /<<MEM:([^>]{2,160}?)>>/;
+
+/** 把记忆标记摘出来。剥全部（codex 可能一轮吐好几段），条目全收 */
+function extractMemory(text) {
+  const mems = [];
+  const g = new RegExp(MEM_RE.source, 'g');
+  let m;
+  while ((m = g.exec(text))) mems.push(m[1].trim());
+  return { text: text.replace(g, '').trim(), mems };
 }
 
 /** 把动作指令从回复里摘出来，剩下的才是要显示给人看的话 */
@@ -148,6 +158,25 @@ function extractAction(text) {
   // 同 extractMood：剥全部，动作认第一个（一轮只演一个动作）
   return { text: text.replace(new RegExp(ACT_RE.source, 'g'), '').trim(), action };
 }
+/**
+ * 教她记「关于他」的小本子。门槛故意抬高 —— 记忆这东西错记比不记糟：
+ * 记的是**他这个人**的长期事实，不是聊天内容。
+ */
+const MEM_GUIDE = [
+  '【关于他的小本子】',
+  '聊天里他随口透露了**关于他自己的长期事实**（喜好、习惯、养的猫叫什么、',
+  '过敏什么、坚持的规矩），就在回复末尾附一行：',
+  '',
+  '<<MEM:他讨厌带 BOM 的文件>>',
+  '',
+  '规矩：',
+  '- 一行一条、一条一件事，20 字以内，用「他…」开头的陈述句',
+  '- 只记长期事实。今天干了什么、这段代码怎么改，这些**不记**',
+  '- 密码、身份证号这类敏感信息**绝对不记**',
+  '- 大多数对话没有可记的，没有就一行都别加 —— 硬记比不记糟',
+  '- 小本子里已有的（见下）别重复记',
+].join('\n');
+
 // 存档留多少条。留太多没意义，真正的记忆在 claude 那条会话里
 const KEEP_MSGS = 300;
 
@@ -167,7 +196,7 @@ const KEEP_MSGS = 300;
  * 半天没人说话时进程怎么办、崩了怎么恢复，得不偿失。
  */
 class Chat extends EventEmitter {
-  constructor({ storeDir, claudeBin, getConfig, getMoodDesc, log }) {
+  constructor({ storeDir, claudeBin, getConfig, getMoodDesc, log, getAbout }) {
     super();
     this.file = path.join(storeDir, 'chat.json');
     this.claudeBin = claudeBin;
@@ -340,6 +369,14 @@ class Chat extends EventEmitter {
     // 所以真正「换个人」得点重开。
   }
 
+  /** 小本子里已经记的，喂回给她（记得才谈得上「自然提起」，也防重复记） */
+  _aboutBlock() {
+    try {
+      const t = this.getAbout ? this.getAbout() : '';
+      return t ? '\n【小本子里已经记着的】\n' + t + '\n合适的时候自然带一句，别硬提、更别成串背出来。' : '';
+    } catch (_) { return ''; }
+  }
+
   _systemPrompt() {
     const p = this.getConfig().persona || {};
     const mood = this.getMoodDesc();
@@ -358,6 +395,9 @@ class Chat extends EventEmitter {
       MOOD_GUIDE,
       '',
       ACTION_GUIDE,
+      '',
+      MEM_GUIDE,
+      this._aboutBlock(),
     ]
       .filter((x) => x !== null && x !== undefined)
       .join('\n')
@@ -527,7 +567,9 @@ class Chat extends EventEmitter {
       if (failedOnce) return; // error 先报过了（spawn 失败俩事件都来）
 
       const { text: stripped, action } = extractAction(reply.trim());
-      const { text: said, mood } = extractMood(stripped);
+      const { text: noMem, mems } = extractMemory(stripped);
+      for (const t of mems) this.emit('memory', t);
+      const { text: said, mood } = extractMood(noMem);
 
       if (!said && !action) {
         failedOnce = true;
@@ -729,7 +771,9 @@ class Chat extends EventEmitter {
       this.proc = null;
 
       const { text: stripped, action } = extractAction(reply.trim());
-      const { text: said, mood } = extractMood(stripped);
+      const { text: noMem, mems } = extractMemory(stripped);
+      for (const t of mems) this.emit('memory', t);
+      const { text: said, mood } = extractMood(noMem);
 
       if (!said && !action) {
         const err = stderr.trim();

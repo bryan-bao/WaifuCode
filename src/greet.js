@@ -167,6 +167,12 @@ class Greeter {
       bits.push('- 他手上的项目：' + ctx.projects.join('；'));
     }
 
+    // 小本子里记的关于他的事（随机抽的两条）。「几周后自然提起」的那个自然 ——
+    // 用不用、怎么用她自己定，多数时候只是让语气更像认识很久的人
+    if (ctx.about && ctx.about.length) {
+      bits.push('- 你记得关于他的：' + ctx.about.join('；') + '（合适就自然带到，别硬提）');
+    }
+
     if (ctx.awayMin > 5) {
       bits.push('- 他已经 ' + Math.round(ctx.awayMin) + ' 分钟没碰键鼠了，人多半不在电脑前');
     }

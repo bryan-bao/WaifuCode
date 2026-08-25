@@ -15,6 +15,7 @@
     "test:dance": "node tools/test-dance.js",
     "test:recap": "node tools/test-recap.js",
     "test:desk": "node tools/test-desk.js",
+    "test:about": "node tools/test-about.js",
     "test:music": "node tools/test-music.js",
     "test:actions": "node tools/test-actions.js",
     "test:greet": "node tools/test-greet.js",
