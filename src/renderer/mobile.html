@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>小依 · 手机工作台</title>
+<style>
+  /* 跟桌面面板同一套「深空」配色 —— 换皮肤是第二批的事，先把结构立住 */
+  :root {
+    --bg: #0d0f16; --card: #161a24; --card2: #1c2231; --line: #272e3f;
+    --fg: #e6e8f0; --dim: #8b93a7; --faint: #59617a;
+    --acc: #5eead4; --acc2: #818cf8; --warn: #fbbf24; --bad: #f87171;
+    --lane-bg: #2a2140; --lane-fg: #c4b5fd;
+    --btn1: #0f766e; --btn2: #115e59; --btn-line: #14b8a6; --btn-fg: #d6fff8;
+    --r: 12px; --r-s: 9px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+  body { padding: 12px 12px calc(20px + env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; }
+
+  header { display: flex; align-items: center; gap: 8px; padding: 4px 2px 10px; }
+  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--acc); box-shadow: 0 0 10px var(--acc); }
+  header strong { font-size: 16px; }
+  header .sub { color: var(--dim); font-size: 12px; margin-left: auto; text-align: right; }
+  #net { font-size: 11px; }
+  #net.on { color: var(--acc); }
+  #net.off { color: var(--bad); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; margin-bottom: 12px; }
+  .card h3 { margin: 0 0 8px; font-size: 13px; color: var(--dim); font-weight: 600; letter-spacing: .5px; }
+
+  input, textarea, select {
+    width: 100%; background: var(--card2); border: 1px solid var(--line); color: var(--fg);
+    border-radius: var(--r-s); padding: 10px 12px; font: inherit; outline: none; margin-bottom: 8px;
+  }
+  textarea { min-height: 76px; resize: vertical; }
+  .row2 { display: flex; gap: 8px; }
+  .row2 > * { flex: 1; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .chip {
+    background: var(--card2); border: 1px solid var(--line); color: var(--dim);
+    border-radius: 999px; padding: 5px 12px; font-size: 12px;
+  }
+  .chip.on { border-color: var(--acc); color: var(--acc); }
+
+  button.go {
+    width: 100%; padding: 12px; border-radius: var(--r-s); border: 1px solid var(--btn-line);
+    background: linear-gradient(180deg, var(--btn1), var(--btn2)); color: var(--btn-fg);
+    font: inherit; font-weight: 600;
+  }
+  button:disabled { opacity: .5; }
+  #msg { min-height: 20px; font-size: 12px; padding: 4px 2px; }
+  #msg.ok { color: var(--acc); }
+  #msg.err { color: var(--bad); }
+
+  .term { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 11px 12px; margin-bottom: 10px; }
+  .term .t { display: flex; align-items: center; gap: 7px; }
+  .term .led { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .term.run .led { background: #34d399; box-shadow: 0 0 7px #34d399; animation: pulse 1.8s infinite; }
+  .term.wait .led { background: var(--warn); box-shadow: 0 0 7px var(--warn); }
+  .term.strug .led { background: var(--bad); box-shadow: 0 0 7px var(--bad); animation: pulse 1.2s infinite; }
+  .term.closed { opacity: .62; }
+  .term.bad .led { background: var(--bad); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .term .name { color: var(--acc); font-weight: 600; font-size: 14px; }
+  .term .lane { background: var(--lane-bg); color: var(--lane-fg); border-radius: 5px; font-size: 11px; padding: 1px 7px; }
+  .term .cost { margin-left: auto; color: var(--warn); font-size: 12px; }
+  .term .meta { color: var(--dim); font-size: 12px; margin-top: 3px; }
+  .term .phase { color: #a9b2c6; font-size: 13px; margin-top: 6px; border-left: 2px solid var(--acc2); padding-left: 8px; }
+  .term .warnline { color: var(--bad); font-size: 12px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .approve { margin-top: 10px; background: var(--card2); border: 1px solid var(--warn); border-radius: var(--r-s); padding: 10px; }
+  .approve .q { font-size: 13px; color: var(--warn); margin-bottom: 8px; word-break: break-all; }
+  .approve .btns { display: flex; gap: 8px; }
+  .approve button { flex: 1; padding: 11px; border-radius: var(--r-s); font: inherit; font-weight: 600; border: 1px solid; }
+  .approve .yes { background: #14532d; border-color: #22c55e; color: #dcfce7; }
+  .approve .no { background: #450a0a; border-color: var(--bad); color: #fee2e2; }
+
+  .empty { color: var(--faint); text-align: center; padding: 18px 0; font-size: 13px; }
+
+  .term { cursor: pointer; }
+  .term .more { color: var(--faint); font-size: 11px; margin-top: 5px; }
+
+  /* 详情页：整屏盖上来（手机上分屏没意义） */
+  .sheet {
+    position: fixed; inset: 0; z-index: 50; background: var(--bg);
+    overflow-y: auto; padding: 12px 12px calc(24px + env(safe-area-inset-bottom));
+  }
+  .sheet header { position: sticky; top: 0; background: var(--bg); z-index: 2; padding-top: 6px; }
+  .sheet .back {
+    background: var(--card2); border: 1px solid var(--line); color: var(--fg);
+    border-radius: var(--r-s); padding: 7px 14px; font: inherit; font-size: 13px;
+  }
+  .tl { border-left: 2px solid var(--line); margin: 4px 0 0 6px; padding-left: 12px; }
+  .tl .e { margin-bottom: 12px; position: relative; }
+  .tl .e::before {
+    content: ''; position: absolute; left: -17px; top: 7px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--faint);
+  }
+  .tl .e.you::before { background: var(--acc2); }
+  .tl .e.her::before { background: var(--acc); }
+  .tl .e.error::before { background: var(--bad); }
+  .tl .e.wait::before { background: var(--warn); }
+  .tl .e .when { font-size: 11px; color: var(--faint); }
+  .tl .e .who { font-size: 11px; color: var(--dim); margin-right: 6px; }
+  .tl .e.you .who { color: var(--acc2); }
+  .tl .e.her .who { color: var(--acc); }
+  .tl .e.error .who { color: var(--bad); }
+  .tl .e .txt { font-size: 13px; color: #cdd3e0; white-space: pre-wrap; word-break: break-word; }
+  .files { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .files .f { background: var(--card2); border: 1px solid var(--line); color: var(--dim); border-radius: 6px; font-size: 11px; padding: 2px 7px; }
+
+  /* 说一句：吸在底部，手机上手够得到 */
+  .say {
+    position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 4px;
+    border-top: 1px solid var(--line); margin-top: 10px;
+  }
+  .say .row { display: flex; gap: 8px; align-items: flex-end; }
+  .say textarea { min-height: 46px; margin: 0; }
+  .say button {
+    flex: none; padding: 12px 16px; border-radius: var(--r-s); border: 1px solid var(--btn-line);
+    background: linear-gradient(180deg, var(--btn1), var(--btn2)); color: var(--btn-fg); font: inherit; font-weight: 600;
+  }
+
+  /* 文件夹选择器 */
+  .picker { position: fixed; inset: 0; z-index: 70; background: var(--bg); overflow-y: auto; padding: 12px; }
+  .picker .cwd { font-size: 12px; color: var(--dim); word-break: break-all; margin: 6px 0 10px; }
+  .picker .item {
+    display: flex; align-items: center; gap: 8px; padding: 12px 10px;
+    border-bottom: 1px solid var(--line2, #1b2130); font-size: 14px;
+  }
+  .picker .item .tag { margin-left: auto; font-size: 11px; color: var(--acc); }
+  .picker .bar { display: flex; gap: 8px; position: sticky; bottom: 0; background: var(--bg); padding: 10px 0; }
+  .picker .bar button { flex: 1; padding: 12px; border-radius: var(--r-s); font: inherit; font-weight: 600; border: 1px solid var(--line); background: var(--card2); color: var(--fg); }
+  .picker .bar .use { border-color: var(--btn-line); background: linear-gradient(180deg, var(--btn1), var(--btn2)); color: var(--btn-fg); }
+</style>
+</head>
+<body>
+  <header>
+    <span class="dot"></span>
+    <strong id="who">小依</strong>
+    <span class="sub"><span id="net" class="off">连接中…</span><br><span id="today"></span></span>
+  </header>
+
+  <div class="card">
+    <h3>派个活（就在电脑上那些终端里干）</h3>
+    <select id="target"><option value="">开一条新的线</option></select>
+    <div class="chips" id="projects"></div>
+    <div class="row2" style="align-items:center">
+      <input id="dir" placeholder="项目目录" spellcheck="false" style="margin-bottom:0" />
+      <button id="pick" style="flex:none;padding:10px 14px;border-radius:var(--r-s);border:1px solid var(--line);background:var(--card2);color:var(--fg);font:inherit">选文件夹</button>
+    </div>
+    <div style="height:8px"></div>
+    <textarea id="task" placeholder="要干什么活"></textarea>
+    <div class="row2">
+      <select id="agent">
+        <option value="claude">Claude Code</option>
+        <option value="codex">Codex</option>
+      </select>
+      <select id="perm">
+        <option value="">权限：默认</option>
+        <option value="auto">自己判断</option>
+        <option value="acceptEdits">改文件不问</option>
+        <option value="plan">按计划来</option>
+        <option value="dontAsk">全都不问</option>
+      </select>
+    </div>
+    <button class="go" id="go">派活</button>
+    <div id="msg"></div>
+  </div>
+
+  <h3 style="margin:2px 4px 8px;font-size:13px;color:var(--dim);">她手上的活</h3>
+  <div id="terms"><div class="empty">加载中…</div></div>
+
+<div id="sheet" class="sheet" style="display:none"></div>
+<div id="picker" class="picker" style="display:none"></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const token = new URLSearchParams(location.search).get('t') || '';
+  const api = (p) => p + (p.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(token);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  let msgTimer = null;
+  function msg(text, kind) {
+    const el = $('msg');
+    el.textContent = text || '';
+    el.className = kind || '';
+    clearTimeout(msgTimer);
+    if (text) msgTimer = setTimeout(() => { el.textContent = ''; el.className = ''; }, 8000);
+  }
+
+  const STATUS = {
+    running: ['run', '干着呢'], waiting: ['wait', '在等确认'], idle: ['idle', '这轮完事了'],
+    done: ['idle', '干完了，窗口还开着'], closed: ['closed', '已完成'],
+  };
+  const fmtDur = (ms) => {
+    const m = Math.round((ms || 0) / 60000);
+    return m < 60 ? m + ' 分钟' : Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
+  };
+  const money = (usd) => (usd > 0.004 ? '¥' + (usd * 7.2).toFixed(2) : '');
+
+  // 放行是把确认键送进电脑上的终端窗口 —— 手机上必须二次确认，误触不可逆
+  async function approve(id, allow, name) {
+    const word = allow ? '放行' : '拒绝';
+    if (!confirm('确定' + word + '「' + name + '」这次操作？')) return;
+    try {
+      const r = await fetch(api('/api/approve'), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id, allow }),
+      }).then((x) => x.json());
+      msg(r.ok ? word + '的按键已送到电脑上，几秒后看这条线的状态' : (r.error || '没送到'), r.ok ? 'ok' : 'err');
+    } catch (e) { msg('网络断了？' + e.message, 'err'); }
+  }
+
+  // 「派给谁」：开新线，还是接着电脑上已经开着的某条线说。
+  // 后者走的是「往那个终端里打一句话」—— 跟你走到电脑前敲进去一模一样，
+  // 不会另开窗口（这正是手机远程办公的关键：接着干，不是重新开一摊）
+  function syncTargetUI() {
+    const live = $('target').value !== '';
+    $('dir').parentElement.style.display = live ? 'none' : 'flex';
+    $('agent').parentElement.style.display = live ? 'none' : 'flex';
+    $('projects').style.display = live ? 'none' : 'flex';
+    $('task').placeholder = live ? '接着说一句（直接进那个终端）' : '要干什么活';
+    $('go').textContent = live ? '发给那条线' : '派活';
+  }
+  $('target').onchange = syncTargetUI;
+
+  function render(s) {
+    if (!s) return;
+    $('who').textContent = s.name || '小依';
+    $('today').textContent = (s.mood ? s.mood + ' · ' : '') + '今天 ' + (money(s.todayUsd) || '¥0');
+
+    // 「派给谁」下拉：把电脑上还开着的线列出来
+    const sel = $('target');
+    const keep = sel.value;
+    const live = (s.terminals || []).filter((t) => t.status !== 'closed');
+    sel.innerHTML = '<option value="">开一条新的线</option>' +
+      live.map((t) => '<option value="' + esc(t.id) + '">接着「' +
+        esc((t.project || t.name) + (t.laneName ? ' · ' + t.laneName : '')) + '」说</option>').join('');
+    sel.value = live.some((t) => t.id === keep) ? keep : '';
+    syncTargetUI();
+
+    // 项目 chips
+    const pj = $('projects');
+    pj.innerHTML = '';
+    for (const p of (s.projects || []).slice(0, 6)) {
+      const c = document.createElement('span');
+      c.className = 'chip' + ($('dir').value === p.path ? ' on' : '');
+      c.textContent = p.name;
+      c.onclick = () => { $('dir').value = p.path; render(s); };
+      pj.appendChild(c);
+    }
+
+    // 终端列表
+    const box = $('terms');
+    box.innerHTML = '';
+    const list = s.terminals || [];
+    if (!list.length) { box.innerHTML = '<div class="empty">还没派活。上面派一个，进度会在这儿实时走</div>'; return; }
+    for (const t of list) {
+      let [cls, word] = STATUS[t.status] || STATUS.idle;
+      const crashed = (t.status === 'done' || t.status === 'closed') && t.exitCode !== null && t.exitCode !== 0;
+      if (crashed) { cls += ' bad'; word = '异常退出（code ' + t.exitCode + '）'; }
+      if (t.struggling) cls += ' strug';
+
+      const el = document.createElement('div');
+      el.className = 'term ' + cls;
+      el.innerHTML =
+        '<div class="t"><span class="led"></span><span class="name">' + esc(t.project || t.name) + '</span>' +
+        (t.laneName ? '<span class="lane">' + esc(t.laneName) + '</span>' : '') +
+        (money(t.costUsd) ? '<span class="cost">' + money(t.costUsd) + '</span>' : '') + '</div>' +
+        '<div class="meta">' + word + ' · ' + fmtDur(t.elapsedMs) +
+        (t.turns ? ' · ' + t.turns + ' 轮' : '') +
+        (t.errorCount ? ' · 报错 ' + t.errorCount + ' 次' : '') +
+        (t.stuckMin ? ' · 卡了 ' + t.stuckMin + ' 分钟' : '') + '</div>' +
+        ((t.lastReport || t.lastPrompt || t.task)
+          ? '<div class="phase">' + esc(t.lastReport || (t.lastPrompt ? '这轮在干：' + t.lastPrompt : t.task)) + '</div>' : '') +
+        (t.errorCount > 0 && t.lastError ? '<div class="warnline">⚠ ' + esc(t.lastError) + '</div>' : '');
+
+      // 点一下进详情页 —— 看进度、继续说、放行都在里面
+      el.onclick = (ev) => { if (!ev.target.closest('.approve')) openDetail(t.id); };
+      const more = document.createElement('div');
+      more.className = 'more';
+      more.textContent = '点开看进度 · 继续说 ›';
+      el.appendChild(more);
+
+      if (t.status === 'waiting') {
+        const ap = document.createElement('div');
+        ap.className = 'approve';
+        ap.innerHTML = '<div class="q">她在等你确认' + (t.waitDetail ? '：' + esc(t.waitDetail) : '这次操作') + '</div>';
+        const btns = document.createElement('div');
+        btns.className = 'btns';
+        const yes = document.createElement('button');
+        yes.className = 'yes'; yes.textContent = '放行';
+        yes.onclick = () => approve(t.id, true, t.project || t.name);
+        const no = document.createElement('button');
+        no.className = 'no'; no.textContent = '拒绝';
+        no.onclick = () => approve(t.id, false, t.project || t.name);
+        btns.append(yes, no);
+        ap.appendChild(btns);
+        el.appendChild(ap);
+      }
+      box.appendChild(el);
+    }
+  }
+
+  // ── 任务详情页：时间线 + 继续说 ──────────────────────────────────────
+  let openId = null;   // 正开着哪条线的详情（null = 在首页）
+  const KIND = { you: '你说', her: '她说', error: '报错', wait: '等确认' };
+
+  async function openDetail(id) {
+    openId = id;
+    $('sheet').style.display = 'block';
+    $('sheet').innerHTML = '<div class="empty">加载中…</div>';
+    await refreshDetail();
+  }
+  function closeDetail() {
+    openId = null;
+    $('sheet').style.display = 'none';
+    $('sheet').innerHTML = '';
+  }
+
+  async function refreshDetail() {
+    if (!openId) return;
+    let d = null;
+    try { d = await fetch(api('/api/detail?id=' + encodeURIComponent(openId))).then((x) => x.json()); } catch (_) { return; }
+    if (!d || d.error) { $('sheet').innerHTML = '<div class="empty">这条线不在了</div>'; return; }
+    if (!openId) return; // 加载期间用户已经退出去了
+
+    const [cls, word] = STATUS[d.status] || STATUS.idle;
+    const crashed = (d.status === 'done' || d.status === 'closed') && d.exitCode !== null && d.exitCode !== 0;
+
+    const tl = (d.timeline || []).map((e) => {
+      const hm = new Date(e.at).toTimeString().slice(0, 5);
+      return '<div class="e ' + e.kind + '"><div class="when"><span class="who">' +
+        (KIND[e.kind] || '') + '</span>' + hm + (e.rough ? ' 左右' : '') +
+        '</div><div class="txt">' + esc(e.text) + '</div></div>';
+    }).join('') || '<div class="empty">还没有进度。她开工后这里会实时长出来</div>';
+
+    const files = (d.files || []).map((f) => '<span class="f">' + esc(f.name) + (f.hits > 1 ? ' ×' + f.hits : '') + '</span>').join('');
+
+    // 等确认时，放行按钮摆在最上面 —— 那是你点进来最想干的事
+    const approveBox = d.status === 'waiting'
+      ? '<div class="approve"><div class="q">她在等你确认' + (d.waitDetail ? '：' + esc(d.waitDetail) : '这次操作') +
+        '</div><div class="btns"><button class="yes" id="d-yes">放行</button><button class="no" id="d-no">拒绝</button></div></div>'
+      : '';
+
+    $('sheet').innerHTML =
+      '<header><button class="back" id="d-back">← 返回</button></header>' +
+      '<div class="card"><div class="t" style="display:flex;align-items:center;gap:7px">' +
+      '<span class="led"></span><span class="name">' + esc(d.project || d.name) + '</span>' +
+      (d.laneName ? '<span class="lane">' + esc(d.laneName) + '</span>' : '') +
+      (money(d.costUsd) ? '<span class="cost">' + money(d.costUsd) + '</span>' : '') + '</div>' +
+      '<div class="meta">' + (crashed ? '异常退出（code ' + d.exitCode + '）' : word) + ' · ' + fmtDur(d.elapsedMs) +
+      (d.turns ? ' · ' + d.turns + ' 轮' : '') + (d.toolCount ? ' · ' + d.toolCount + ' 次工具' : '') +
+      (d.errorCount ? ' · 报错 ' + d.errorCount + ' 次' : '') + '</div>' +
+      (files ? '<div class="files">' + files + '</div>' : '') +
+      '</div>' + approveBox +
+      '<div class="card"><h3>进度</h3><div class="tl">' + tl + '</div></div>' +
+      (d.canSend
+        ? '<div class="say"><div style="font-size:11px;color:var(--faint);padding:0 2px 6px">说的话会直接打进电脑上那个终端窗口，跟你走过去敲一模一样</div>' +
+          '<div class="row"><textarea id="d-say" placeholder="接着说……"></textarea>' +
+          '<button id="d-send">发送</button></div><div id="d-msg" style="font-size:12px;min-height:18px;padding:4px 2px"></div></div>'
+        : '<div class="empty">这个窗口已经关了，只能看历史</div>');
+
+    $('sheet').querySelector('.term, .card').classList.add(cls); // 灯的颜色跟着状态
+    $('d-back').onclick = closeDetail;
+    if (d.status === 'waiting') {
+      $('d-yes').onclick = () => approve(d.id, true, d.project || d.name);
+      $('d-no').onclick = () => approve(d.id, false, d.project || d.name);
+    }
+    if (d.canSend) {
+      $('d-send').onclick = async () => {
+        const text = $('d-say').value.trim();
+        if (!text) return;
+        const dm = $('d-msg');
+        dm.textContent = '正在打进电脑上那个终端…'; dm.style.color = 'var(--dim)';
+        $('d-send').disabled = true;
+        try {
+          const r = await fetch(api('/api/send'), {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: d.id, text }),
+          }).then((x) => x.json());
+          if (r.ok) { $('d-say').value = ''; dm.textContent = '说出去了'; dm.style.color = 'var(--acc)'; }
+          else { dm.textContent = r.error || '没说出去'; dm.style.color = 'var(--bad)'; }
+        } catch (e) { dm.textContent = '网络断了？' + e.message; dm.style.color = 'var(--bad)'; }
+        $('d-send').disabled = false;
+      };
+    }
+  }
+
+  // ── 文件夹选择器：翻电脑上的目录（手机上没系统选择器）──────────────
+  async function openPicker(start) {
+    $('picker').style.display = 'block';
+    $('picker').innerHTML = '<div class="empty">加载中…</div>';
+    await loadPicker(start || $('dir').value.trim() || '');
+  }
+  async function loadPicker(dir) {
+    let d = null;
+    try { d = await fetch(api('/api/browse?dir=' + encodeURIComponent(dir))).then((x) => x.json()); } catch (_) { return; }
+    const rows = (d.dirs || []).map((x, i) =>
+      '<div class="item" data-i="' + i + '">📁 ' + esc(x.name) +
+      (x.project ? '<span class="tag">项目</span>' : '') + '</div>').join('') ||
+      '<div class="empty">' + esc(d.error || '这个文件夹里没有子目录') + '</div>';
+    $('picker').innerHTML =
+      '<div class="cwd">' + (d.cwd ? esc(d.cwd) : '选一个盘') + '</div>' +
+      (d.parent !== null && d.cwd ? '<div class="item" id="p-up">⬆ 上一层</div>' : '') +
+      rows +
+      '<div class="bar"><button id="p-cancel">取消</button>' +
+      (d.cwd ? '<button class="use" id="p-use">就用这个文件夹</button>' : '') + '</div>';
+    if ($('p-up')) $('p-up').onclick = () => loadPicker(d.parent || '');
+    $('picker').querySelectorAll('.item[data-i]').forEach((el) => {
+      el.onclick = () => loadPicker(d.dirs[Number(el.dataset.i)].path);
+    });
+    $('p-cancel').onclick = () => { $('picker').style.display = 'none'; };
+    if ($('p-use')) $('p-use').onclick = () => {
+      $('dir').value = d.cwd;
+      $('picker').style.display = 'none';
+    };
+  }
+  $('pick').onclick = () => openPicker();
+
+  // 长连接：SSE 断了指数退避重连。iOS Safari 把页面冻结后会掐连接，
+  // 恢复时**不保证**触发 error —— 光靠 onerror 会一直亮「实时」看旧账。
+  // 所以切回前台时主动重连一次，双保险
+  let retry = 1000;
+  let es = null;
+  let reconnTimer = null;
+  function scheduleReconnect() {
+    if (reconnTimer) return; // 防并发：error 和 visibilitychange 可能同时来
+    reconnTimer = setTimeout(() => { reconnTimer = null; connect(); }, retry);
+    retry = Math.min(retry * 2, 15000);
+  }
+  function connect() {
+    if (es) { try { es.close(); } catch (_) { /* 已经关了 */ } }
+    es = new EventSource(api('/api/events'));
+    es.onopen = () => { retry = 1000; lastData = Date.now(); $('net').textContent = '实时'; $('net').className = 'on'; };
+    es.onmessage = (e) => {
+      lastData = Date.now();
+      try { render(JSON.parse(e.data)); } catch (_) { /* 半包丢掉 */ }
+      // 详情页开着就一起刷 —— 进度流要跟着实时长
+      if (openId) refreshDetail();
+    };
+    es.onerror = () => {
+      try { es.close(); } catch (_) { /* 已经关了 */ }
+      $('net').textContent = '重连中…'; $('net').className = 'off';
+      scheduleReconnect();
+    };
+  }
+  document.addEventListener('visibilitychange', () => {
+    // 回到前台：连接可能已经悄悄死了（error 没触发），主动重连一次
+    if (document.visibilityState === 'visible') { retry = 1000; pull(); connect(); }
+  });
+
+  // **别把身家性命押在长连接上。** 出门模式要穿过 Cloudflare 的边缘，
+  // 那层对 SSE 的缓冲策略不由我们说了算 —— 押上去的后果就是用户看到的
+  // 「进去之后任务一个都加载不出来」。所以：进页面先老老实实拉一次，
+  // 长连接迟迟没给数据就退回轮询（3 秒一次，也就一个小 JSON）
+  let lastData = 0;
+  async function pull() {
+    try {
+      const s = await fetch(api('/api/state'), { cache: 'no-store' }).then((x) => x.json());
+      render(s);
+      lastData = Date.now();
+      if ($('net').className !== 'on') { $('net').textContent = '在线'; $('net').className = 'on'; }
+      if (openId) refreshDetail();
+    } catch (_) { /* 拉不到就等下一拍 */ }
+  }
+  pull();
+  setInterval(() => {
+    // 长连接 8 秒没给过东西 = 它多半被中间层攒住了，自己拉
+    if (Date.now() - lastData > 8000) pull();
+  }, 3000);
+
+  connect();
+
+  // 安卓返回键：先关详情/选择器，别一下退出整个页面
+  history.replaceState({ view: 'home' }, '');
+  window.addEventListener('popstate', () => {
+    if ($('picker').style.display === 'block') { $('picker').style.display = 'none'; history.pushState({ view: 'home' }, ''); return; }
+    if (openId) { closeDetail(); history.pushState({ view: 'home' }, ''); }
+  });
+
+  $('go').onclick = async () => {
+    const dir = $('dir').value.trim();
+    const task = $('task').value.trim();
+    const to = $('target').value;
+
+    // 选了现有的线：直接打进那个终端，不开新窗口
+    if (to) {
+      if (!task) return msg('还没说要说什么', 'err');
+      $('go').disabled = true;
+      msg('正在打进电脑上那个终端…');
+      try {
+        const r = await fetch(api('/api/send'), {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: to, text: task }),
+        }).then((x) => x.json());
+        if (r && r.ok) { msg('说出去了，进度看下面那条线', 'ok'); $('task').value = ''; }
+        else msg((r && r.error) || '没说出去', 'err');
+      } catch (e) { msg('网络断了？' + e.message, 'err'); }
+      $('go').disabled = false;
+      return;
+    }
+
+    if (!dir) return msg('先选或填项目目录', 'err');
+    if (!task) return msg('还没说要干什么活', 'err');
+    $('go').disabled = true;
+    msg('正在电脑上开工…');
+    try {
+      const r = await fetch(api('/api/dispatch'), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dir, task, agent: $('agent').value, permissionMode: $('perm').value || undefined }),
+      }).then((x) => x.json());
+      if (r && r.ok !== false) { msg('开工了！进度看下面', 'ok'); $('task').value = ''; }
+      else msg((r && r.error) || '没派出去', 'err');
+    } catch (e) { msg('网络断了？' + e.message, 'err'); }
+    $('go').disabled = false;
+  };
+</script>
+</body>
+</html>

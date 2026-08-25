@@ -20,10 +20,17 @@ param(
   [string]$Title = '',
   [int]$ProcessId = 0,
   [switch]$Minimize,
+  [string]$SendKeys = '',
+  [switch]$PasteStdin,
+  [string]$PasteB64 = '',
+  [switch]$Exact,
   [int]$WaitMs = 0
 )
 
 $ErrorActionPreference = 'Stop'
+$script:Exact = $Exact
+$script:PasteStdin = $PasteStdin
+$script:PasteB64 = $PasteB64
 
 # 超过这个坐标就当窗口跑到你看不见的地方去了，调回前台时顺手挪回来。
 # 不挪的话你点了「看看她在干嘛」，窗口是"恢复"了，但恢复到了你看不见的位置。
@@ -127,8 +134,9 @@ function Find-Target {
       return $false            # 精确命中，不用再找了
     }
 
-    # 包含只当备胎，而且**只留第一个** —— 继续扫，万一后面有精确的
-    if ($script:loose -eq [IntPtr]::Zero -and $t.Contains($script:Title)) {
+    # 包含只当备胎，而且**只留第一个** —— 继续扫，万一后面有精确的。
+    # -Exact 时**根本不留兜底**：发键这条路只认精确窗口，宁可找不到也不认错人
+    if (-not $script:Exact -and $script:loose -eq [IntPtr]::Zero -and $t.Contains($script:Title)) {
       $script:loose = $h
       $script:looseTitle = $t
     }
@@ -157,6 +165,50 @@ do {
 if ($h -eq [IntPtr]::Zero) {
   Write-Output 'NOTFOUND'
   exit 1
+}
+
+# 前台真的是它了，就把确认键送过去（远程放行用）。
+# 发键前最后再核一次前台 —— 不是它就绝不发：按键砸进用户正开着的
+# 别的窗口，比不发糟得多。
+function Send-KeysIfAsked([IntPtr]$hwnd) {
+  if (-not $script:SendKeys -and -not $script:PasteStdin -and -not $script:PasteB64) { return }
+  # -PasteStdin：要送进去的是一整句话（中文、符号都可能有）。
+  # SendKeys 发不了中文，而 {}()+^%~ 在它的语法里全是控制符 —— 所以改走剪贴板。
+  # 用完把剪贴板还回去：用户手上那份复制的东西不该被我们悄悄换掉。
+  $restore = $null
+  $paste = $false
+  if ($script:PasteB64) {
+    # base64 进来的才是没被编码转换糟蹋过的原文（stdin 那条会被按 GBK 解，
+    # 中文当场变乱码 —— 实测过，这是用户看到的那个坏）
+    $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($script:PasteB64))
+    $paste = $true
+  } elseif ($script:PasteStdin) {
+    $text = [Console]::In.ReadToEnd()
+    $paste = $true
+  }
+  if ($paste) {
+    if (-not $text) { Write-Output 'EMPTY'; exit 3 }
+    try { $restore = Get-Clipboard -Raw -ErrorAction Stop } catch { $restore = $null }
+    Set-Clipboard -Value $text
+  }
+  Start-Sleep -Milliseconds 350
+  if ([Waifu.Win]::GetForegroundWindow() -ne $hwnd) {
+    Write-Output ('BLOCKED ' + $script:foundTitle)
+    exit 2
+  }
+  $sh = New-Object -ComObject WScript.Shell
+  if ($paste) {
+    $sh.SendKeys('^v')
+    Start-Sleep -Milliseconds 260
+    $sh.SendKeys('{ENTER}')
+    Start-Sleep -Milliseconds 260
+    if ($null -ne $restore) { try { Set-Clipboard -Value $restore } catch { } }
+  } else {
+    $sh.SendKeys($script:SendKeys)
+  }
+  Write-Output ('TITLE64 ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script:foundTitle)))
+  Write-Output ('SENT ' + $script:foundTitle)
+  exit 0
 }
 
 # --- 藏起来 -----------------------------------------------------------------
@@ -208,6 +260,7 @@ if ($attached) {
 }
 
 if ($ok) {
+  Send-KeysIfAsked $h
   Write-Output ('OK ' + $script:foundTitle)
   exit 0
 }
@@ -216,6 +269,7 @@ if ($ok) {
 # 再核一遍当前前台是不是它
 Start-Sleep -Milliseconds 120
 if ([Waifu.Win]::GetForegroundWindow() -eq $h) {
+  Send-KeysIfAsked $h
   Write-Output ('OK ' + $script:foundTitle)
   exit 0
 }

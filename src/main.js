@@ -2,6 +2,7 @@
 
 const {
   app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell,
+  clipboard,
   globalShortcut,
 } = require('electron');
 const path = require('path');
@@ -37,6 +38,16 @@ const { SessionManager, resolveClaudeBin, claudeInstalled } = require('./session
 const agents = require('./agents');
 // 局域网版本更新：查新版/下载校验/当分发点，协议和边界见模块头注释
 const updates = require('./updates');
+// 算钱那套。**必须在这儿 require**：session:lanes 用它给没起名的线取名，
+// 漏了的话一碰到没名字的线就 ReferenceError → 被 catch 吞掉 → 整排
+// 「留着的线」静默消失（排查抓的，跟 registerHotkey 一个死法）
+const cost = require('./cost');
+// 手机工作台：扫码进的手机页（派活 + SSE 实时进度 + 远程放行）
+const mobile = require('./mobile');
+// 出门模式：cloudflared 免费隧道，把手机工作台暴露成临时公网地址
+const tunnel = require('./tunnel');
+// 截图：框一块，图进剪贴板（自己 Ctrl+V 粘到哪儿是哪儿）
+const shot = require('./shot');
 const { startServer } = require('./server');
 const { profileFor } = require('./profiles');
 const { Voice } = require('./voice');
@@ -417,7 +428,17 @@ function createSettingsWindow() {
 
   settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
   settingsWin.once('ready-to-show', () => settingsWin.show());
-  settingsWin.on('closed', () => { settingsWin = null; });
+  settingsWin.on('closed', () => {
+    settingsWin = null;
+    // 预览是真作用在她身上的（拖大小、换色调当场就变）。点「取消」或直接
+    // 关窗口时不还原的话：屏幕上是新样子、存档里是旧值，下次打开设置
+    // 滑块跟她对不上，你会以为设置面板读错了（排查抓的）
+    try {
+      const cfg = loadConfig();
+      send('look:apply', cfg.look || {});
+      applyPetScale(petScaleOf(cfg));
+    } catch (_) { /* 还原不了就等下次重启 */ }
+  });
   settingsWin.webContents.on('console-message', (_e, _l, m) => log('[settings] ' + m));
 }
 
@@ -721,6 +742,7 @@ function wireEvents() {
   terminals.on('change', () => {
     send('term:change', { count: terminals.liveCount() });
     refreshTrayTip();
+    if (mobileSrv) mobileSrv.pushState(); // 手机那头的长连接跟着动
   });
 
   // 一个阶段干完了，主动来汇报。这就是「监督」的落点：
@@ -786,9 +808,12 @@ function wireEvents() {
     // 一段就过来说话」，不是「别记我干过什么」—— 所以下面这两笔在
     // e.quiet 时照样落地，只有播报那半段会提前收工。
     journal.add('report', {
+      // termId：手机详情页要按线把「这条线之前汇报过什么」捞回来。
+      // 内存里的时间线是这轮开的窗口才有，重启/老窗口一条都没有
+      termId: e.id,
       project: e.project, lane: e.laneName,
       tools: e.toolCount, errors: e.errorCount, files: e.files,
-      brief: briefly(e.text, 60),
+      brief: briefly(e.text, 160), // 60 字看不出「做到哪了」，手机详情页要靠它
     });
 
     // 顺手记进这个项目的小抄，下次开终端带给她。
@@ -884,6 +909,173 @@ function wireEvents() {
 // change 事件每次工具调用都来一发，10 秒节流 —— tooltip 不值得每秒重算
 let trayTipAt = 0;
 let trayTipPending = null;
+// ─── 截图 ────────────────────────────────────────────────────────────────────
+/**
+ * 盖一层透明浮罩让你框一块。**一块屏一层**，不是拿并集开一个大的。
+ *
+ * 【为什么不能开一个大的】开过，双屏上只能截当前那块屏。量出来的：
+ * 要 3840x1080，Windows 给的是 1920x1032 —— 它把窗口裁到了**一块屏的
+ * 工作区**（1032 = 1080 减掉任务栏那条）。第二块屏根本没被盖住，
+ * 自然也就框不到。所以改成一块屏开一层。
+ *
+ * 【show 完必须再 setBounds 掰一次】同一个裁剪：建窗口时给的尺寸会被
+ * 按工作区削掉，掰回去才能盖住任务栏那一条（不然屏幕最底下那行永远截不到）。
+ *
+ * 【坐标这件事必须说清楚】浮罩里给的是**窗口内**的 CSS 像素，得先加上
+ * 这层浮罩自己的原点才是桌面坐标；而截图那头 CopyFromScreen 要的是物理
+ * 像素 —— 缩放 125% 的机器上直接拿 DIP 去截，框会小一圈还偏位。
+ * 所以是两步：加原点 → dipToScreenRect。
+ */
+function openShot() {
+  if (shotWins.length) { for (const w of shotWins) if (!w.isDestroyed()) w.focus(); return; }
+  for (const d of screen.getAllDisplays()) {
+    const w = new BrowserWindow({
+      x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height,
+      frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true,
+      resizable: false, movable: false, hasShadow: false, fullscreenable: false,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
+      },
+    });
+    w.setAlwaysOnTop(true, 'screen-saver');
+    w.loadFile(path.join(__dirname, 'renderer', 'shot.html'));
+    w.on('closed', () => { shotWins = shotWins.filter((x) => x !== w); });
+    w.once('ready-to-show', () => {
+      w.show();
+      w.setBounds(d.bounds);   // 见上：不掰这一下就盖不住任务栏那条
+      w.focus();
+    });
+    shotWins.push(w);
+  }
+}
+
+/** 把框掐进「所有屏的并集」里。按住不放划出屏幕是常事 */
+function clampToDesktop(r) {
+  const all = screen.getAllDisplays();
+  const x0 = Math.min(...all.map((d) => d.bounds.x));
+  const y0 = Math.min(...all.map((d) => d.bounds.y));
+  const x1 = Math.max(...all.map((d) => d.bounds.x + d.bounds.width));
+  const y1 = Math.max(...all.map((d) => d.bounds.y + d.bounds.height));
+  const left = Math.max(x0, Math.min(r.x, x1));
+  const top = Math.max(y0, Math.min(r.y, y1));
+  const right = Math.min(x1, Math.max(r.x + r.width, x0));
+  const bottom = Math.min(y1, Math.max(r.y + r.height, y0));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/** 收摊：所有屏上的浮罩一起撤（在哪块屏上框完的都一样） */
+function closeShot() {
+  const list = shotWins.slice();
+  shotWins = [];
+  for (const w of list) { if (!w.isDestroyed()) w.destroy(); }
+}
+
+async function doShot(rect, from) {
+  // **原点要在关窗口之前拿**：关了就问不出它在哪块屏上了。
+  // 浮罩给的 rect 是「窗口内」的坐标，加上原点才是桌面上的位置 ——
+  // 第二块屏的浮罩原点是 (1920,0)，不加就等于全按主屏算，截的是主屏那块
+  const org = (from && !from.isDestroyed()) ? from.getBounds() : { x: 0, y: 0 };
+  // **先把浮罩关干净再拍**：不关的话拍到的是自己那层灰罩。
+  // closed 之后再等 120ms —— 窗口没了不等于屏幕已经重画完
+  closeShot();
+  await new Promise((r) => setTimeout(r, 120));
+
+  const dir = path.join(DATA_ROOT, 'shots');
+  try {
+    // 桌面坐标（DIP）
+    let abs = {
+      x: org.x + Math.round(rect.x), y: org.y + Math.round(rect.y),
+      width: Math.round(rect.w), height: Math.round(rect.h),
+    };
+    // 拖过头了就掐回桌面范围内 —— 按住不放划出屏幕是常事，
+    // 划出去的坐标喂给 CopyFromScreen 会截出一块黑的
+    abs = clampToDesktop(abs);
+    if (abs.width < 8 || abs.height < 8) {
+      send('session:say', { name: '', text: '这框太小了，没截。' });
+      return { ok: false, error: '框太小' };
+    }
+    // DIP → 物理像素（缩放不是 100% 的机器上不换算就截歪）
+    const phys = screen.dipToScreenRect(null, abs);
+    const file = await shot.grab({
+      x: phys.x, y: phys.y, w: phys.width, h: phys.height, dir, log,
+    });
+    shot.sweep(dir);
+
+    // 【只放剪贴板，不替用户发。】原来是截完直接 sendText 打进「最近那条活线」——
+    // 用户明说了不要：图得是**可粘贴**的，粘进哪个框、配什么话、什么时候发，
+    // 是他自己的事（同一张图也可能是要贴给别的窗口的）。而且「最近那条」
+    // 本来就是猜的，猜错就是把图发错了人。
+    // 【文字和图一起放，主力是文字。】只放位图行不通 —— 实机试过粘不进去：
+    // 终端的 Ctrl+V 走的是「粘贴**文字**」那条路（Windows Terminal 自己
+    // 就把这个键占了），剪贴板里只有位图时它拿到的是空的，按下去毫无反应。
+    // 所以放的是**图片路径**：任何终端都粘得进，发出去她自己会去读这张图。
+    // 位图同时也放着 —— 粘进聊天软件、文档里那边要的就是图。
+    const img = nativeImage.createFromPath(file);
+    // 用户名带空格的机器上（C: 反斜杠 Users 反斜杠 Li Ming 那种）不加引号会被拆成两截
+    const paste = /\s/.test(file) ? '"' + file + '"' : file;
+    try {
+      if (img.isEmpty()) clipboard.writeText(paste);
+      else clipboard.write({ text: paste, image: img });
+    } catch (err) {
+      log('[shot] 剪贴板写不进去: ' + err.message);
+      send('session:say', { name: '', text: '图存下了但复制不了（剪贴板被别的软件占着）：' + path.basename(file) });
+      return { ok: false, file, error: err.message };
+    }
+    send('session:say', { name: '', text: '截好了，Ctrl+V 粘进输入框，回车发给她。' });
+    return { ok: true, file, copied: img.isEmpty() ? 'path' : 'both' };
+  } catch (err) {
+    log('[shot] 截图没成: ' + err.message);
+    send('session:say', { name: '', text: '截图没成：' + err.message });
+    return { ok: false, error: err.message };
+  }
+}
+
+// 全局快捷键。**必须是顶层函数**：设置里改完键要当场重挂，而那条路在
+// wireIpc 里 —— 原来它嵌在 createTray 里，跨作用域调用直接 ReferenceError，
+// 被 handler 的 try/catch 吞掉，表现是「保存好了但按了没反应」（实机踩过）
+function registerHotkey() {
+  // 先全摘掉再挂 —— 设置里改完键要能当场重挂，不摘的话老键还赖着
+  try { globalShortcut.unregisterAll(); } catch (_) { /* 没挂过 */ }
+  hotkeyState = {};
+  const key = (loadConfig().hotkey || {}).panel || '';
+  if (!key) { hotkeyState.panel = 'off'; } else {
+  try {
+    const ok = globalShortcut.register(key, () => {
+      createPanel();
+      if (panelWin && !panelWin.isDestroyed()) {
+        if (panelWin.isMinimized()) panelWin.restore();
+        panelWin.show();
+        panelWin.focus();
+      }
+    });
+    hotkeyState.panel = ok ? 'ok' : 'taken';
+    log(ok ? '[main] 全局快捷键 ' + key + ' 已挂上' : '[main] 全局快捷键 ' + key + ' 被别的软件占了，跳过');
+  } catch (err) {
+    hotkeyState.panel = 'taken';
+    log('[main] 全局快捷键挂不上: ' + err.message);
+  }
+  }
+
+  // 截图那个键。跟面板那个分开注册 —— 一个被占不该连累另一个
+  const sk = (loadConfig().hotkey || {}).shot || '';
+  if (!sk) { hotkeyState.shot = 'off'; } else {
+    try {
+      const ok2 = globalShortcut.register(sk, () => openShot());
+      hotkeyState.shot = ok2 ? 'ok' : 'taken';
+      log(ok2 ? '[shot] 截图快捷键 ' + sk + ' 已挂上' : '[shot] 截图快捷键 ' + sk + ' 被别的软件占了，跳过');
+    } catch (err) {
+      hotkeyState.shot = 'taken';
+      log('[shot] 截图快捷键挂不上: ' + err.message);
+    }
+  }
+}
+
+function stopTunnel() {
+  if (tunnelHandle) { try { tunnelHandle.stop(); } catch (_) { /* 已经没了 */ } tunnelHandle = null; }
+}
+
 function refreshTrayTip() {
   if (!tray) return;
   const now = Date.now();
@@ -1381,6 +1573,18 @@ function installAgent(agent) {
     }
     if (ok) {
       log('[install] ' + name + ' 装好了');
+      // **把新装的路径推给三个长命对象**：它们各存了一份启动那刻解析的 bin，
+      // 不推的话装完照样是 spawn ENOENT，用户得重启才好 —— 而她刚说完
+      // 「装好啦，再点一次就能开工」（排查抓的）
+      if (agent !== 'codex') {
+        try {
+          const fresh = resolveClaudeBin();
+          if (terminals) terminals.claudeBin = fresh;
+          if (chat) chat.claudeBin = fresh;
+          if (greeter) greeter.claudeBin = fresh;
+          log('[install] claude 路径已更新给正在跑的那几摊: ' + fresh);
+        } catch (e) { log('[install] 路径推不过去（重启一次就好）: ' + e.message); }
+      }
       send('session:say', {
         name: '',
         text: name + ' 装好啦！再点一次「派活 / 开终端」就能开工。'
@@ -1412,6 +1616,14 @@ function installAgent(agent) {
 const UPDATE_DIR = path.join(DATA_ROOT, 'updates');          // 发包侧：安装包丢这儿
 const UPDATE_DL = path.join(DATA_ROOT, 'update-download');   // 收包侧：下到这儿
 let updateSrv = null;      // 分发服务（开着才有）
+let mobileSrv = null;      // 手机工作台服务（面板点过「手机」才有）
+let mobileToday = null;    // 今天花费的 10 秒缓存 —— SSE 每 0.8 秒一推，别每推都扫流水
+let tunnelHandle = null;   // 出门模式的隧道（开着才有）
+let shotWins = [];         // 截图浮罩，**一块屏一层**（框的时候才有）
+// 两个快捷键各自挂没挂上（ok / taken 被占了 / off 没设）。
+// 设置页要如实显示 —— 全局快捷键被别的软件占是家常便饭，
+// 不说的话用户按了没反应只会以为「这功能坏了」
+let hotkeyState = {};
 let docsWin = null;        // 功能手册窗口（面板上「说明书」开的，单例）
 let updateLatest = null;   // 上次探到的远端 manifest —— 面板开晚了靠它补显示
 
@@ -1436,6 +1648,165 @@ function syncUpdateServe(cfg) {
   });
   srv.listen(port, () => log('[update] 分发开在 :' + port + '，包放 ' + UPDATE_DIR));
   updateSrv = srv;
+}
+
+// ─── 手机工作台 ──────────────────────────────────────────────────────────────
+/**
+ * 详情 = 内存里的时间线 + **流水账里这条线之前的阶段汇报**。
+ *
+ * 内存那份只有「这轮开的窗口」才有；桌宠重启过、或者窗口是上午开的，
+ * 打开详情就是一张白纸 —— 而用户点进来最想知道的恰恰是「做到哪了」。
+ * 流水账里每条 report 都记着（今天 + 昨天，够用了），按 termId 捞回来。
+ */
+function detailWithHistory(id) {
+  const d = terminals ? terminals.detail(id) : null;
+  if (!d) return null;
+  let past = [];
+  try {
+    const rows = [...journal.read(Date.now() - 86400000), ...journal.read()];
+    past = rows
+      .filter((r) => r.type === 'report' && r.termId === id && r.brief)
+      .map((r) => ({ at: +new Date(r.at), kind: 'her', text: r.brief }));
+  } catch (_) { /* 流水读不到就只给内存那份 */ }
+  if (!past.length) return d;
+
+  // 合起来按时间排，同一句话不重复摆（内存那份和流水那份会有重叠）
+  const seen = new Set();
+  const all = [...past, ...(d.timeline || [])]
+    .sort((a, b) => a.at - b.at)
+    .filter((e) => {
+      const k = e.kind + '|' + String(e.text).slice(0, 40);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  return { ...d, timeline: all.slice(-40) };
+}
+
+/**
+ * 让手机翻电脑上的文件夹（选项目用）。
+ *
+ * 手机上没有系统选择器，手敲 D:\某某\某某 是最劝退的一步。
+ * **只列文件夹名，不读任何文件内容**；dir 给空就列所有盘符。
+ * 隐藏目录和 . 开头的不列 —— 选项目用不上，列出来还碍眼。
+ */
+function browseDirs(dir) {
+  const d = String(dir || '').trim();
+  if (!d) {
+    // 盘符列表：A~Z 挨个探一遍（比拉 wmic 快，也不用另起进程）
+    const drives = [];
+    for (let i = 67; i <= 90; i++) { // C..Z
+      const root = String.fromCharCode(i) + ':\\';
+      try { if (fs.existsSync(root)) drives.push({ name: String.fromCharCode(i) + ':', path: root }); } catch (_) { /* 探不了就跳 */ }
+    }
+    return { cwd: '', parent: null, dirs: drives };
+  }
+  let cwd;
+  try { cwd = path.resolve(d); } catch (_) { return { cwd: '', parent: null, dirs: [], error: '这个路径不认识' }; }
+  let names = [];
+  try { names = fs.readdirSync(cwd, { withFileTypes: true }); } catch (err) {
+    return { cwd, parent: path.dirname(cwd) === cwd ? '' : path.dirname(cwd), dirs: [], error: '打不开这个文件夹' };
+  }
+  const dirs = names
+    .filter((e) => {
+      if (!e.isDirectory() || e.name.startsWith('.')) return false;
+      try { return !(fs.statSync(path.join(cwd, e.name)).mode & 0); } catch (_) { return false; }
+    })
+    .slice(0, 300)
+    .map((e) => {
+      const full = path.join(cwd, e.name);
+      let git = false;
+      try { git = fs.existsSync(path.join(full, '.git')) || fs.existsSync(path.join(full, 'package.json')); } catch (_) { /* 探不了当不是 */ }
+      return { name: e.name, path: full, project: git };
+    })
+    // 像项目的排前面 —— 你要找的多半就是它们
+    .sort((a, b) => (Number(b.project) - Number(a.project)) || a.name.localeCompare(b.name, 'zh'));
+  const up = path.dirname(cwd);
+  return { cwd, parent: up === cwd ? '' : up, dirs };
+}
+
+// 心情英文状态词 → 中文（跟 panel.js 的 STATE_TEXT 保持一致）
+const MOOD_TEXT = {
+  normal: '平静', working: '干活中', excited: '来劲了', frustrated: '烦躁',
+  sad: '低落', lonely: '闹脾气', happy: '开心', proud: '得意',
+  surprised: '吃惊', shy: '害羞', tired: '累了', sleepy: '困',
+  angry: '生气', playful: '搞怪', scorn: '不屑', curious: '好奇',
+  panic: '慌', bored: '无聊',
+};
+function mobileState() {
+  const cfg = loadConfig();
+  if (!mobileToday || Date.now() - mobileToday.at > 10000) {
+    let usd = 0;
+    try { usd = journal.today().costUsd || 0; } catch (_) { /* 没账就 0 */ }
+    mobileToday = { at: Date.now(), usd };
+  }
+  let projects = [];
+  // 按最近用过排序 + 过滤掉 registry 里的垃圾目录（Desktop/music 之类），
+  // 跟桌面面板一个待遇 —— 手机上手敲目录最痛苦，chips 得端上最可能要的那几个
+  try { projects = sessions.recentProjects({ limit: 6, maxDays: 3650 }) || []; } catch (_) { /* 空着 */ }
+  return {
+    name: (cfg.persona || {}).name || '小依',
+    // 翻成中文再下发（normal→平静）—— 手机页不该看到内部英文状态词
+    mood: mood ? MOOD_TEXT[(mood.snapshot() || {}).state] || '' : '',
+    todayUsd: mobileToday.usd,
+    projects: projects.map((p) => ({ name: p.name, path: p.path })),
+    terminals: terminals ? terminals.list() : [],
+  };
+}
+
+function ensureMobile() {
+  const cfg = loadConfig();
+  let token = (cfg.mobile || {}).token;
+  const port = Number((cfg.mobile || {}).port) || 47201;
+  if (!token) {
+    token = mobile.newToken();
+    config.patch({ mobile: { token } });
+  }
+  if (!(cfg.mobile || {}).enabled) config.patch({ mobile: { enabled: true } });
+
+  const urls = updates.lanIPs().map((ip) => 'http://' + ip + ':' + port + '/?t=' + token);
+  // 出门模式开着的话，把公网地址一起带回去 —— 关了二维码窗口再打开，
+  // 面板要能如实显示「现在是开着的、地址是这个」，而不是装作没开过
+  const tunnelUrl = tunnelHandle ? tunnelHandle.url + '/?t=' + token : null;
+  if (mobileSrv) return Promise.resolve({ ok: true, urls, port, tunnelUrl });
+
+  return new Promise((resolve) => {
+    const srv = mobile.createMobileServer({
+      pageFile: path.join(ROOT, 'src', 'renderer', 'mobile.html'),
+      token,
+      log,
+      hooks: {
+        state: () => mobileState(),
+        // 手机派的活永远最小化开（人都不在电脑前，弹脸给谁看）
+        dispatch: (opts) => {
+          const agent = resolveDispatchAgent(opts.agent);
+          const noCli = guardAgent(agent);
+          if (noCli) return noCli;
+          const model = agent === 'codex' ? undefined : resolveDispatchModel((loadConfig().dispatch || {}).model);
+          try {
+            return { ok: true, ...openLaneTerminal({ ...opts, model, agent }, { minimized: true }) };
+          } catch (err) {
+            return { ok: false, error: err.message };
+          }
+        },
+        approve: (id, allow) => (terminals ? terminals.approveRemote(id, allow) : { ok: false, error: '终端管理还没起来' }),
+        detail: (id) => detailWithHistory(id),
+        send: (id, text) => (terminals ? terminals.sendText(id, text) : { ok: false, error: '终端管理还没起来' }),
+        browse: (dir) => browseDirs(dir),
+      },
+    });
+    srv.on('error', (err) => {
+      log('[mobile] 起不来: ' + err.message);
+      mobileSrv = null;
+      resolve({ ok: false, error: '手机工作台起不来：' + err.message + '（多半是 ' + port + ' 口被占了）' });
+    });
+    // 0.0.0.0：手机要从局域网进来。安全靠随机口令那道闸
+    srv.listen(port, '0.0.0.0', () => {
+      mobileSrv = srv;
+      log('[mobile] 手机工作台开在 :' + port);
+      resolve({ ok: true, urls, port, tunnelUrl });
+    });
+  });
 }
 
 // 收包侧：查一次。有新版就亮面板，她也吱一声（同一个版本只吱一次）。
@@ -2000,6 +2371,7 @@ function wireIpc() {
     const menu = Menu.buildFromTemplate([
       ...workItem,
       { label: '派个活…', click: () => createPanel() },
+      { label: '截个图（复制）…', click: () => openShot() },
       { label: '跟她聊聊…', click: () => createChatWindow() },
       { label: '设置…', click: () => createSettingsWindow() },
       { type: 'separator' },
@@ -2184,7 +2556,12 @@ function wireIpc() {
         turns: l.turns || 0,
         hint: l.name ? '' : cost.lastUserPrompt(l.sessionId),
       }));
-    } catch (_) { return []; }
+    } catch (err) {
+      // 空数组 = 「这个项目没留着线」，跟「读挂了」在协议上分不开 ——
+      // 不记一行的话，出了问题连查都没得查（排查抓的）
+      log('[session] 这个项目的线读不出来: ' + err.message);
+      return [];
+    }
   });
 
   // --- 开着的终端 ---
@@ -2255,7 +2632,10 @@ function wireIpc() {
         branch: branch.trim(), dirty, ahead, behind,
         lastCommit: String(last || '').trim().slice(0, 60),
       };
-    } catch (_) {
+    } catch (err) {
+      // null 在这条协议里的意思是「不是 git 仓库」。真出错也返回 null 的话，
+      // 面板就装作这目录没被 git 管着 —— 至少留一行，别静默（排查抓的）
+      log('[git] 查不了这个目录: ' + err.message);
       return null;
     }
   });
@@ -2324,6 +2704,14 @@ function wireIpc() {
       if (next.update) { delete next.update.announced; delete next.update.seenVersion; }
       const after = config.patch(next);
 
+      // 【下面每一步都各自兜住。】盘在上面那句 config.patch 就已经写了 ——
+      // 这儿再抛，用户看到的是「没存上」（其实存了），而且排在抛点后面的
+      // 步骤一件都不做：快捷键没重挂、角色没重载。一个不相干的小毛病
+      // 不该让整串生效逻辑连坐（排查抓的）
+      const step = (what, fn) => {
+        try { fn(); } catch (e) { log('[settings] ' + what + ' 没做成: ' + e.message); }
+      };
+
       // 语音的改动当场生效，不用重启
       if (voice) {
         Object.assign(voice.cfg, after.voice || {});
@@ -2334,10 +2722,23 @@ function wireIpc() {
       }
 
       // 「她的大小」：预览时窗口已经跟着了，这一步是落定（换角色那条路也得走到）
-      applyPetScale(petScaleOf(after));
+      step('调大小', () => applyPetScale(petScaleOf(after)));
 
       // 更新分发开关跟着存档走
-      syncUpdateServe(after);
+      step('更新分发开关', () => syncUpdateServe(after));
+
+      // 快捷键改了就当场重挂（不用重启）
+      step('重挂快捷键', () => {
+        if (JSON.stringify(before.hotkey || {}) !== JSON.stringify(after.hotkey || {})) registerHotkey();
+      });
+
+      // 情绪动作 / 情绪符号这两个开关，渲染层只在开机时读过一次 ——
+      // 改了不重载的话存档对了、行为没换，跟快捷键那个坑一模一样（排查抓的）
+      step('情绪开关生效', () => {
+        if (JSON.stringify(before.gesture || {}) !== JSON.stringify(after.gesture || {})) {
+          if (petWin && !petWin.isDestroyed()) petWin.reload();
+        }
+      });
 
       // 换角色：重新加载渲染层就行，整个应用不用重启
       if (before.modelPath !== after.modelPath) {
@@ -2349,7 +2750,7 @@ function wireIpc() {
       }
 
       log('[settings] 存好了');
-      return { ok: true };
+      return { ok: true, hotkey: hotkeyState };
     } catch (err) {
       log('[settings] 存不上: ' + err.message);
       return { ok: false, error: err.message };
@@ -2471,6 +2872,51 @@ function wireIpc() {
     docsWin.on('closed', () => { docsWin = null; });
   });
 
+  // 截图浮罩：框好了 / 取消了
+  // 哪层浮罩报上来的很关键：它的原点决定了框在哪块屏上（见 doShot）
+  ipcMain.on('shot:pick', (e, rect) => {
+    doShot(rect || {}, BrowserWindow.fromWebContents(e.sender));
+  });
+  ipcMain.on('shot:cancel', () => { closeShot(); });
+
+  // 手机工作台：起服务（幂等）并把扫码用的地址给面板
+  ipcMain.handle('mobile:info', () => ensureMobile());
+
+  /**
+   * 出门模式开关：起/断 cloudflared 隧道。
+   * 没装 cloudflared 就先下（几 MB，落在数据目录，不进 C 盘）。
+   */
+  ipcMain.handle('mobile:tunnel', async (_e, on) => {
+    if (!on) {
+      if (tunnelHandle) { tunnelHandle.stop(); tunnelHandle = null; log('[tunnel] 出门模式关了'); }
+      config.patch({ mobile: { tunnel: false } });
+      return { ok: true, url: null };
+    }
+    const info = await ensureMobile();
+    if (!info.ok) return info;
+    const token = (loadConfig().mobile || {}).token;
+    if (tunnelHandle) return { ok: true, url: tunnelHandle.url + '/?t=' + token };
+    try {
+      if (!tunnel.installed(DATA_ROOT)) {
+        log('[tunnel] 下 cloudflared…');
+        send('session:say', { name: '', text: '出门模式要先下个小工具（50 多 MB），第一次慢一点，稍等…' });
+        let lastPct = 0;
+        await tunnel.install(DATA_ROOT, (pct) => {
+          // 每涨 20% 报一次，别把日志刷爆
+          if (pct >= lastPct + 20) { lastPct = pct; log('[tunnel] 下到 ' + pct + '%'); }
+        }, log);
+        log('[tunnel] cloudflared 装好了');
+      }
+      tunnelHandle = await tunnel.start({ dataRoot: DATA_ROOT, port: info.port, log });
+      config.patch({ mobile: { tunnel: true } });
+      return { ok: true, url: tunnelHandle.url + '/?t=' + token };
+    } catch (err) {
+      tunnelHandle = null;
+      log('[tunnel] 出门模式没开成: ' + err.message);
+      return { ok: false, error: '出门模式没开成：' + err.message };
+    }
+  });
+
   // 版本更新：手动查一次 / 下载并安装
   ipcMain.handle('update:check', (_e, src) => checkUpdate(typeof src === 'string' ? src : undefined));
   ipcMain.handle('update:apply', () => applyUpdate());
@@ -2558,23 +3004,6 @@ if (!app.requestSingleInstanceLock()) {
    * 抢不到就安静地算了（别的软件占着是常事），只在日志里留一行。
    * 绝不为这个弹窗打扰你 —— 快捷键没了顶多是少条近路，功能一点没少。
    */
-  function registerHotkey() {
-    const key = (loadConfig().hotkey || {}).panel || 'CommandOrControl+Alt+W';
-    if (!key) return;
-    try {
-      const ok = globalShortcut.register(key, () => {
-        createPanel();
-        if (panelWin && !panelWin.isDestroyed()) {
-          if (panelWin.isMinimized()) panelWin.restore();
-          panelWin.show();
-          panelWin.focus();
-        }
-      });
-      log(ok ? '[main] 全局快捷键 ' + key + ' 已挂上' : '[main] 全局快捷键 ' + key + ' 被别的软件占了，跳过');
-    } catch (err) {
-      log('[main] 全局快捷键挂不上: ' + err.message);
-    }
-  }
 
   app.on('will-quit', () => globalShortcut.unregisterAll());
 
@@ -2664,6 +3093,9 @@ if (!app.requestSingleInstanceLock()) {
       if (seen !== cur) config.patch({ update: { seenVersion: cur } });
     } catch (_) { /* 没有说明文件就不弹，照常起 */ }
 
+    // 手机工作台开过就一直开 —— 手机书签才随时能用（没开过完全不存在）
+    if ((loadConfig().mobile || {}).enabled) ensureMobile();
+
     // 版本更新：分发开关对齐存档；开机 20 秒后查一次，之后每 4 小时一次
     // （没填更新源的话 checkUpdate 空手就回，一次网络请求都不发）
     syncUpdateServe(loadConfig());
@@ -2714,6 +3146,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {});
 
   app.on('before-quit', () => {
+    stopTunnel(); // 出门模式的隧道跟着桌宠一起收 —— 别把公网口留在那儿
     if (sessions) sessions.stopAll();
     if (terminals) terminals.dispose();
     if (chat) chat.dispose();

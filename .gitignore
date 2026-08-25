@@ -11,6 +11,9 @@ config.json
 # 探 codex 行为时用的临时 CODEX_HOME（tools 里那些探针会造，2MB 起步）
 .tmp-codexhome/
 
+# 截图（截给她看的图，全是你屏幕上的东西）
+shots/
+
 # 运行日志
 *.log
 
@@ -38,3 +41,6 @@ update-download/
 # 打包状态（上次打到哪个提交）和生成的更新说明 —— 都是打包机自己的
 .pack-state.json
 release-notes.json
+
+# 出门模式运行时下的 cloudflared（50 多 MB，每台机器自己下）
+bin/

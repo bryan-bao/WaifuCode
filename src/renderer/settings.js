@@ -207,6 +207,75 @@ function fillWork() {
         : '本机IP:' + i.updatePort) +
       '（多个地址就试哪个通）。第一次开 Windows 会问防火墙，选「允许」。开关保存后生效。';
   }).catch(() => {});
+  // ── 快捷键：按下什么就录什么 ──────────────────────────────────────
+  // 让人手敲 'CommandOrControl+Alt+S' 这种写法是不现实的（写错了还静默不生效），
+  // 所以做成录制：点「改」→ 按组合键 → 当场显示。
+  // Electron 那头认的是 'Control+Alt+S' 这种串，这儿负责把 KeyboardEvent 翻成它
+  const KEYNAME = { ' ': 'Space', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Escape: 'Esc' };
+  function accelOf(e) {
+    const mods = [];
+    if (e.ctrlKey) mods.push('Control');
+    if (e.altKey) mods.push('Alt');
+    if (e.shiftKey) mods.push('Shift');
+    if (e.metaKey) mods.push('Super');
+    let k = e.key;
+    if (['Control', 'Alt', 'Shift', 'Meta'].includes(k)) return null; // 光按修饰键不算
+    if (KEYNAME[k]) k = KEYNAME[k];
+    else if (/^F\d{1,2}$/.test(k)) { /* F1~F12 原样 */ }
+    else if (k.length === 1) k = k.toUpperCase();
+    else return null; // 认不出来的键不收，免得存进去一个挂不上的串
+    // **必须带修饰键**：光一个字母当全局快捷键，你在任何地方打字都会触发
+    if (!mods.length) return null;
+    return mods.concat(k).join('+');
+  }
+  const showKey = (id) => {
+    const v = get('hotkey.' + (id === 'hk-panel' ? 'panel' : 'shot'), '');
+    $(id).value = v ? v.replace(/CommandOrControl/g, 'Ctrl').replace(/Control/g, 'Ctrl') : '';
+  };
+  let recording = null;
+  function stopRec() {
+    if (!recording) return;
+    $(recording).classList.remove('rec');
+    showKey(recording);
+    recording = null;
+  }
+  document.querySelectorAll('.hk-set').forEach((btn) => {
+    btn.onclick = () => {
+      stopRec();
+      recording = btn.dataset.for;
+      $(recording).classList.add('rec');
+      $(recording).value = '按下你想用的组合键…';
+      $('hk-state').textContent = '按 Esc 放弃';
+    };
+  });
+  document.querySelectorAll('.hk-clr').forEach((btn) => {
+    btn.onclick = () => {
+      stopRec();
+      set('hotkey.' + (btn.dataset.for === 'hk-panel' ? 'panel' : 'shot'), '');
+      showKey(btn.dataset.for);
+      $('hk-state').textContent = '清掉了 —— 保存之后这个快捷键就没了';
+    };
+  });
+  window.addEventListener('keydown', (e) => {
+    if (!recording) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === 'Escape') { $('hk-state').textContent = '没改'; stopRec(); return; }
+    const acc = accelOf(e);
+    if (!acc) { $('hk-state').textContent = '得带上 Ctrl / Alt / Shift 之类 —— 光一个键会在你打字时乱触发'; return; }
+    const which = recording === 'hk-panel' ? 'panel' : 'shot';
+    const other = which === 'panel' ? 'shot' : 'panel';
+    if (get('hotkey.' + other, '') === acc) {
+      $('hk-state').textContent = '这个键另一个功能在用了，换一个';
+      return;
+    }
+    set('hotkey.' + which, acc);
+    stopRec();
+    $('hk-state').textContent = '记下了：' + acc.replace(/Control/g, 'Ctrl') + '。保存之后生效';
+  }, true);
+  showKey('hk-panel');
+  showKey('hk-shot');
+
   $('up-check').onclick = async () => {
     $('up-state').textContent = '查着呢…';
     // 查**输入框里现在这个**地址（刚粘完还没保存就点查是最自然的操作），
@@ -257,7 +326,14 @@ $('save').onclick = async () => {
   $('save').disabled = false;
 
   if (!r || !r.ok) { msg((r && r.error) || '没存上', true); return; }
-  msg(dirtyModel ? '存好了，她这就换个人出来' : '存好了');
+  // 快捷键挂没挂上要如实说 —— 被别的软件占了的话按下去毫无反应，
+    // 不说的话用户只会以为功能坏了
+    const hk = (r && r.hotkey) || {};
+    const words = [];
+    if (hk.panel === 'taken') words.push('叫面板那个键被别的软件占了');
+    if (hk.shot === 'taken') words.push('截图那个键被别的软件占了');
+    if (words.length) { msg(words.join('；') + ' —— 换一个吧', 'err'); }
+    else { msg(dirtyModel ? '存好了，她这就换个人出来' : '存好了'); }
   dirtyModel = false;
 };
 

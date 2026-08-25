@@ -15,6 +15,9 @@ const FOCUS_PS1 = path.join(ROOT, 'tools', 'focus-window.ps1');
 
 // 面板上一条线最多列几个「动过的文件」。列太多就成了刷屏，
 // 而这一栏的价值是「一眼扫过去看她碰了哪儿」
+// 每条线留多少条进度（手机详情页看的）。内存里放着，不落盘
+const TIMELINE_KEEP = 60;
+
 const FILES_SHOWN = 12;
 
 // term-shell 每 5 秒一次心跳。超过这个还没动静，就当那个窗口已经被叉掉了。
@@ -606,7 +609,12 @@ class TerminalManager extends EventEmitter {
 
     const id = 'w' + ++this.seq;
     const project = name || path.basename(dir);
-    const lane = String(laneName || '').trim();
+    // 控制字符（尤其 CR/LF）必须在这儿就杀掉 —— 这条 lane 会拼进 title，
+    // title 会被 _writeLauncher 逐行写进 .cmd 启动器再交给 cmd 执行。
+    // 夹一个换行就能在**沙箱外**多跑一行任意命令（评审抓的高危：手机
+    // /api/dispatch 收 laneName，一路只 trim 就到这儿）。这是唯一汇口，
+    // 桌面/手机/右键所有派活都过这条，堵在源头
+    const lane = String(laneName || '').replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 60);
 
     // 主线就叫项目名（跟以前一模一样）；分线在后面缀上线名，
     // 这样任务栏上「WaifuCode · 登录页表单校验」和「WaifuCode · 查支付」
@@ -759,6 +767,10 @@ class TerminalManager extends EventEmitter {
       // 有用得多，那才是你能直接去核对的东西
       filesAll: new Map(), // 全路径 -> 动过几次
       lastPrompt: '',   // 这一轮你让她干的是什么
+      // 这条线的来龙去脉（手机详情页看的就是它）：你说了什么、她汇报了什么、
+      // 报了什么错、什么时候等确认。只留最近 TIMELINE_KEEP 条，内存里放着，
+      // 不落盘 —— 重启后靠 lastReport 兜底，够用
+      timeline: [],
       // 这俩从 spec 读回来：重启后「异常退出」的红行和「她喊过你」的留底
       // 不能蒸发（评审抓的）
       exitCode: spec.exitCode === undefined ? null : spec.exitCode,
@@ -1037,6 +1049,7 @@ class TerminalManager extends EventEmitter {
         rec.warned = new Set();
         // 这一轮你让她干的是什么。汇报的时候带上，你才知道她在说哪件事。
         rec.lastPrompt = String(ev.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        this._timeline(rec, 'you', rec.lastPrompt);
         this.emit('change');
         break;
 
@@ -1061,7 +1074,7 @@ class TerminalManager extends EventEmitter {
             || (Array.isArray(resp.content) ? (resp.content[0] && resp.content[0].text) : resp.content)
             || '');
           const first = raw.replace(/\s+/g, ' ').trim().slice(0, 160);
-          if (first) rec.lastError = first;
+          if (first) { rec.lastError = first; this._timeline(rec, 'error', first); }
         }
 
         // 记一下她动了哪些文件 —— 「改了这三个文件」比「动了 8 次工具」有用得多。
@@ -1125,10 +1138,12 @@ class TerminalManager extends EventEmitter {
         // main.js 那边拿到什么就念什么，不用自己判断是哪种情况再拼一遍。
         // detail 是**给眼睛的补充**（气泡带上、语音不念）：hook 消息里写着她
         // 具体要确认什么，带出来你不用起身就能判断值不值得走过去
+        rec.waitDetail = msg.replace(/\s+/g, ' ').trim().slice(0, 120);
+        this._timeline(rec, 'wait', '在等你确认：' + rec.waitDetail);
         this.emit('attention', {
           id: rec.id, name: rec.name, kind: 'confirm',
           text: '「' + rec.name + '」那边在等你确认。',
-          detail: msg.replace(/\s+/g, ' ').trim().slice(0, 120),
+          detail: rec.waitDetail,
         });
         break;
       }
@@ -1216,6 +1231,23 @@ class TerminalManager extends EventEmitter {
    * 那个目录里躺着用户自己正在用的会话，于是她张嘴汇报的是别人说的话。
    * 读文件那套只留作兜底，正路就是这个字段。
    */
+  /**
+   * 往这条线的时间线上记一笔。手机详情页要的「进度流」就是它。
+   *
+   * 同一句话连着来两遍不记（Stop 有时连发、汇报和轮末会撞）。
+   * 只留最近 TIMELINE_KEEP 条：内存里存着，不落盘 —— 长会话几百轮
+   * 全存下来占内存，而手机上你也只看最近发生了什么
+   */
+  _timeline(rec, kind, text) {
+    const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (!t) return;
+    if (!rec.timeline) rec.timeline = [];
+    const last = rec.timeline[rec.timeline.length - 1];
+    if (last && last.kind === kind && last.text === t) return;
+    rec.timeline.push({ at: Date.now(), kind, text: t });
+    if (rec.timeline.length > TIMELINE_KEEP) rec.timeline.splice(0, rec.timeline.length - TIMELINE_KEEP);
+  }
+
   _report(rec, ev) {
     const cfg = this.getConfig().supervise || {};
 
@@ -1254,6 +1286,7 @@ class TerminalManager extends EventEmitter {
     const tooSoon = Boolean(rec.lastReportAt && Date.now() - rec.lastReportAt < gap);
 
     rec.lastReport = text;
+    this._timeline(rec, 'her', text);
     if (!tooSoon) rec.lastReportAt = Date.now();
 
     this.emit('report', {
@@ -1631,6 +1664,8 @@ class TerminalManager extends EventEmitter {
         // 最近一次报错首行（跟什么较劲）；护栏最近一次为什么喊你（留底，可追溯）
         lastError: t.lastError || '',
         lastAlarm: t.lastAlarm || null,
+        // 只在真等着的时候给 —— 老的 waitDetail 是上次的事，别拿去误导
+        waitDetail: t.status === 'waiting' ? (t.waitDetail || '') : '',
         // 钱的明细：四桶、命中率、大头模型（悬停在金额上看）
         costParts: t.costParts || null,
         costHit: (() => {
@@ -1726,6 +1761,7 @@ class TerminalManager extends EventEmitter {
     }
     // codex 线没有 hook，「卡住」的动静判据靠档案在长
     rec.lastHookAt = Date.now();
+    if (g.lastPrompt) this._timeline(rec, 'you', String(g.lastPrompt).slice(0, 300));
     if (!g.turns) return; // 轮还没完
 
     // ≥1 轮完成：把攒的一起结
@@ -1909,6 +1945,122 @@ class TerminalManager extends EventEmitter {
     for (const ext of ['.json', '.cmd']) {
       try { fs.unlinkSync(path.join(this.specDir, id + ext)); } catch (_) { /* 本来就没有也无所谓 */ }
     }
+  }
+
+  /** 一条线的详情（手机点开看的）：整包状态 + 时间线 */
+  detail(id) {
+    const rec = this.items.get(id);
+    if (!rec) return null;
+    const row = this.list().find((t) => t.id === id) || {};
+    // 时间线是这轮才开始记的 —— 这之前开的窗口、以及桌宠重启认回来的窗口，
+    // 手上一条都没有。**别给用户一张白纸**：拿现有字段兜一份出来
+    // （当初派的活、这轮在干什么、最近一次汇报、最近一次报错），
+    // 时间用启动时刻兜底，标上「（之前的）」不冒充精确时刻
+    let tl = (rec.timeline || []).slice(-40);
+    if (!tl.length) {
+      const t0 = rec.startedAt || Date.now();
+      if (rec.task) tl.push({ at: t0, kind: 'you', text: rec.task, rough: true });
+      if (rec.lastPrompt && rec.lastPrompt !== rec.task) tl.push({ at: t0, kind: 'you', text: rec.lastPrompt, rough: true });
+      if (rec.lastError) tl.push({ at: t0, kind: 'error', text: rec.lastError, rough: true });
+      if (rec.lastReport) tl.push({ at: rec.lastReportAt || t0, kind: 'her', text: rec.lastReport, rough: true });
+      if (rec.status === 'waiting' && rec.waitDetail) tl.push({ at: Date.now(), kind: 'wait', text: '在等你确认：' + rec.waitDetail, rough: true });
+    }
+    return {
+      ...row,
+      timeline: tl,
+      files: row.files || [],
+      // 能不能在手机上继续追问：窗口还活着才行（关了就只能看历史）
+      canSend: rec.status !== 'closed',
+    };
+  }
+
+  /**
+   * 往这条线的终端里下发一句话（手机上「继续说」用的）。
+   *
+   * 【为什么走剪贴板而不是直接敲字】SendKeys 只能发键，中文根本发不出去；
+   * 而且任务描述里的 {} () + ^ % ~ 在 SendKeys 语法里全是控制符，转义一处
+   * 漏掉就是一句面目全非的指令进了终端。所以：把话放进剪贴板 → 精确聚焦
+   * 那个窗口 → Ctrl+V + 回车。**剪贴板用完还回去**，不然你手上那份复制的
+   * 东西就被我们悄悄换掉了。
+   *
+   * 跟放行同一套安全线：只认精确窗口（-Exact）、回执标题要对得上。
+   */
+  async sendText(id, text) {
+    const rec = this.items.get(id);
+    if (!rec) return { ok: false, error: '没这个终端' };
+    if (rec.status === 'closed') return { ok: false, error: '这个窗口已经关了，接不上了' };
+    const line = String(text || '').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, ' ').trim();
+    if (!line) return { ok: false, error: '话是空的' };
+    if (line.length > 2000) return { ok: false, error: '太长了，分两次说吧' };
+
+    let out = '';
+    try {
+      out = await run('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', FOCUS_PS1, '-Title', rec.title, '-Exact', '-WaitMs', '4000',
+        // **文本走 base64**：stdin 那条会被 PowerShell 按 GBK 解（实测：
+        // 「中文测试」变 6 个怪字进剪贴板，贴进终端就是乱码）；命令行直传
+        // 又要过引号地狱。base64 全是 ASCII，两头都不用猜编码
+        '-PasteB64', Buffer.from(line, 'utf8').toString('base64'),
+      ], 15000);
+    } catch (err) {
+      return { ok: false, error: '没送出去：' + err.message };
+    }
+    // 读 TITLE64 那行：SENT 那行走管子时是 GBK 字节，node 按 UTF-8 读，
+    // 中文和「·」全坏 —— 比对永远不等，追问被自己的安全闸拒死（实机踩过）
+    const m = sentTitle(out);
+    if (m !== null && m === rec.title) {
+      rec.status = 'running';
+      this._timeline(rec, 'you', line.slice(0, 300));
+      rec.lastPrompt = line.replace(/\s+/g, ' ').trim().slice(0, 120);
+      this.emit('change');
+      this.log('[term] ' + rec.id + ' 手机上追问了一句：' + line.slice(0, 40));
+      return { ok: true };
+    }
+    if (m !== null) return { ok: false, error: '聚焦到的窗口跟这条线对不上，没敢发（去电脑上说吧）' };
+    return { ok: false, error: '窗口调不到前台，没敢发（标题可能被改了）' };
+  }
+
+  /**
+   * 远程放行/拒绝：把确认键送进那个终端窗口。
+   *
+   * 【原理和边界，都要说实话】终端里的权限确认是 CLI 自己的交互界面，
+   * 我们够不到它的进程 —— 唯一的路是把窗口调到前台、把按键送过去
+   * （focus-window.ps1 的 -SendKeys，**只有确认窗口真到了前台才发键**，
+   * 不然按键会砸进用户正在打字的别的窗口）。按键送到 ≠ 一定被吃下：
+   * claude 的确认界面 1 = 允许、Esc = 拒绝；codex 是 y/n。
+   * 界面改版按键就可能失效，所以返回话术只承诺「送到了」，
+   * 让调用方几秒后看状态自证。只对 waiting 的线放行 —— 别的状态发键
+   * 等于往人家终端里乱敲字。
+   */
+  async approveRemote(id, allow) {
+    const rec = this.items.get(id);
+    if (!rec) return { ok: false, error: '没这个终端' };
+    if (rec.status !== 'waiting') return { ok: false, error: '这条线现在不在等确认' };
+    const keys = rec.agent === 'codex' ? (allow ? 'y' : 'n') : (allow ? '1' : '{ESC}');
+    let out = '';
+    try {
+      out = await run('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        // -Exact：发键这条路**禁用「标题包含」兜底**。Claude 跑起来会改
+        // 控制台标题，精确匹配落空是常态，而兜底会抓到同项目的分线窗口 ——
+        // 把确认键敲进别的线（评审抓的高危）。宁可这次放行失败让你去电脑上点，
+        // 也绝不敲错窗口
+        '-File', FOCUS_PS1, '-Title', rec.title, '-SendKeys', keys, '-Exact',
+        '-WaitMs', '4000',
+      ], 12000);
+    } catch (err) {
+      return { ok: false, error: '按键没送出去：' + err.message };
+    }
+    // 回执里带回真正被聚焦的标题，跟 rec.title 严丝合缝才算数 ——
+    // 双保险，脚本万一还是抓错了，这儿也不让它过
+    const m = /^SENT (.*)$/m.exec(String(out));
+    if (m && m[1].trim() === rec.title) {
+      this.log('[term] ' + rec.id + ' 远程' + (allow ? '放行' : '拒绝') + '，按键已送进窗口');
+      return { ok: true };
+    }
+    if (m !== null) return { ok: false, error: '聚焦到的窗口跟这条线对不上，没敢发键（那条线的标题可能被改了，去电脑上点吧）' };
+    return { ok: false, error: '窗口调不到前台，按键没敢发（标题可能被改了）' };
   }
 
   // 同一条线被新窗口接走了：把它已经 closed 的旧行收掉（历史都在新窗口里续写）
@@ -2144,12 +2296,30 @@ class TerminalManager extends EventEmitter {
 }
 
 // 跑一个命令拿它的输出，带超时。
-function run(bin, args, timeout = 5000) {
+/**
+ * 从 ps1 的回执里抠出「真正被聚焦的那个窗口标题」。
+ *
+ * 只认 TITLE64 那行 —— SENT 那行是给人看的，而它走管子时是 GBK 字节，
+ * node 按 UTF-8 一读，中文和「·」全坏（实测坐实）。没有 TITLE64 就是
+ * 没发成，返回 null。
+ */
+function sentTitle(out) {
+  const m = /^TITLE64 ([A-Za-z0-9+/=]+)$/m.exec(String(out || ''));
+  if (!m) return null;
+  try { return Buffer.from(m[1], 'base64').toString('utf8').trim(); } catch (_) { return null; }
+}
+
+function run(bin, args, timeout = 5000, stdin) {
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { timeout, windowsHide: true }, (err, stdout) => {
+    const child = execFile(bin, args, { timeout, windowsHide: true }, (err, stdout) => {
       if (err && !stdout) return reject(err);
       resolve(String(stdout || ''));
     });
+    // 有话要喂就喂（手机追问那条路：文本走 stdin，不过命令行）
+    if (stdin !== undefined && child.stdin) {
+      child.stdin.on('error', () => { /* 对面已经退了，没什么可做的 */ });
+      child.stdin.end(String(stdin), 'utf8');
+    }
   });
 }
 

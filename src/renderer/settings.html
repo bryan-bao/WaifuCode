@@ -106,6 +106,9 @@
   .sw.on .box { background: #17302c; border-color: var(--acc); }
   .sw.on .box::after { transform: translateX(16px); background: var(--acc); }
   .sw .t { font-size: 12px; }
+  .row input.hk { flex: 1; text-align: center; letter-spacing: .5px; }
+  .row input.hk.rec { border-color: var(--acc); color: var(--acc); }
+  .row .chip { flex: none; margin-left: 6px; }
   .sw .d { font-size: 11px; color: var(--dim); }
 
   .warn {
@@ -229,6 +232,23 @@
       <h3>更新分发（发包的人才要开）</h3>
       <p class="hint" id="up-serve-hint"></p>
       <div class="sw" id="sw-up-serve"><span class="box"></span><span class="t">把这台电脑当更新分发点</span></div>
+
+      <h3>快捷键</h3>
+      <p class="hint">点一下「改」，然后<b>直接按你想用的组合键</b>（比如 Ctrl+Alt+2）。
+        跟别的软件撞了就会挂不上 —— 挂没挂上下面会如实告诉你。改完保存生效。</p>
+      <div class="row">
+        <label>叫出派活面板</label>
+        <input type="text" id="hk-panel" class="hk" readonly placeholder="没设" />
+        <button class="chip hk-set" data-for="hk-panel">改</button>
+        <button class="chip hk-clr" data-for="hk-panel">清掉</button>
+      </div>
+      <div class="row">
+        <label>截图（进剪贴板）</label>
+        <input type="text" id="hk-shot" class="hk" readonly placeholder="没设" />
+        <button class="chip hk-set" data-for="hk-shot">改</button>
+        <button class="chip hk-clr" data-for="hk-shot">清掉</button>
+      </div>
+      <p class="hint" id="hk-state"></p>
     </div>
 
     <!-- ---- 她 ---- -->

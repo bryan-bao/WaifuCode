@@ -445,6 +445,20 @@
   }
   .term .x:hover { border-color: var(--bad); color: var(--bad); }
 
+  /* 手机工作台的二维码弹层 */
+  .qr-mask {
+    position: fixed; inset: 0; z-index: 90;
+    background: rgba(5, 7, 12, .72);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .qr-box {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
+    padding: 18px 22px; text-align: center; max-width: 340px;
+  }
+  .qr-box h3 { margin: 0 0 10px; font-size: 14px; color: var(--acc); }
+  #qr-img img { width: 220px; height: 220px; image-rendering: pixelated; background: #fff; padding: 10px; border-radius: 8px; }
+  .qr-urls { font-size: 11px; color: var(--dim); margin-top: 8px; word-break: break-all; user-select: text; }
+  .qr-hint { font-size: 11px; color: var(--faint); margin: 8px 0 10px; }
   ::-webkit-scrollbar { width: 8px; }
   ::-webkit-scrollbar-thumb { background: var(--bar); border-radius: 4px; }
 </style>
@@ -461,6 +475,7 @@
       <option value="moe">软萌</option>
       <option value="minimal">简约</option>
     </select>
+    <button id="mobile" title="手机工作台：扫码在手机上派活、看实时进度、远程放行">手机</button>
     <button id="docs" title="功能手册：她会什么、怎么玩、哪些花钱，全在这一页里">说明书</button>
     <button id="chat" title="不干活，就聊聊天">私聊</button>
     <button id="min" title="收起来（缩到任务栏，填的东西都留着）">−</button>
@@ -549,6 +564,19 @@
     </div>
   </main>
 
+  <div id="qr-mask" class="qr-mask" style="display:none">
+    <div class="qr-box">
+      <h3>手机工作台</h3>
+      <div id="qr-img"></div>
+      <div class="qr-urls" id="qr-urls"></div>
+      <p class="qr-hint">手机跟电脑连同一个 Wi-Fi，扫码即入；也可以「复制链接」发给自己。<br><b>关掉这个窗口不会断开手机</b>——服务一直开着，桌宠退出才停。<br>地址里带着口令，别把截图发到群里。</p>
+      <button class="chip" id="qr-go" style="margin-right:6px">出门模式（不同网络也能用）</button>
+      <button class="chip" id="qr-copy" style="margin-right:6px">复制链接</button>
+      <button class="chip" id="qr-close">关闭</button>
+      <p class="qr-hint" id="qr-tip" style="margin-top:8px"></p>
+    </div>
+  </div>
+  <script src="../../vendor/qrcode.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>

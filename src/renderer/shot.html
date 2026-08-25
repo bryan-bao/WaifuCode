@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>框一块</title>
+<style>
+  /* 盖在整个桌面上的那层。半透明灰，框出来的那块挖亮 */
+  html, body {
+    margin: 0; width: 100%; height: 100%; overflow: hidden;
+    cursor: crosshair; user-select: none;
+    background: rgba(10, 12, 18, .35);
+  }
+  #box {
+    position: fixed; display: none;
+    border: 1px solid #5eead4;
+    box-shadow: 0 0 0 99999px rgba(10, 12, 18, .35);
+    background: transparent;
+  }
+  #tip {
+    position: fixed; left: 50%; top: 22px; transform: translateX(-50%);
+    background: rgba(13, 15, 22, .92); color: #e6e8f0;
+    border: 1px solid #272e3f; border-radius: 10px;
+    padding: 8px 16px; font: 13px "Microsoft YaHei", sans-serif;
+    pointer-events: none; white-space: nowrap;
+  }
+  #size {
+    position: fixed; display: none; background: rgba(13, 15, 22, .92);
+    color: #5eead4; border-radius: 6px; padding: 2px 8px;
+    font: 12px "Microsoft YaHei", sans-serif; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <div id="tip">拖一个框把要截的地方圈起来 · Esc 取消</div>
+  <div id="box"></div>
+  <div id="size"></div>
+<script>
+  const box = document.getElementById('box');
+  const sizeEl = document.getElementById('size');
+  let sx = 0, sy = 0, drawing = false;
+
+  const rect = () => {
+    const r = box.getBoundingClientRect();
+    return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+  };
+
+  window.addEventListener('mousedown', (e) => {
+    drawing = true;
+    sx = e.clientX; sy = e.clientY;
+    box.style.display = 'block';
+    box.style.left = sx + 'px'; box.style.top = sy + 'px';
+    box.style.width = '0px'; box.style.height = '0px';
+    document.getElementById('tip').style.display = 'none';
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!drawing) return;
+    const x = Math.min(sx, e.clientX), y = Math.min(sy, e.clientY);
+    const w = Math.abs(e.clientX - sx), h = Math.abs(e.clientY - sy);
+    box.style.left = x + 'px'; box.style.top = y + 'px';
+    box.style.width = w + 'px'; box.style.height = h + 'px';
+    sizeEl.style.display = 'block';
+    sizeEl.textContent = w + ' × ' + h;
+    // 尺寸标签跟着框走，框太靠上就摆到框里面，别跑出屏幕
+    sizeEl.style.left = x + 'px';
+    sizeEl.style.top = (y > 24 ? y - 22 : y + 4) + 'px';
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!drawing) return;
+    drawing = false;
+    const r = rect();
+    // 手滑点一下不算截图 —— 太小的框多半是误触
+    if (r.w < 8 || r.h < 8) { window.waifu.shotCancel(); return; }
+    window.waifu.shotPick(r);
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') window.waifu.shotCancel();
+  });
+</script>
+</body>
+</html>
