@@ -1125,10 +1125,11 @@ class TerminalManager extends EventEmitter {
         // main.js 那边拿到什么就念什么，不用自己判断是哪种情况再拼一遍。
         // detail 是**给眼睛的补充**（气泡带上、语音不念）：hook 消息里写着她
         // 具体要确认什么，带出来你不用起身就能判断值不值得走过去
+        rec.waitDetail = msg.replace(/\s+/g, ' ').trim().slice(0, 120);
         this.emit('attention', {
           id: rec.id, name: rec.name, kind: 'confirm',
           text: '「' + rec.name + '」那边在等你确认。',
-          detail: msg.replace(/\s+/g, ' ').trim().slice(0, 120),
+          detail: rec.waitDetail,
         });
         break;
       }
@@ -1631,6 +1632,8 @@ class TerminalManager extends EventEmitter {
         // 最近一次报错首行（跟什么较劲）；护栏最近一次为什么喊你（留底，可追溯）
         lastError: t.lastError || '',
         lastAlarm: t.lastAlarm || null,
+        // 只在真等着的时候给 —— 老的 waitDetail 是上次的事，别拿去误导
+        waitDetail: t.status === 'waiting' ? (t.waitDetail || '') : '',
         // 钱的明细：四桶、命中率、大头模型（悬停在金额上看）
         costParts: t.costParts || null,
         costHit: (() => {
@@ -1909,6 +1912,40 @@ class TerminalManager extends EventEmitter {
     for (const ext of ['.json', '.cmd']) {
       try { fs.unlinkSync(path.join(this.specDir, id + ext)); } catch (_) { /* 本来就没有也无所谓 */ }
     }
+  }
+
+  /**
+   * 远程放行/拒绝：把确认键送进那个终端窗口。
+   *
+   * 【原理和边界，都要说实话】终端里的权限确认是 CLI 自己的交互界面，
+   * 我们够不到它的进程 —— 唯一的路是把窗口调到前台、把按键送过去
+   * （focus-window.ps1 的 -SendKeys，**只有确认窗口真到了前台才发键**，
+   * 不然按键会砸进用户正在打字的别的窗口）。按键送到 ≠ 一定被吃下：
+   * claude 的确认界面 1 = 允许、Esc = 拒绝；codex 是 y/n。
+   * 界面改版按键就可能失效，所以返回话术只承诺「送到了」，
+   * 让调用方几秒后看状态自证。只对 waiting 的线放行 —— 别的状态发键
+   * 等于往人家终端里乱敲字。
+   */
+  async approveRemote(id, allow) {
+    const rec = this.items.get(id);
+    if (!rec) return { ok: false, error: '没这个终端' };
+    if (rec.status !== 'waiting') return { ok: false, error: '这条线现在不在等确认' };
+    const keys = rec.agent === 'codex' ? (allow ? 'y' : 'n') : (allow ? '1' : '{ESC}');
+    let out = '';
+    try {
+      out = await run('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', FOCUS_PS1, '-Title', rec.title, '-SendKeys', keys,
+        '-WaitMs', '4000',
+      ], 12000);
+    } catch (err) {
+      return { ok: false, error: '按键没送出去：' + err.message };
+    }
+    if (/^SENT/m.test(String(out))) {
+      this.log('[term] ' + rec.id + ' 远程' + (allow ? '放行' : '拒绝') + '，按键已送进窗口');
+      return { ok: true };
+    }
+    return { ok: false, error: '窗口调不到前台，按键没敢发（标题可能被改了）' };
   }
 
   // 同一条线被新窗口接走了：把它已经 closed 的旧行收掉（历史都在新窗口里续写）

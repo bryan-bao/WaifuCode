@@ -20,6 +20,7 @@ param(
   [string]$Title = '',
   [int]$ProcessId = 0,
   [switch]$Minimize,
+  [string]$SendKeys = '',
   [int]$WaitMs = 0
 )
 
@@ -159,6 +160,22 @@ if ($h -eq [IntPtr]::Zero) {
   exit 1
 }
 
+# 前台真的是它了，就把确认键送过去（远程放行用）。
+# 发键前最后再核一次前台 —— 不是它就绝不发：按键砸进用户正开着的
+# 别的窗口，比不发糟得多。
+function Send-KeysIfAsked([IntPtr]$hwnd) {
+  if (-not $script:SendKeys) { return }
+  Start-Sleep -Milliseconds 350
+  if ([Waifu.Win]::GetForegroundWindow() -ne $hwnd) {
+    Write-Output ('BLOCKED ' + $script:foundTitle)
+    exit 2
+  }
+  $sh = New-Object -ComObject WScript.Shell
+  $sh.SendKeys($script:SendKeys)
+  Write-Output ('SENT ' + $script:foundTitle)
+  exit 0
+}
+
 # --- 藏起来 -----------------------------------------------------------------
 if ($Minimize) {
   [void][Waifu.Win]::ShowWindow($h, 6)   # SW_MINIMIZE
@@ -208,6 +225,7 @@ if ($attached) {
 }
 
 if ($ok) {
+  Send-KeysIfAsked $h
   Write-Output ('OK ' + $script:foundTitle)
   exit 0
 }
@@ -216,6 +234,7 @@ if ($ok) {
 # 再核一遍当前前台是不是它
 Start-Sleep -Milliseconds 120
 if ([Waifu.Win]::GetForegroundWindow() -eq $h) {
+  Send-KeysIfAsked $h
   Write-Output ('OK ' + $script:foundTitle)
   exit 0
 }

@@ -60,6 +60,8 @@ contextBridge.exposeInMainWorld('waifu', {
 
   // 面板上的「说明书」：打开随包带的功能手册
   openDocs: () => ipcRenderer.send('docs:open'),
+  // 手机工作台：起服务并拿扫码地址
+  mobileInfo: () => ipcRenderer.invoke('mobile:info'),
 
   // --- 版本更新（局域网分发）---
   updateCheck: (src) => ipcRenderer.invoke('update:check', src),

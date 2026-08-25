@@ -835,6 +835,26 @@ $('ver').onclick = async () => {
 
 $('docs').onclick = () => window.waifu.openDocs();
 
+// 手机工作台：起服务、弹二维码。二维码在本地渲染（vendor/qrcode.js），
+// 地址一个字节都不出这台电脑
+$('mobile').onclick = async () => {
+  const r = await window.waifu.mobileInfo();
+  if (!r || !r.ok) { msg((r && r.error) || '手机工作台起不来', 'err'); return; }
+  const url = (r.urls && r.urls[0]) || '';
+  const img = $('qr-img');
+  img.innerHTML = '';
+  try {
+    const q = qrcode(0, 'M');
+    q.addData(url);
+    q.make();
+    img.innerHTML = q.createImgTag(5, 8);
+  } catch (_) { img.textContent = url; }
+  $('qr-urls').innerHTML = (r.urls || []).map((u) => '<div>' + esc(u) + '</div>').join('');
+  $('qr-mask').style.display = 'flex';
+};
+$('qr-close').onclick = () => { $('qr-mask').style.display = 'none'; };
+$('qr-mask').onclick = (e) => { if (e.target === $('qr-mask')) $('qr-mask').style.display = 'none'; };
+
 window.waifu.on('agent:install-done', (p) => {
   msg(p.ok ? '装好了！再点一次「派活 / 开终端」就能用'
            : '没装上，原因在她的气泡里', p.ok ? 'ok' : 'err', 20000);

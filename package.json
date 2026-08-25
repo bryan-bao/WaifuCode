@@ -45,6 +45,7 @@
     "test:agents": "node tools/test-agents.js",
     "test:cost": "node tools/test-cost.js",
     "test:update": "node tools/test-update.js",
+    "test:mobile": "node tools/test-mobile.js",
     "scan-chcp": "node tools/scan-chcp.js",
     "pack": "node tools/pack.js",
     "faces": "electron tools/expression-sheet.js",

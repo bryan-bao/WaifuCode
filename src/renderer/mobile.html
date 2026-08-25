@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>小依 · 手机工作台</title>
+<style>
+  /* 跟桌面面板同一套「深空」配色 —— 换皮肤是第二批的事，先把结构立住 */
+  :root {
+    --bg: #0d0f16; --card: #161a24; --card2: #1c2231; --line: #272e3f;
+    --fg: #e6e8f0; --dim: #8b93a7; --faint: #59617a;
+    --acc: #5eead4; --acc2: #818cf8; --warn: #fbbf24; --bad: #f87171;
+    --lane-bg: #2a2140; --lane-fg: #c4b5fd;
+    --btn1: #0f766e; --btn2: #115e59; --btn-line: #14b8a6; --btn-fg: #d6fff8;
+    --r: 12px; --r-s: 9px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+  body { padding: 12px 12px calc(20px + env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; }
+
+  header { display: flex; align-items: center; gap: 8px; padding: 4px 2px 10px; }
+  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--acc); box-shadow: 0 0 10px var(--acc); }
+  header strong { font-size: 16px; }
+  header .sub { color: var(--dim); font-size: 12px; margin-left: auto; text-align: right; }
+  #net { font-size: 11px; }
+  #net.on { color: var(--acc); }
+  #net.off { color: var(--bad); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; margin-bottom: 12px; }
+  .card h3 { margin: 0 0 8px; font-size: 13px; color: var(--dim); font-weight: 600; letter-spacing: .5px; }
+
+  input, textarea, select {
+    width: 100%; background: var(--card2); border: 1px solid var(--line); color: var(--fg);
+    border-radius: var(--r-s); padding: 10px 12px; font: inherit; outline: none; margin-bottom: 8px;
+  }
+  textarea { min-height: 76px; resize: vertical; }
+  .row2 { display: flex; gap: 8px; }
+  .row2 > * { flex: 1; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .chip {
+    background: var(--card2); border: 1px solid var(--line); color: var(--dim);
+    border-radius: 999px; padding: 5px 12px; font-size: 12px;
+  }
+  .chip.on { border-color: var(--acc); color: var(--acc); }
+
+  button.go {
+    width: 100%; padding: 12px; border-radius: var(--r-s); border: 1px solid var(--btn-line);
+    background: linear-gradient(180deg, var(--btn1), var(--btn2)); color: var(--btn-fg);
+    font: inherit; font-weight: 600;
+  }
+  button:disabled { opacity: .5; }
+  #msg { min-height: 20px; font-size: 12px; padding: 4px 2px; }
+  #msg.ok { color: var(--acc); }
+  #msg.err { color: var(--bad); }
+
+  .term { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 11px 12px; margin-bottom: 10px; }
+  .term .t { display: flex; align-items: center; gap: 7px; }
+  .term .led { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .term.run .led { background: #34d399; box-shadow: 0 0 7px #34d399; animation: pulse 1.8s infinite; }
+  .term.wait .led { background: var(--warn); box-shadow: 0 0 7px var(--warn); }
+  .term.strug .led { background: var(--bad); box-shadow: 0 0 7px var(--bad); animation: pulse 1.2s infinite; }
+  .term.closed { opacity: .62; }
+  .term.bad .led { background: var(--bad); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .term .name { color: var(--acc); font-weight: 600; font-size: 14px; }
+  .term .lane { background: var(--lane-bg); color: var(--lane-fg); border-radius: 5px; font-size: 11px; padding: 1px 7px; }
+  .term .cost { margin-left: auto; color: var(--warn); font-size: 12px; }
+  .term .meta { color: var(--dim); font-size: 12px; margin-top: 3px; }
+  .term .phase { color: #a9b2c6; font-size: 13px; margin-top: 6px; border-left: 2px solid var(--acc2); padding-left: 8px; }
+  .term .warnline { color: var(--bad); font-size: 12px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .approve { margin-top: 10px; background: var(--card2); border: 1px solid var(--warn); border-radius: var(--r-s); padding: 10px; }
+  .approve .q { font-size: 13px; color: var(--warn); margin-bottom: 8px; word-break: break-all; }
+  .approve .btns { display: flex; gap: 8px; }
+  .approve button { flex: 1; padding: 11px; border-radius: var(--r-s); font: inherit; font-weight: 600; border: 1px solid; }
+  .approve .yes { background: #14532d; border-color: #22c55e; color: #dcfce7; }
+  .approve .no { background: #450a0a; border-color: var(--bad); color: #fee2e2; }
+
+  .empty { color: var(--faint); text-align: center; padding: 18px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="dot"></span>
+    <strong id="who">小依</strong>
+    <span class="sub"><span id="net" class="off">连接中…</span><br><span id="today"></span></span>
+  </header>
+
+  <div class="card">
+    <h3>派个活（终端开在电脑上）</h3>
+    <div class="chips" id="projects"></div>
+    <input id="dir" placeholder="项目目录，如 D:\你的项目" spellcheck="false" />
+    <textarea id="task" placeholder="要干什么活"></textarea>
+    <div class="row2">
+      <select id="agent">
+        <option value="claude">Claude Code</option>
+        <option value="codex">Codex</option>
+      </select>
+      <select id="perm">
+        <option value="">权限：默认</option>
+        <option value="auto">自己判断</option>
+        <option value="acceptEdits">改文件不问</option>
+        <option value="plan">按计划来</option>
+        <option value="dontAsk">全都不问</option>
+      </select>
+    </div>
+    <button class="go" id="go">派活</button>
+    <div id="msg"></div>
+  </div>
+
+  <h3 style="margin:2px 4px 8px;font-size:13px;color:var(--dim);">她手上的活</h3>
+  <div id="terms"><div class="empty">加载中…</div></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const token = new URLSearchParams(location.search).get('t') || '';
+  const api = (p) => p + (p.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(token);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  let msgTimer = null;
+  function msg(text, kind) {
+    const el = $('msg');
+    el.textContent = text || '';
+    el.className = kind || '';
+    clearTimeout(msgTimer);
+    if (text) msgTimer = setTimeout(() => { el.textContent = ''; el.className = ''; }, 8000);
+  }
+
+  const STATUS = {
+    running: ['run', '干着呢'], waiting: ['wait', '在等确认'], idle: ['idle', '这轮完事了'],
+    done: ['idle', '干完了，窗口还开着'], closed: ['closed', '已完成'],
+  };
+  const fmtDur = (ms) => {
+    const m = Math.round((ms || 0) / 60000);
+    return m < 60 ? m + ' 分钟' : Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
+  };
+  const money = (usd) => (usd > 0.004 ? '¥' + (usd * 7.2).toFixed(2) : '');
+
+  // 放行是把确认键送进电脑上的终端窗口 —— 手机上必须二次确认，误触不可逆
+  async function approve(id, allow, name) {
+    const word = allow ? '放行' : '拒绝';
+    if (!confirm('确定' + word + '「' + name + '」这次操作？')) return;
+    try {
+      const r = await fetch(api('/api/approve'), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id, allow }),
+      }).then((x) => x.json());
+      msg(r.ok ? word + '的按键已送到电脑上，几秒后看这条线的状态' : (r.error || '没送到'), r.ok ? 'ok' : 'err');
+    } catch (e) { msg('网络断了？' + e.message, 'err'); }
+  }
+
+  function render(s) {
+    if (!s) return;
+    $('who').textContent = s.name || '小依';
+    $('today').textContent = (s.mood ? s.mood + ' · ' : '') + '今天 ' + (money(s.todayUsd) || '¥0');
+
+    // 项目 chips
+    const pj = $('projects');
+    pj.innerHTML = '';
+    for (const p of (s.projects || []).slice(0, 6)) {
+      const c = document.createElement('span');
+      c.className = 'chip' + ($('dir').value === p.path ? ' on' : '');
+      c.textContent = p.name;
+      c.onclick = () => { $('dir').value = p.path; render(s); };
+      pj.appendChild(c);
+    }
+
+    // 终端列表
+    const box = $('terms');
+    box.innerHTML = '';
+    const list = s.terminals || [];
+    if (!list.length) { box.innerHTML = '<div class="empty">还没派活。上面派一个，进度会在这儿实时走</div>'; return; }
+    for (const t of list) {
+      let [cls, word] = STATUS[t.status] || STATUS.idle;
+      const crashed = (t.status === 'done' || t.status === 'closed') && t.exitCode !== null && t.exitCode !== 0;
+      if (crashed) { cls += ' bad'; word = '异常退出（code ' + t.exitCode + '）'; }
+      if (t.struggling) cls += ' strug';
+
+      const el = document.createElement('div');
+      el.className = 'term ' + cls;
+      el.innerHTML =
+        '<div class="t"><span class="led"></span><span class="name">' + esc(t.project || t.name) + '</span>' +
+        (t.laneName ? '<span class="lane">' + esc(t.laneName) + '</span>' : '') +
+        (money(t.costUsd) ? '<span class="cost">' + money(t.costUsd) + '</span>' : '') + '</div>' +
+        '<div class="meta">' + word + ' · ' + fmtDur(t.elapsedMs) +
+        (t.turns ? ' · ' + t.turns + ' 轮' : '') +
+        (t.errorCount ? ' · 报错 ' + t.errorCount + ' 次' : '') +
+        (t.stuckMin ? ' · 卡了 ' + t.stuckMin + ' 分钟' : '') + '</div>' +
+        ((t.lastReport || t.lastPrompt || t.task)
+          ? '<div class="phase">' + esc(t.lastReport || (t.lastPrompt ? '这轮在干：' + t.lastPrompt : t.task)) + '</div>' : '') +
+        (t.errorCount > 0 && t.lastError ? '<div class="warnline">⚠ ' + esc(t.lastError) + '</div>' : '');
+
+      if (t.status === 'waiting') {
+        const ap = document.createElement('div');
+        ap.className = 'approve';
+        ap.innerHTML = '<div class="q">她在等你确认' + (t.waitDetail ? '：' + esc(t.waitDetail) : '这次操作') + '</div>';
+        const btns = document.createElement('div');
+        btns.className = 'btns';
+        const yes = document.createElement('button');
+        yes.className = 'yes'; yes.textContent = '放行';
+        yes.onclick = () => approve(t.id, true, t.project || t.name);
+        const no = document.createElement('button');
+        no.className = 'no'; no.textContent = '拒绝';
+        no.onclick = () => approve(t.id, false, t.project || t.name);
+        btns.append(yes, no);
+        ap.appendChild(btns);
+        el.appendChild(ap);
+      }
+      box.appendChild(el);
+    }
+  }
+
+  // 长连接：SSE 断了指数退避重连（手机切后台再回来是家常便饭）
+  let retry = 1000;
+  function connect() {
+    const es = new EventSource(api('/api/events'));
+    es.onopen = () => { retry = 1000; $('net').textContent = '实时'; $('net').className = 'on'; };
+    es.onmessage = (e) => { try { render(JSON.parse(e.data)); } catch (_) { /* 半包丢掉 */ } };
+    es.onerror = () => {
+      es.close();
+      $('net').textContent = '重连中…'; $('net').className = 'off';
+      setTimeout(connect, retry);
+      retry = Math.min(retry * 2, 15000);
+    };
+  }
+  connect();
+
+  $('go').onclick = async () => {
+    const dir = $('dir').value.trim();
+    const task = $('task').value.trim();
+    if (!dir) return msg('先选或填项目目录', 'err');
+    if (!task) return msg('还没说要干什么活', 'err');
+    $('go').disabled = true;
+    msg('正在电脑上开工…');
+    try {
+      const r = await fetch(api('/api/dispatch'), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dir, task, agent: $('agent').value, permissionMode: $('perm').value || undefined }),
+      }).then((x) => x.json());
+      if (r && r.ok !== false) { msg('开工了！进度看下面', 'ok'); $('task').value = ''; }
+      else msg((r && r.error) || '没派出去', 'err');
+    } catch (e) { msg('网络断了？' + e.message, 'err'); }
+    $('go').disabled = false;
+  };
+</script>
+</body>
+</html>

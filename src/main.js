@@ -37,6 +37,8 @@ const { SessionManager, resolveClaudeBin, claudeInstalled } = require('./session
 const agents = require('./agents');
 // 局域网版本更新：查新版/下载校验/当分发点，协议和边界见模块头注释
 const updates = require('./updates');
+// 手机工作台：扫码进的手机页（派活 + SSE 实时进度 + 远程放行）
+const mobile = require('./mobile');
 const { startServer } = require('./server');
 const { profileFor } = require('./profiles');
 const { Voice } = require('./voice');
@@ -721,6 +723,7 @@ function wireEvents() {
   terminals.on('change', () => {
     send('term:change', { count: terminals.liveCount() });
     refreshTrayTip();
+    if (mobileSrv) mobileSrv.pushState(); // 手机那头的长连接跟着动
   });
 
   // 一个阶段干完了，主动来汇报。这就是「监督」的落点：
@@ -1412,6 +1415,8 @@ function installAgent(agent) {
 const UPDATE_DIR = path.join(DATA_ROOT, 'updates');          // 发包侧：安装包丢这儿
 const UPDATE_DL = path.join(DATA_ROOT, 'update-download');   // 收包侧：下到这儿
 let updateSrv = null;      // 分发服务（开着才有）
+let mobileSrv = null;      // 手机工作台服务（面板点过「手机」才有）
+let mobileToday = null;    // 今天花费的 10 秒缓存 —— SSE 每 0.8 秒一推，别每推都扫流水
 let docsWin = null;        // 功能手册窗口（面板上「说明书」开的，单例）
 let updateLatest = null;   // 上次探到的远端 manifest —— 面板开晚了靠它补显示
 
@@ -1436,6 +1441,74 @@ function syncUpdateServe(cfg) {
   });
   srv.listen(port, () => log('[update] 分发开在 :' + port + '，包放 ' + UPDATE_DIR));
   updateSrv = srv;
+}
+
+// ─── 手机工作台 ──────────────────────────────────────────────────────────────
+function mobileState() {
+  const cfg = loadConfig();
+  if (!mobileToday || Date.now() - mobileToday.at > 10000) {
+    let usd = 0;
+    try { usd = journal.today().costUsd || 0; } catch (_) { /* 没账就 0 */ }
+    mobileToday = { at: Date.now(), usd };
+  }
+  let projects = [];
+  try { projects = (sessions.knownProjects() || []).slice(0, 6); } catch (_) { /* 空着 */ }
+  return {
+    name: (cfg.persona || {}).name || '小依',
+    mood: mood ? (mood.snapshot() || {}).state || '' : '',
+    todayUsd: mobileToday.usd,
+    projects: projects.map((p) => ({ name: p.name, path: p.path })),
+    terminals: terminals ? terminals.list() : [],
+  };
+}
+
+function ensureMobile() {
+  const cfg = loadConfig();
+  let token = (cfg.mobile || {}).token;
+  const port = Number((cfg.mobile || {}).port) || 47201;
+  if (!token) {
+    token = mobile.newToken();
+    config.patch({ mobile: { token } });
+  }
+  if (!(cfg.mobile || {}).enabled) config.patch({ mobile: { enabled: true } });
+
+  const urls = updates.lanIPs().map((ip) => 'http://' + ip + ':' + port + '/?t=' + token);
+  if (mobileSrv) return Promise.resolve({ ok: true, urls, port });
+
+  return new Promise((resolve) => {
+    const srv = mobile.createMobileServer({
+      pageFile: path.join(ROOT, 'src', 'renderer', 'mobile.html'),
+      token,
+      log,
+      hooks: {
+        state: () => mobileState(),
+        // 手机派的活永远最小化开（人都不在电脑前，弹脸给谁看）
+        dispatch: (opts) => {
+          const agent = resolveDispatchAgent(opts.agent);
+          const noCli = guardAgent(agent);
+          if (noCli) return noCli;
+          const model = agent === 'codex' ? undefined : resolveDispatchModel((loadConfig().dispatch || {}).model);
+          try {
+            return { ok: true, ...openLaneTerminal({ ...opts, model, agent }, { minimized: true }) };
+          } catch (err) {
+            return { ok: false, error: err.message };
+          }
+        },
+        approve: (id, allow) => (terminals ? terminals.approveRemote(id, allow) : { ok: false, error: '终端管理还没起来' }),
+      },
+    });
+    srv.on('error', (err) => {
+      log('[mobile] 起不来: ' + err.message);
+      mobileSrv = null;
+      resolve({ ok: false, error: '手机工作台起不来：' + err.message + '（多半是 ' + port + ' 口被占了）' });
+    });
+    // 0.0.0.0：手机要从局域网进来。安全靠随机口令那道闸
+    srv.listen(port, '0.0.0.0', () => {
+      mobileSrv = srv;
+      log('[mobile] 手机工作台开在 :' + port);
+      resolve({ ok: true, urls, port });
+    });
+  });
 }
 
 // 收包侧：查一次。有新版就亮面板，她也吱一声（同一个版本只吱一次）。
@@ -2471,6 +2544,9 @@ function wireIpc() {
     docsWin.on('closed', () => { docsWin = null; });
   });
 
+  // 手机工作台：起服务（幂等）并把扫码用的地址给面板
+  ipcMain.handle('mobile:info', () => ensureMobile());
+
   // 版本更新：手动查一次 / 下载并安装
   ipcMain.handle('update:check', (_e, src) => checkUpdate(typeof src === 'string' ? src : undefined));
   ipcMain.handle('update:apply', () => applyUpdate());
@@ -2663,6 +2739,9 @@ if (!app.requestSingleInstanceLock()) {
       }
       if (seen !== cur) config.patch({ update: { seenVersion: cur } });
     } catch (_) { /* 没有说明文件就不弹，照常起 */ }
+
+    // 手机工作台开过就一直开 —— 手机书签才随时能用（没开过完全不存在）
+    if ((loadConfig().mobile || {}).enabled) ensureMobile();
 
     // 版本更新：分发开关对齐存档；开机 20 秒后查一次，之后每 4 小时一次
     // （没填更新源的话 checkUpdate 空手就回，一次网络请求都不发）
