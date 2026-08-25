@@ -104,7 +104,14 @@ function createMobileServer({ pageFile, token, hooks, log }) {
           'content-type': 'text/event-stream',
           'cache-control': 'no-cache',
           connection: 'keep-alive',
+          // 出门模式下这条长连接要穿过 Cloudflare 的边缘：不给这两个头的话
+          // 那层会把内容攒着压缩再发，手机上就是「一直转圈、任务全空」。
+          // no-transform 挡压缩，x-accel-buffering 是反代通用的「别缓冲」暗号
+          'cache-control-extra': 'no-transform',
+          'x-accel-buffering': 'no',
         });
+        // 先塞 2KB 注释把中间层的缓冲区顶出去 —— 有些代理攒够一定字节才开闸
+        res.write(': ' + '-'.repeat(2048) + '\n\n');
         res.write(': hi\n\n');
         clients.add(res);
         req.on('close', () => clients.delete(res));

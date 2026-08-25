@@ -22,6 +22,7 @@ param(
   [switch]$Minimize,
   [string]$SendKeys = '',
   [switch]$PasteStdin,
+  [string]$PasteB64 = '',
   [switch]$Exact,
   [int]$WaitMs = 0
 )
@@ -29,6 +30,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $script:Exact = $Exact
 $script:PasteStdin = $PasteStdin
+$script:PasteB64 = $PasteB64
 
 # 超过这个坐标就当窗口跑到你看不见的地方去了，调回前台时顺手挪回来。
 # 不挪的话你点了「看看她在干嘛」，窗口是"恢复"了，但恢复到了你看不见的位置。
@@ -169,13 +171,22 @@ if ($h -eq [IntPtr]::Zero) {
 # 发键前最后再核一次前台 —— 不是它就绝不发：按键砸进用户正开着的
 # 别的窗口，比不发糟得多。
 function Send-KeysIfAsked([IntPtr]$hwnd) {
-  if (-not $script:SendKeys -and -not $script:PasteStdin) { return }
+  if (-not $script:SendKeys -and -not $script:PasteStdin -and -not $script:PasteB64) { return }
   # -PasteStdin：要送进去的是一整句话（中文、符号都可能有）。
   # SendKeys 发不了中文，而 {}()+^%~ 在它的语法里全是控制符 —— 所以改走剪贴板。
   # 用完把剪贴板还回去：用户手上那份复制的东西不该被我们悄悄换掉。
   $restore = $null
-  if ($script:PasteStdin) {
+  $paste = $false
+  if ($script:PasteB64) {
+    # base64 进来的才是没被编码转换糟蹋过的原文（stdin 那条会被按 GBK 解，
+    # 中文当场变乱码 —— 实测过，这是用户看到的那个坏）
+    $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($script:PasteB64))
+    $paste = $true
+  } elseif ($script:PasteStdin) {
     $text = [Console]::In.ReadToEnd()
+    $paste = $true
+  }
+  if ($paste) {
     if (-not $text) { Write-Output 'EMPTY'; exit 3 }
     try { $restore = Get-Clipboard -Raw -ErrorAction Stop } catch { $restore = $null }
     Set-Clipboard -Value $text
@@ -186,7 +197,7 @@ function Send-KeysIfAsked([IntPtr]$hwnd) {
     exit 2
   }
   $sh = New-Object -ComObject WScript.Shell
-  if ($script:PasteStdin) {
+  if ($paste) {
     $sh.SendKeys('^v')
     Start-Sleep -Milliseconds 260
     $sh.SendKeys('{ENTER}')
@@ -195,6 +206,7 @@ function Send-KeysIfAsked([IntPtr]$hwnd) {
   } else {
     $sh.SendKeys($script:SendKeys)
   }
+  Write-Output ('TITLE64 ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script:foundTitle)))
   Write-Output ('SENT ' + $script:foundTitle)
   exit 0
 }

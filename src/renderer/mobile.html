@@ -437,8 +437,9 @@
   function connect() {
     if (es) { try { es.close(); } catch (_) { /* 已经关了 */ } }
     es = new EventSource(api('/api/events'));
-    es.onopen = () => { retry = 1000; $('net').textContent = '实时'; $('net').className = 'on'; };
+    es.onopen = () => { retry = 1000; lastData = Date.now(); $('net').textContent = '实时'; $('net').className = 'on'; };
     es.onmessage = (e) => {
+      lastData = Date.now();
       try { render(JSON.parse(e.data)); } catch (_) { /* 半包丢掉 */ }
       // 详情页开着就一起刷 —— 进度流要跟着实时长
       if (openId) refreshDetail();
@@ -451,8 +452,29 @@
   }
   document.addEventListener('visibilitychange', () => {
     // 回到前台：连接可能已经悄悄死了（error 没触发），主动重连一次
-    if (document.visibilityState === 'visible') { retry = 1000; connect(); }
+    if (document.visibilityState === 'visible') { retry = 1000; pull(); connect(); }
   });
+
+  // **别把身家性命押在长连接上。** 出门模式要穿过 Cloudflare 的边缘，
+  // 那层对 SSE 的缓冲策略不由我们说了算 —— 押上去的后果就是用户看到的
+  // 「进去之后任务一个都加载不出来」。所以：进页面先老老实实拉一次，
+  // 长连接迟迟没给数据就退回轮询（3 秒一次，也就一个小 JSON）
+  let lastData = 0;
+  async function pull() {
+    try {
+      const s = await fetch(api('/api/state'), { cache: 'no-store' }).then((x) => x.json());
+      render(s);
+      lastData = Date.now();
+      if ($('net').className !== 'on') { $('net').textContent = '在线'; $('net').className = 'on'; }
+      if (openId) refreshDetail();
+    } catch (_) { /* 拉不到就等下一拍 */ }
+  }
+  pull();
+  setInterval(() => {
+    // 长连接 8 秒没给过东西 = 它多半被中间层攒住了，自己拉
+    if (Date.now() - lastData > 8000) pull();
+  }, 3000);
+
   connect();
 
   // 安卓返回键：先关详情/选择器，别一下退出整个页面

@@ -1998,15 +1998,18 @@ class TerminalManager extends EventEmitter {
       out = await run('powershell.exe', [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', FOCUS_PS1, '-Title', rec.title, '-Exact', '-WaitMs', '4000',
-        // 文本走 stdin（-PasteStdin）：命令行传中文要过一层编码，
-        // 而参数表里的引号规则又是另一个雷区。stdin 干净利落
-        '-PasteStdin',
-      ], 15000, line);
+        // **文本走 base64**：stdin 那条会被 PowerShell 按 GBK 解（实测：
+        // 「中文测试」变 6 个怪字进剪贴板，贴进终端就是乱码）；命令行直传
+        // 又要过引号地狱。base64 全是 ASCII，两头都不用猜编码
+        '-PasteB64', Buffer.from(line, 'utf8').toString('base64'),
+      ], 15000);
     } catch (err) {
       return { ok: false, error: '没送出去：' + err.message };
     }
-    const m = /^SENT (.*)$/m.exec(String(out));
-    if (m && m[1].trim() === rec.title) {
+    // 读 TITLE64 那行：SENT 那行走管子时是 GBK 字节，node 按 UTF-8 读，
+    // 中文和「·」全坏 —— 比对永远不等，追问被自己的安全闸拒死（实机踩过）
+    const m = sentTitle(out);
+    if (m !== null && m === rec.title) {
       rec.status = 'running';
       this._timeline(rec, 'you', line.slice(0, 300));
       rec.lastPrompt = line.replace(/\s+/g, ' ').trim().slice(0, 120);
@@ -2014,7 +2017,7 @@ class TerminalManager extends EventEmitter {
       this.log('[term] ' + rec.id + ' 手机上追问了一句：' + line.slice(0, 40));
       return { ok: true };
     }
-    if (m) return { ok: false, error: '聚焦到的窗口跟这条线对不上，没敢发（去电脑上说吧）' };
+    if (m !== null) return { ok: false, error: '聚焦到的窗口跟这条线对不上，没敢发（去电脑上说吧）' };
     return { ok: false, error: '窗口调不到前台，没敢发（标题可能被改了）' };
   }
 
@@ -2056,7 +2059,7 @@ class TerminalManager extends EventEmitter {
       this.log('[term] ' + rec.id + ' 远程' + (allow ? '放行' : '拒绝') + '，按键已送进窗口');
       return { ok: true };
     }
-    if (m) return { ok: false, error: '聚焦到的窗口跟这条线对不上，没敢发键（那条线的标题可能被改了，去电脑上点吧）' };
+    if (m !== null) return { ok: false, error: '聚焦到的窗口跟这条线对不上，没敢发键（那条线的标题可能被改了，去电脑上点吧）' };
     return { ok: false, error: '窗口调不到前台，按键没敢发（标题可能被改了）' };
   }
 
@@ -2293,6 +2296,19 @@ class TerminalManager extends EventEmitter {
 }
 
 // 跑一个命令拿它的输出，带超时。
+/**
+ * 从 ps1 的回执里抠出「真正被聚焦的那个窗口标题」。
+ *
+ * 只认 TITLE64 那行 —— SENT 那行是给人看的，而它走管子时是 GBK 字节，
+ * node 按 UTF-8 一读，中文和「·」全坏（实测坐实）。没有 TITLE64 就是
+ * 没发成，返回 null。
+ */
+function sentTitle(out) {
+  const m = /^TITLE64 ([A-Za-z0-9+/=]+)$/m.exec(String(out || ''));
+  if (!m) return null;
+  try { return Buffer.from(m[1], 'base64').toString('utf8').trim(); } catch (_) { return null; }
+}
+
 function run(bin, args, timeout = 5000, stdin) {
   return new Promise((resolve, reject) => {
     const child = execFile(bin, args, { timeout, windowsHide: true }, (err, stdout) => {
