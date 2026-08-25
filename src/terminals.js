@@ -606,7 +606,12 @@ class TerminalManager extends EventEmitter {
 
     const id = 'w' + ++this.seq;
     const project = name || path.basename(dir);
-    const lane = String(laneName || '').trim();
+    // 控制字符（尤其 CR/LF）必须在这儿就杀掉 —— 这条 lane 会拼进 title，
+    // title 会被 _writeLauncher 逐行写进 .cmd 启动器再交给 cmd 执行。
+    // 夹一个换行就能在**沙箱外**多跑一行任意命令（评审抓的高危：手机
+    // /api/dispatch 收 laneName，一路只 trim 就到这儿）。这是唯一汇口，
+    // 桌面/手机/右键所有派活都过这条，堵在源头
+    const lane = String(laneName || '').replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 60);
 
     // 主线就叫项目名（跟以前一模一样）；分线在后面缀上线名，
     // 这样任务栏上「WaifuCode · 登录页表单校验」和「WaifuCode · 查支付」
@@ -1935,16 +1940,24 @@ class TerminalManager extends EventEmitter {
     try {
       out = await run('powershell.exe', [
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', FOCUS_PS1, '-Title', rec.title, '-SendKeys', keys,
+        // -Exact：发键这条路**禁用「标题包含」兜底**。Claude 跑起来会改
+        // 控制台标题，精确匹配落空是常态，而兜底会抓到同项目的分线窗口 ——
+        // 把确认键敲进别的线（评审抓的高危）。宁可这次放行失败让你去电脑上点，
+        // 也绝不敲错窗口
+        '-File', FOCUS_PS1, '-Title', rec.title, '-SendKeys', keys, '-Exact',
         '-WaitMs', '4000',
       ], 12000);
     } catch (err) {
       return { ok: false, error: '按键没送出去：' + err.message };
     }
-    if (/^SENT/m.test(String(out))) {
+    // 回执里带回真正被聚焦的标题，跟 rec.title 严丝合缝才算数 ——
+    // 双保险，脚本万一还是抓错了，这儿也不让它过
+    const m = /^SENT (.*)$/m.exec(String(out));
+    if (m && m[1].trim() === rec.title) {
       this.log('[term] ' + rec.id + ' 远程' + (allow ? '放行' : '拒绝') + '，按键已送进窗口');
       return { ok: true };
     }
+    if (m) return { ok: false, error: '聚焦到的窗口跟这条线对不上，没敢发键（那条线的标题可能被改了，去电脑上点吧）' };
     return { ok: false, error: '窗口调不到前台，按键没敢发（标题可能被改了）' };
   }
 

@@ -213,19 +213,32 @@
     }
   }
 
-  // 长连接：SSE 断了指数退避重连（手机切后台再回来是家常便饭）
+  // 长连接：SSE 断了指数退避重连。iOS Safari 把页面冻结后会掐连接，
+  // 恢复时**不保证**触发 error —— 光靠 onerror 会一直亮「实时」看旧账。
+  // 所以切回前台时主动重连一次，双保险
   let retry = 1000;
+  let es = null;
+  let reconnTimer = null;
+  function scheduleReconnect() {
+    if (reconnTimer) return; // 防并发：error 和 visibilitychange 可能同时来
+    reconnTimer = setTimeout(() => { reconnTimer = null; connect(); }, retry);
+    retry = Math.min(retry * 2, 15000);
+  }
   function connect() {
-    const es = new EventSource(api('/api/events'));
+    if (es) { try { es.close(); } catch (_) { /* 已经关了 */ } }
+    es = new EventSource(api('/api/events'));
     es.onopen = () => { retry = 1000; $('net').textContent = '实时'; $('net').className = 'on'; };
     es.onmessage = (e) => { try { render(JSON.parse(e.data)); } catch (_) { /* 半包丢掉 */ } };
     es.onerror = () => {
-      es.close();
+      try { es.close(); } catch (_) { /* 已经关了 */ }
       $('net').textContent = '重连中…'; $('net').className = 'off';
-      setTimeout(connect, retry);
-      retry = Math.min(retry * 2, 15000);
+      scheduleReconnect();
     };
   }
+  document.addEventListener('visibilitychange', () => {
+    // 回到前台：连接可能已经悄悄死了（error 没触发），主动重连一次
+    if (document.visibilityState === 'visible') { retry = 1000; connect(); }
+  });
   connect();
 
   $('go').onclick = async () => {

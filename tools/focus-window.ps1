@@ -21,10 +21,12 @@ param(
   [int]$ProcessId = 0,
   [switch]$Minimize,
   [string]$SendKeys = '',
+  [switch]$Exact,
   [int]$WaitMs = 0
 )
 
 $ErrorActionPreference = 'Stop'
+$script:Exact = $Exact
 
 # 超过这个坐标就当窗口跑到你看不见的地方去了，调回前台时顺手挪回来。
 # 不挪的话你点了「看看她在干嘛」，窗口是"恢复"了，但恢复到了你看不见的位置。
@@ -128,8 +130,9 @@ function Find-Target {
       return $false            # 精确命中，不用再找了
     }
 
-    # 包含只当备胎，而且**只留第一个** —— 继续扫，万一后面有精确的
-    if ($script:loose -eq [IntPtr]::Zero -and $t.Contains($script:Title)) {
+    # 包含只当备胎，而且**只留第一个** —— 继续扫，万一后面有精确的。
+    # -Exact 时**根本不留兜底**：发键这条路只认精确窗口，宁可找不到也不认错人
+    if (-not $script:Exact -and $script:loose -eq [IntPtr]::Zero -and $t.Contains($script:Title)) {
       $script:loose = $h
       $script:looseTitle = $t
     }

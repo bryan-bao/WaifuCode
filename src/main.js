@@ -1444,6 +1444,14 @@ function syncUpdateServe(cfg) {
 }
 
 // ─── 手机工作台 ──────────────────────────────────────────────────────────────
+// 心情英文状态词 → 中文（跟 panel.js 的 STATE_TEXT 保持一致）
+const MOOD_TEXT = {
+  normal: '平静', working: '干活中', excited: '来劲了', frustrated: '烦躁',
+  sad: '低落', lonely: '闹脾气', happy: '开心', proud: '得意',
+  surprised: '吃惊', shy: '害羞', tired: '累了', sleepy: '困',
+  angry: '生气', playful: '搞怪', scorn: '不屑', curious: '好奇',
+  panic: '慌', bored: '无聊',
+};
 function mobileState() {
   const cfg = loadConfig();
   if (!mobileToday || Date.now() - mobileToday.at > 10000) {
@@ -1452,10 +1460,13 @@ function mobileState() {
     mobileToday = { at: Date.now(), usd };
   }
   let projects = [];
-  try { projects = (sessions.knownProjects() || []).slice(0, 6); } catch (_) { /* 空着 */ }
+  // 按最近用过排序 + 过滤掉 registry 里的垃圾目录（Desktop/music 之类），
+  // 跟桌面面板一个待遇 —— 手机上手敲目录最痛苦，chips 得端上最可能要的那几个
+  try { projects = sessions.recentProjects({ limit: 6, maxDays: 3650 }) || []; } catch (_) { /* 空着 */ }
   return {
     name: (cfg.persona || {}).name || '小依',
-    mood: mood ? (mood.snapshot() || {}).state || '' : '',
+    // 翻成中文再下发（normal→平静）—— 手机页不该看到内部英文状态词
+    mood: mood ? MOOD_TEXT[(mood.snapshot() || {}).state] || '' : '',
     todayUsd: mobileToday.usd,
     projects: projects.map((p) => ({ name: p.name, path: p.path })),
     terminals: terminals ? terminals.list() : [],
