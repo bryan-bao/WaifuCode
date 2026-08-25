@@ -21,12 +21,14 @@ param(
   [int]$ProcessId = 0,
   [switch]$Minimize,
   [string]$SendKeys = '',
+  [switch]$PasteStdin,
   [switch]$Exact,
   [int]$WaitMs = 0
 )
 
 $ErrorActionPreference = 'Stop'
 $script:Exact = $Exact
+$script:PasteStdin = $PasteStdin
 
 # 超过这个坐标就当窗口跑到你看不见的地方去了，调回前台时顺手挪回来。
 # 不挪的话你点了「看看她在干嘛」，窗口是"恢复"了，但恢复到了你看不见的位置。
@@ -167,14 +169,32 @@ if ($h -eq [IntPtr]::Zero) {
 # 发键前最后再核一次前台 —— 不是它就绝不发：按键砸进用户正开着的
 # 别的窗口，比不发糟得多。
 function Send-KeysIfAsked([IntPtr]$hwnd) {
-  if (-not $script:SendKeys) { return }
+  if (-not $script:SendKeys -and -not $script:PasteStdin) { return }
+  # -PasteStdin：要送进去的是一整句话（中文、符号都可能有）。
+  # SendKeys 发不了中文，而 {}()+^%~ 在它的语法里全是控制符 —— 所以改走剪贴板。
+  # 用完把剪贴板还回去：用户手上那份复制的东西不该被我们悄悄换掉。
+  $restore = $null
+  if ($script:PasteStdin) {
+    $text = [Console]::In.ReadToEnd()
+    if (-not $text) { Write-Output 'EMPTY'; exit 3 }
+    try { $restore = Get-Clipboard -Raw -ErrorAction Stop } catch { $restore = $null }
+    Set-Clipboard -Value $text
+  }
   Start-Sleep -Milliseconds 350
   if ([Waifu.Win]::GetForegroundWindow() -ne $hwnd) {
     Write-Output ('BLOCKED ' + $script:foundTitle)
     exit 2
   }
   $sh = New-Object -ComObject WScript.Shell
-  $sh.SendKeys($script:SendKeys)
+  if ($script:PasteStdin) {
+    $sh.SendKeys('^v')
+    Start-Sleep -Milliseconds 260
+    $sh.SendKeys('{ENTER}')
+    Start-Sleep -Milliseconds 260
+    if ($null -ne $restore) { try { Set-Clipboard -Value $restore } catch { } }
+  } else {
+    $sh.SendKeys($script:SendKeys)
+  }
   Write-Output ('SENT ' + $script:foundTitle)
   exit 0
 }

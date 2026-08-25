@@ -39,8 +39,11 @@ function readBody(req, cap = 64 * 1024) {
 /**
  * hooks 契约（全部由 main 注入，这个模块不 require 任何业务模块）：
  *   state()            -> 整包状态（页面渲染要的全部）
+ *   detail(id)         -> 这条线的详情 + 时间线（手机点开看的）
  *   dispatch(opts)     -> { ok, ... } 在电脑上开一条最小化终端线
+ *   send(id, text)     -> { ok, error? } 往那条线的终端里追问一句
  *   approve(id, allow) -> { ok, error? } 把确认键送进那个终端窗口
+ *   browse(dir)        -> { cwd, parent, dirs[] } 让手机能翻电脑上的文件夹
  */
 function createMobileServer({ pageFile, token, hooks, log }) {
   const clients = new Set(); // SSE 连接
@@ -70,6 +73,29 @@ function createMobileServer({ pageFile, token, hooks, log }) {
 
       if (req.method === 'GET' && pathname === '/api/state') {
         return json(200, await hooks.state());
+      }
+
+      // 一条线的详情（时间线在这儿）—— 手机点开任务看的就是它
+      if (req.method === 'GET' && pathname === '/api/detail') {
+        const d = await hooks.detail(String(params.get('id') || ''));
+        return d ? json(200, d) : json(404, { error: '这条线不在了' });
+      }
+
+      // 翻电脑上的文件夹（手机上没法调系统选择器，只能这么来）。
+      // **只列目录名，绝不读文件内容** —— 这个口只为选项目服务
+      if (req.method === 'GET' && pathname === '/api/browse') {
+        return json(200, await hooks.browse(params.get('dir') || ''));
+      }
+
+      // 往那条线继续说一句（追问 / 下一步指令）
+      if (req.method === 'POST' && pathname === '/api/send') {
+        const body = JSON.parse(await readBody(req) || '{}');
+        const id = String(body.id || '');
+        const text = String(body.text || '');
+        if (!id || !text.trim()) return json(400, { ok: false, error: '要说的话和终端 id 都得有' });
+        const r = await hooks.send(id, text);
+        if (log) log('[mobile] 追问 ' + id + ' -> ' + JSON.stringify(r));
+        return json(200, r);
       }
 
       if (req.method === 'GET' && pathname === '/api/events') {

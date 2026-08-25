@@ -39,6 +39,8 @@ const agents = require('./agents');
 const updates = require('./updates');
 // 手机工作台：扫码进的手机页（派活 + SSE 实时进度 + 远程放行）
 const mobile = require('./mobile');
+// 出门模式：cloudflared 免费隧道，把手机工作台暴露成临时公网地址
+const tunnel = require('./tunnel');
 const { startServer } = require('./server');
 const { profileFor } = require('./profiles');
 const { Voice } = require('./voice');
@@ -887,6 +889,10 @@ function wireEvents() {
 // change 事件每次工具调用都来一发，10 秒节流 —— tooltip 不值得每秒重算
 let trayTipAt = 0;
 let trayTipPending = null;
+function stopTunnel() {
+  if (tunnelHandle) { try { tunnelHandle.stop(); } catch (_) { /* 已经没了 */ } tunnelHandle = null; }
+}
+
 function refreshTrayTip() {
   if (!tray) return;
   const now = Date.now();
@@ -1417,6 +1423,7 @@ const UPDATE_DL = path.join(DATA_ROOT, 'update-download');   // 收包侧：下�
 let updateSrv = null;      // 分发服务（开着才有）
 let mobileSrv = null;      // 手机工作台服务（面板点过「手机」才有）
 let mobileToday = null;    // 今天花费的 10 秒缓存 —— SSE 每 0.8 秒一推，别每推都扫流水
+let tunnelHandle = null;   // 出门模式的隧道（开着才有）
 let docsWin = null;        // 功能手册窗口（面板上「说明书」开的，单例）
 let updateLatest = null;   // 上次探到的远端 manifest —— 面板开晚了靠它补显示
 
@@ -1444,6 +1451,48 @@ function syncUpdateServe(cfg) {
 }
 
 // ─── 手机工作台 ──────────────────────────────────────────────────────────────
+/**
+ * 让手机翻电脑上的文件夹（选项目用）。
+ *
+ * 手机上没有系统选择器，手敲 D:\某某\某某 是最劝退的一步。
+ * **只列文件夹名，不读任何文件内容**；dir 给空就列所有盘符。
+ * 隐藏目录和 . 开头的不列 —— 选项目用不上，列出来还碍眼。
+ */
+function browseDirs(dir) {
+  const d = String(dir || '').trim();
+  if (!d) {
+    // 盘符列表：A~Z 挨个探一遍（比拉 wmic 快，也不用另起进程）
+    const drives = [];
+    for (let i = 67; i <= 90; i++) { // C..Z
+      const root = String.fromCharCode(i) + ':\\';
+      try { if (fs.existsSync(root)) drives.push({ name: String.fromCharCode(i) + ':', path: root }); } catch (_) { /* 探不了就跳 */ }
+    }
+    return { cwd: '', parent: null, dirs: drives };
+  }
+  let cwd;
+  try { cwd = path.resolve(d); } catch (_) { return { cwd: '', parent: null, dirs: [], error: '这个路径不认识' }; }
+  let names = [];
+  try { names = fs.readdirSync(cwd, { withFileTypes: true }); } catch (err) {
+    return { cwd, parent: path.dirname(cwd) === cwd ? '' : path.dirname(cwd), dirs: [], error: '打不开这个文件夹' };
+  }
+  const dirs = names
+    .filter((e) => {
+      if (!e.isDirectory() || e.name.startsWith('.')) return false;
+      try { return !(fs.statSync(path.join(cwd, e.name)).mode & 0); } catch (_) { return false; }
+    })
+    .slice(0, 300)
+    .map((e) => {
+      const full = path.join(cwd, e.name);
+      let git = false;
+      try { git = fs.existsSync(path.join(full, '.git')) || fs.existsSync(path.join(full, 'package.json')); } catch (_) { /* 探不了当不是 */ }
+      return { name: e.name, path: full, project: git };
+    })
+    // 像项目的排前面 —— 你要找的多半就是它们
+    .sort((a, b) => (Number(b.project) - Number(a.project)) || a.name.localeCompare(b.name, 'zh'));
+  const up = path.dirname(cwd);
+  return { cwd, parent: up === cwd ? '' : up, dirs };
+}
+
 // 心情英文状态词 → 中文（跟 panel.js 的 STATE_TEXT 保持一致）
 const MOOD_TEXT = {
   normal: '平静', working: '干活中', excited: '来劲了', frustrated: '烦躁',
@@ -1506,6 +1555,9 @@ function ensureMobile() {
           }
         },
         approve: (id, allow) => (terminals ? terminals.approveRemote(id, allow) : { ok: false, error: '终端管理还没起来' }),
+        detail: (id) => (terminals ? terminals.detail(id) : null),
+        send: (id, text) => (terminals ? terminals.sendText(id, text) : { ok: false, error: '终端管理还没起来' }),
+        browse: (dir) => browseDirs(dir),
       },
     });
     srv.on('error', (err) => {
@@ -2558,6 +2610,37 @@ function wireIpc() {
   // 手机工作台：起服务（幂等）并把扫码用的地址给面板
   ipcMain.handle('mobile:info', () => ensureMobile());
 
+  /**
+   * 出门模式开关：起/断 cloudflared 隧道。
+   * 没装 cloudflared 就先下（几 MB，落在数据目录，不进 C 盘）。
+   */
+  ipcMain.handle('mobile:tunnel', async (_e, on) => {
+    if (!on) {
+      if (tunnelHandle) { tunnelHandle.stop(); tunnelHandle = null; log('[tunnel] 出门模式关了'); }
+      config.patch({ mobile: { tunnel: false } });
+      return { ok: true, url: null };
+    }
+    const info = await ensureMobile();
+    if (!info.ok) return info;
+    const token = (loadConfig().mobile || {}).token;
+    if (tunnelHandle) return { ok: true, url: tunnelHandle.url + '/?t=' + token };
+    try {
+      if (!tunnel.installed(DATA_ROOT)) {
+        log('[tunnel] 下 cloudflared…');
+        send('session:say', { name: '', text: '出门模式要先下个小工具（几 MB），稍等一下下…' });
+        await tunnel.install(DATA_ROOT);
+        log('[tunnel] cloudflared 装好了');
+      }
+      tunnelHandle = await tunnel.start({ dataRoot: DATA_ROOT, port: info.port, log });
+      config.patch({ mobile: { tunnel: true } });
+      return { ok: true, url: tunnelHandle.url + '/?t=' + token };
+    } catch (err) {
+      tunnelHandle = null;
+      log('[tunnel] 出门模式没开成: ' + err.message);
+      return { ok: false, error: '出门模式没开成：' + err.message };
+    }
+  });
+
   // 版本更新：手动查一次 / 下载并安装
   ipcMain.handle('update:check', (_e, src) => checkUpdate(typeof src === 'string' ? src : undefined));
   ipcMain.handle('update:apply', () => applyUpdate());
@@ -2804,6 +2887,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {});
 
   app.on('before-quit', () => {
+    stopTunnel(); // 出门模式的隧道跟着桌宠一起收 —— 别把公网口留在那儿
     if (sessions) sessions.stopAll();
     if (terminals) terminals.dispose();
     if (chat) chat.dispose();

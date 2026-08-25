@@ -837,10 +837,8 @@ $('docs').onclick = () => window.waifu.openDocs();
 
 // 手机工作台：起服务、弹二维码。二维码在本地渲染（vendor/qrcode.js），
 // 地址一个字节都不出这台电脑
-$('mobile').onclick = async () => {
-  const r = await window.waifu.mobileInfo();
-  if (!r || !r.ok) { msg((r && r.error) || '手机工作台起不来', 'err'); return; }
-  const url = (r.urls && r.urls[0]) || '';
+// 画二维码 + 列出地址。二维码在本地渲染，地址一个字节都不出这台电脑
+function drawQr(url, urls) {
   const img = $('qr-img');
   img.innerHTML = '';
   try {
@@ -849,10 +847,42 @@ $('mobile').onclick = async () => {
     q.make();
     img.innerHTML = q.createImgTag(5, 8);
   } catch (_) { img.textContent = url; }
-  $('qr-urls').innerHTML = (r.urls || []).map((u) => '<div>' + esc(u) + '</div>').join('');
+  $('qr-urls').innerHTML = (urls || []).map((u) => '<div>' + esc(u) + '</div>').join('');
+}
+
+$('mobile').onclick = async () => {
+  const r = await window.waifu.mobileInfo();
+  if (!r || !r.ok) { msg((r && r.error) || '手机工作台起不来', 'err'); return; }
+  drawQr((r.urls && r.urls[0]) || '', r.urls || []);
   $('qr-mask').style.display = 'flex';
 };
 $('qr-close').onclick = () => { $('qr-mask').style.display = 'none'; };
+
+// 出门模式：不在同一个网络也能用（cloudflared 免费隧道，临时公网地址）。
+// 每次开地址都不一样，所以照样给二维码；关掉隧道当场作废
+$('qr-go').onclick = async () => {
+  const on = $('qr-go').dataset.on !== '1';
+  $('qr-go').disabled = true;
+  $('qr-tip').textContent = on ? '正在开出门通道…第一次要下个小工具，稍等' : '正在关…';
+  const r = await window.waifu.mobileTunnel(on);
+  $('qr-go').disabled = false;
+  if (!r || !r.ok) {
+    $('qr-tip').textContent = (r && r.error) || '没开成';
+    return;
+  }
+  if (on && r.url) {
+    $('qr-go').dataset.on = '1';
+    $('qr-go').textContent = '关掉出门模式';
+    $('qr-tip').textContent = '出门在外也能用了。这个地址一关就作废，别外传';
+    drawQr(r.url, [r.url]);
+  } else {
+    $('qr-go').dataset.on = '';
+    $('qr-go').textContent = '出门模式（不同网络也能用）';
+    $('qr-tip').textContent = '出门通道关了。现在只有同一个 Wi-Fi 能进';
+    const back = await window.waifu.mobileInfo();
+    if (back && back.ok) drawQr((back.urls || [])[0] || '', back.urls || []);
+  }
+};
 $('qr-mask').onclick = (e) => { if (e.target === $('qr-mask')) $('qr-mask').style.display = 'none'; };
 
 window.waifu.on('agent:install-done', (p) => {

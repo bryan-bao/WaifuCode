@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld('waifu', {
   openDocs: () => ipcRenderer.send('docs:open'),
   // 手机工作台：起服务并拿扫码地址
   mobileInfo: () => ipcRenderer.invoke('mobile:info'),
+  // 出门模式：起/断公网隧道（不在同一个网络也能用）
+  mobileTunnel: (on) => ipcRenderer.invoke('mobile:tunnel', on),
 
   // --- 版本更新（局域网分发）---
   updateCheck: (src) => ipcRenderer.invoke('update:check', src),
