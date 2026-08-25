@@ -911,51 +911,93 @@ let trayTipAt = 0;
 let trayTipPending = null;
 // ─── 截图 ────────────────────────────────────────────────────────────────────
 /**
- * 盖一层透明浮罩让你框一块。**跨所有显示器**：拿所有屏的并集当窗口，
- * 这样双屏、竖屏、缩放不一样的机器都能框到。
+ * 盖一层透明浮罩让你框一块。**一块屏一层**，不是拿并集开一个大的。
  *
- * 【坐标这件事必须说清楚】浮罩里给的是 DIP（跟缩放走），而截图那头
- * CopyFromScreen 要的是物理像素 —— 缩放 125% 的机器上直接拿 DIP 去截，
- * 截出来的框会小一圈还偏位。所以中间必须过一次 dipToScreenRect。
+ * 【为什么不能开一个大的】开过，双屏上只能截当前那块屏。量出来的：
+ * 要 3840x1080，Windows 给的是 1920x1032 —— 它把窗口裁到了**一块屏的
+ * 工作区**（1032 = 1080 减掉任务栏那条）。第二块屏根本没被盖住，
+ * 自然也就框不到。所以改成一块屏开一层。
+ *
+ * 【show 完必须再 setBounds 掰一次】同一个裁剪：建窗口时给的尺寸会被
+ * 按工作区削掉，掰回去才能盖住任务栏那一条（不然屏幕最底下那行永远截不到）。
+ *
+ * 【坐标这件事必须说清楚】浮罩里给的是**窗口内**的 CSS 像素，得先加上
+ * 这层浮罩自己的原点才是桌面坐标；而截图那头 CopyFromScreen 要的是物理
+ * 像素 —— 缩放 125% 的机器上直接拿 DIP 去截，框会小一圈还偏位。
+ * 所以是两步：加原点 → dipToScreenRect。
  */
 function openShot() {
-  if (shotWin && !shotWin.isDestroyed()) { shotWin.focus(); return; }
-  const all = screen.getAllDisplays();
-  const x = Math.min(...all.map((d) => d.bounds.x));
-  const y = Math.min(...all.map((d) => d.bounds.y));
-  const right = Math.max(...all.map((d) => d.bounds.x + d.bounds.width));
-  const bottom = Math.max(...all.map((d) => d.bounds.y + d.bounds.height));
-
-  shotWin = new BrowserWindow({
-    x, y, width: right - x, height: bottom - y,
-    frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true,
-    resizable: false, movable: false, hasShadow: false, fullscreenable: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
-    },
-  });
-  shotWin.setAlwaysOnTop(true, 'screen-saver');
-  shotWin.loadFile(path.join(__dirname, 'renderer', 'shot.html'));
-  shotWin.on('closed', () => { shotWin = null; });
-  shotWin.once('ready-to-show', () => { shotWin.show(); shotWin.focus(); });
+  if (shotWins.length) { for (const w of shotWins) if (!w.isDestroyed()) w.focus(); return; }
+  for (const d of screen.getAllDisplays()) {
+    const w = new BrowserWindow({
+      x: d.bounds.x, y: d.bounds.y, width: d.bounds.width, height: d.bounds.height,
+      frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true,
+      resizable: false, movable: false, hasShadow: false, fullscreenable: false,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
+      },
+    });
+    w.setAlwaysOnTop(true, 'screen-saver');
+    w.loadFile(path.join(__dirname, 'renderer', 'shot.html'));
+    w.on('closed', () => { shotWins = shotWins.filter((x) => x !== w); });
+    w.once('ready-to-show', () => {
+      w.show();
+      w.setBounds(d.bounds);   // 见上：不掰这一下就盖不住任务栏那条
+      w.focus();
+    });
+    shotWins.push(w);
+  }
 }
 
-async function doShot(rect) {
-  const win = shotWin;
-  shotWin = null;
+/** 把框掐进「所有屏的并集」里。按住不放划出屏幕是常事 */
+function clampToDesktop(r) {
+  const all = screen.getAllDisplays();
+  const x0 = Math.min(...all.map((d) => d.bounds.x));
+  const y0 = Math.min(...all.map((d) => d.bounds.y));
+  const x1 = Math.max(...all.map((d) => d.bounds.x + d.bounds.width));
+  const y1 = Math.max(...all.map((d) => d.bounds.y + d.bounds.height));
+  const left = Math.max(x0, Math.min(r.x, x1));
+  const top = Math.max(y0, Math.min(r.y, y1));
+  const right = Math.min(x1, Math.max(r.x + r.width, x0));
+  const bottom = Math.min(y1, Math.max(r.y + r.height, y0));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/** 收摊：所有屏上的浮罩一起撤（在哪块屏上框完的都一样） */
+function closeShot() {
+  const list = shotWins.slice();
+  shotWins = [];
+  for (const w of list) { if (!w.isDestroyed()) w.destroy(); }
+}
+
+async function doShot(rect, from) {
+  // **原点要在关窗口之前拿**：关了就问不出它在哪块屏上了。
+  // 浮罩给的 rect 是「窗口内」的坐标，加上原点才是桌面上的位置 ——
+  // 第二块屏的浮罩原点是 (1920,0)，不加就等于全按主屏算，截的是主屏那块
+  const org = (from && !from.isDestroyed()) ? from.getBounds() : { x: 0, y: 0 };
   // **先把浮罩关干净再拍**：不关的话拍到的是自己那层灰罩。
-  // closed 事件之后再等 120ms —— 窗口没了不等于屏幕已经重画完
-  if (win && !win.isDestroyed()) { win.destroy(); }
+  // closed 之后再等 120ms —— 窗口没了不等于屏幕已经重画完
+  closeShot();
   await new Promise((r) => setTimeout(r, 120));
 
   const dir = path.join(DATA_ROOT, 'shots');
   try {
-    // DIP → 物理像素（缩放不是 100% 的机器上不换算就截歪）
-    const phys = screen.dipToScreenRect(null, {
-      x: Math.round(rect.x), y: Math.round(rect.y),
+    // 桌面坐标（DIP）
+    let abs = {
+      x: org.x + Math.round(rect.x), y: org.y + Math.round(rect.y),
       width: Math.round(rect.w), height: Math.round(rect.h),
-    });
+    };
+    // 拖过头了就掐回桌面范围内 —— 按住不放划出屏幕是常事，
+    // 划出去的坐标喂给 CopyFromScreen 会截出一块黑的
+    abs = clampToDesktop(abs);
+    if (abs.width < 8 || abs.height < 8) {
+      send('session:say', { name: '', text: '这框太小了，没截。' });
+      return { ok: false, error: '框太小' };
+    }
+    // DIP → 物理像素（缩放不是 100% 的机器上不换算就截歪）
+    const phys = screen.dipToScreenRect(null, abs);
     const file = await shot.grab({
       x: phys.x, y: phys.y, w: phys.width, h: phys.height, dir, log,
     });
@@ -1577,7 +1619,7 @@ let updateSrv = null;      // 分发服务（开着才有）
 let mobileSrv = null;      // 手机工作台服务（面板点过「手机」才有）
 let mobileToday = null;    // 今天花费的 10 秒缓存 —— SSE 每 0.8 秒一推，别每推都扫流水
 let tunnelHandle = null;   // 出门模式的隧道（开着才有）
-let shotWin = null;        // 截图那层浮罩（框的时候才有）
+let shotWins = [];         // 截图浮罩，**一块屏一层**（框的时候才有）
 // 两个快捷键各自挂没挂上（ok / taken 被占了 / off 没设）。
 // 设置页要如实显示 —— 全局快捷键被别的软件占是家常便饭，
 // 不说的话用户按了没反应只会以为「这功能坏了」
@@ -2831,11 +2873,11 @@ function wireIpc() {
   });
 
   // 截图浮罩：框好了 / 取消了
-  ipcMain.on('shot:pick', (_e, rect) => { doShot(rect || {}); });
-  ipcMain.on('shot:cancel', () => {
-    if (shotWin && !shotWin.isDestroyed()) shotWin.destroy();
-    shotWin = null;
+  // 哪层浮罩报上来的很关键：它的原点决定了框在哪块屏上（见 doShot）
+  ipcMain.on('shot:pick', (e, rect) => {
+    doShot(rect || {}, BrowserWindow.fromWebContents(e.sender));
   });
+  ipcMain.on('shot:cancel', () => { closeShot(); });
 
   // 手机工作台：起服务（幂等）并把扫码用的地址给面板
   ipcMain.handle('mobile:info', () => ensureMobile());

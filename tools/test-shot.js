@@ -42,7 +42,7 @@ const check = (cond, label) => {
     const seg = main.slice(main.indexOf('async function doShot'), main.indexOf('async function doShot') + 2600);
     check(seg.includes('dipToScreenRect'),
           '框的坐标要 DIP→物理像素换算 —— 缩放 125% 的机器上不换算就截歪');
-    check(/win\.destroy\(\)[\s\S]{0,200}setTimeout/.test(seg),
+    check(seg.includes("closeShot();") && seg.indexOf("closeShot();") < seg.indexOf("setTimeout"),
           '先把浮罩关干净再拍（不然拍到自己那层灰罩）');
     // 用户明确要的是「可粘贴」而不是「自动发」（2026-08-25）：
     // 替他挑一条线发出去，猜错就是把图贴给了别人那条活
@@ -76,6 +76,28 @@ const check = (cond, label) => {
     check(pre.includes('shotPick') && pre.includes('shotCancel'), '浮罩那两个频道进了 preload');
   }
 
+  console.log('');
+  console.log('[4] 双屏：一块屏一层浮罩，坐标要带原点');
+  {
+    const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+    const open = main.slice(main.indexOf('function openShot'), main.indexOf('function clampToDesktop'));
+    const seg = main.slice(main.indexOf('async function doShot'), main.indexOf('async function doShot') + 3200);
+    // 实测（2026-08-25 双屏机）：拿两块屏的并集开一个大浮罩，要 3840x1080，
+    // Windows 只给 1920x1032 —— 它裁到了**一块屏的工作区**。第二块屏没被盖住，
+    // 用户的说法是「双屏只能截当前这块」。所以一块屏必须开一层
+    check(open.includes('for (const d of screen.getAllDisplays())'),
+          '一块屏开一层浮罩 —— 开一个大的会被 Windows 裁到当前这块屏');
+    check(open.includes('w.setBounds(d.bounds)'),
+          'show 完还要 setBounds 掰一次 —— 建窗口时会被按工作区削掉（1080 变 1032，屏幕最底下那行永远截不到）');
+    check(seg.includes('org.x + Math.round(rect.x)') && seg.includes('org.y + Math.round(rect.y)'),
+          '浮罩报的是窗口内坐标，必须加上它自己的原点 —— 不加就全按主屏算，第二块屏截回来的是主屏那块');
+    check(seg.includes('from.getBounds()') && seg.indexOf('from.getBounds()') < seg.indexOf('closeShot()'),
+          '原点要在关窗口**之前**拿（关了就问不出它在哪块屏上了）');
+    check(seg.includes('clampToDesktop'),
+          '框拖出桌面要掐回来 —— 按住不放划出屏幕是常事，划出去的坐标截出来是一块黑的');
+    check(main.includes('function closeShot'),
+          '收摊时所有屏上的浮罩一起撤');
+  }
   fs.rmSync(dir, { recursive: true, force: true });
   console.log('');
   console.log(bad === 0 ? '\x1b[32m全过了\x1b[0m' : '\x1b[31m' + bad + ' 项没过\x1b[0m');
