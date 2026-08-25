@@ -148,6 +148,40 @@ console.log('\n[6] 拖动她不许用 setPosition / 现读现写尺寸');
         '拖动用 setBounds + 建窗时定死的 petWinSize');
 }
 
+console.log('\n[8] 跨作用域调用：定义在 A 函数里、却在 B 函数里被调的，一律红');
+{
+  // 踩过一次（2026-08-25）：registerHotkey 定义在 createTray() 内部，而设置
+  // 保存那条路在 wireIpc() 里调它 —— ReferenceError 被 handler 的 try/catch
+  // 吞掉，用户看到的是「保存成功了但快捷键按了没反应」。**node --check 查不出**
+  // 这种事（语法完全合法），只能靠这条断言。
+  const src = read('src/main.js');
+  const lines = src.split('\n');
+  // 顶层函数（顶格 function）不管；只盯缩进的嵌套函数
+  const nested = [];   // { name, from, to, owner }
+  let topFn = null, topFrom = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const t = /^function (\w+)/.exec(lines[i]);
+    if (t) { topFn = t[1]; topFrom = i; continue; }
+    const n = /^  function (\w+)\s*\(/.exec(lines[i]);
+    if (n && topFn) nested.push({ name: n[1], owner: topFn, line: i + 1 });
+  }
+  // 每个嵌套函数：看它在**别的顶层函数**里有没有被调用
+  const bad = [];
+  for (const fn of nested) {
+    let cur = null;
+    for (let i = 0; i < lines.length; i++) {
+      const t = /^function (\w+)/.exec(lines[i]);
+      if (t) { cur = t[1]; continue; }
+      if (cur && cur !== fn.owner && new RegExp('(?:^|[^\\w.])' + fn.name + '\\s*\\(').test(lines[i])) {
+        // 定义那行本身不算
+        if (i + 1 === fn.line) continue;
+        bad.push(fn.name + '（定义在 ' + fn.owner + '，却在 ' + cur + ' 第 ' + (i + 1) + ' 行被调）');
+        break;
+      }
+    }
+  }
+  check(bad.length === 0, '没有跨作用域调用' + (bad.length ? '：' + bad.join('；') : ''));
+}
 console.log('');
 console.log(bad === 0 ? '\x1b[32m全过了\x1b[0m' : '\x1b[31m' + bad + ' 项没过\x1b[0m');
 process.exit(bad === 0 ? 0 : 1);
