@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 // 渲染层跑在沙箱里，只能通过这座桥碰主进程。
 // 暴露面刻意开得很窄 —— 桌宠没有理由需要完整的 Node 权限。
@@ -14,6 +14,15 @@ contextBridge.exposeInMainWorld('waifu', {
   react: (kind) => ipcRenderer.send('pet:react', kind),
   // 点气泡：把她刚说的那句话带进私聊窗口接着聊
   openChatWith: (text) => ipcRenderer.send('chat:open-with', text),
+  // 拖到她身上的文件。**路径必须在 preload 里取**：Electron 32 起
+  // File.path 没了，渲染层拿不到，只有这儿的 webUtils 能换出真路径
+  dropFiles: (files) => {
+    const paths = [];
+    for (const f of files || []) {
+      try { paths.push(webUtils.getPathForFile(f)); } catch (_) { /* 取不到的跳过 */ }
+    }
+    ipcRenderer.send('drop:files', paths.filter(Boolean));
+  },
   // 她提议做点什么，你点了「好啊」或者「算了」
   acceptOffer: (offer) => ipcRenderer.send('greet:accept', offer),
   declineOffer: () => ipcRenderer.send('greet:decline'),
@@ -118,6 +127,8 @@ contextBridge.exposeInMainWorld('waifu', {
       'chat:delta',
       'chat:done',
       'chat:error',
+      'chat:ask',      // 主进程替你把问题打进聊天框（截图求助、拖日志过来）
+      'panel:prefill', // 拖了个文件夹过来，面板帮你把目录填好
       'perform:dance',
       'perform:song',
       'perform:face',

@@ -771,6 +771,11 @@ $('browse').onclick = async () => {
 // 分支状态跟着目录走（打字、点最近项目、浏览选目录，三条路都要刷）
 $('dir').addEventListener('input', refreshGit);
 
+// 拖了个文件夹到她身上，主进程把面板叫出来、目录替你填好
+window.waifu.on('panel:prefill', (e) => {
+  if (e && e.dir) { $('dir').value = e.dir; refreshGit(); }
+});
+
 // 名字框跟着任务描述走，直到你自己动它
 $('task').addEventListener('input', syncLaneName);
 $('lane').addEventListener('input', () => { laneTouched = true; });

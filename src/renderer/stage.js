@@ -1111,6 +1111,16 @@ window.waifu.on('pet:cursor', (e) => {
 // 你走开一阵子又回来了 —— 抬头看你一眼。
 // 台词和表情走的是心情系统（本地台词库），这儿只管身体：
 // 全程不调 claude，**一分钱不花**
+// 拖文件到她身上：路径交给主进程分流（文件夹→派活、歌→歌单、日志→她看）。
+// dragover 必须 preventDefault，不然浏览器内核直接把 drop 吞了
+window.addEventListener('dragover', (e) => { e.preventDefault(); });
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+    window.waifu.dropFiles([...e.dataTransfer.files]);
+  }
+});
+
 window.waifu.on('pet:welcome', (e) => {
   const long = e && e.goneMin >= 90;
   if (dancer && gestureOn) dancer.gesture(long ? 'lonely' : 'excited');

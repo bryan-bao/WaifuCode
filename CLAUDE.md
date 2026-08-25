@@ -40,6 +40,7 @@
   node tools/test-update.js            # 局域网更新：文件名名单=防穿越的全部、校验不过必删包
   node tools/test-agents.js            # codex 线：权限映射宁紧勿松、小抄拼 prompt、关窗去留
   node tools/test-recap.js             # 有来有回的一天：回来汇报/隔天开场/收工/口头提醒
+  node tools/test-desk.js              # 桌面感知：拖文件分流/日志尾巴/git 值日生/全屏勿扰
   npx electron tools/test-stage.js     # 真模型，约 1 分钟
   ```
 

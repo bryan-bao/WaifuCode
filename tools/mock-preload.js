@@ -106,6 +106,7 @@ contextBridge.exposeInMainWorld('waifu', {
   openPanel: () => {},
   contextMenu: () => {},
   acceptOffer: () => {},
+  dropFiles: () => {},
   declineOffer: () => {},
   choose: (id) => ipcRenderer.send('mock-choose', id),
   // 唱歌时后台听出真实 BPM 会回调这个。少了它，放歌那条路一测出拍子就当场抛

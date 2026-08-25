@@ -198,6 +198,14 @@ window.waifu.on('chat:done', (e) => {
   scrollDown();
 });
 
+// 主进程替你发问（拖了日志过来 / 按了剪贴板求助键）。
+// 走的就是你手敲的那条 send() —— 气泡、打字光标、计费，一个不少
+window.waifu.on('chat:ask', (e) => {
+  if (!e || !e.text || busy) return;
+  $('input').value = e.text;
+  send();
+});
+
 window.waifu.on('chat:error', (e) => {
   if (herBubble) {
     herBubble.classList.remove('typing');
