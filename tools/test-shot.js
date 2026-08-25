@@ -56,7 +56,14 @@ const check = (cond, label) => {
     check(!code.includes('desktopCapturer'),
           '别用 desktopCapturer —— 它给缩略图，截给 AI 看的字会糊');
     const conf = fs.readFileSync(path.join(__dirname, '..', 'src', 'config.js'), 'utf8');
-    check(/shot:\s*'CommandOrControl\+Alt\+S'/.test(conf), '快捷键可配（默认 Ctrl+Alt+S）');
+    // 截图键**默认留空**：全局快捷键跟别的软件撞是家常便饭（实机撞过），
+    // 撞了按下去毫无反应，用户只会以为功能坏了 —— 让人自己在设置里按一个
+    check(/shot:\s*''/.test(conf), '截图快捷键默认不占键，让用户自己设');
+    const set = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'settings.js'), 'utf8');
+    check(set.includes('accelOf'), '设置页能录快捷键（手敲 CommandOrControl+Alt+S 这种写法不现实）');
+    check(set.includes("if (!mods.length) return null"), '录的键必须带修饰键 —— 光一个字母会在打字时乱触发');
+    check(main.includes('hotkeyState'), '挂没挂上要有回执 —— 被占了得如实告诉用户');
+    check(/hotkey[\s\S]{0,80}registerHotkey\(\)/.test(main), '设置里改完当场重挂，不用重启');
     const pre = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.js'), 'utf8');
     check(pre.includes('shotPick') && pre.includes('shotCancel'), '浮罩那两个频道进了 preload');
   }

@@ -1517,6 +1517,10 @@ let mobileSrv = null;      // 手机工作台服务（面板点过「手机」�
 let mobileToday = null;    // 今天花费的 10 秒缓存 —— SSE 每 0.8 秒一推，别每推都扫流水
 let tunnelHandle = null;   // 出门模式的隧道（开着才有）
 let shotWin = null;        // 截图那层浮罩（框的时候才有）
+// 两个快捷键各自挂没挂上（ok / taken 被占了 / off 没设）。
+// 设置页要如实显示 —— 全局快捷键被别的软件占是家常便饭，
+// 不说的话用户按了没反应只会以为「这功能坏了」
+let hotkeyState = {};
 let docsWin = null;        // 功能手册窗口（面板上「说明书」开的，单例）
 let updateLatest = null;   // 上次探到的远端 manifest —— 面板开晚了靠它补显示
 
@@ -2604,6 +2608,9 @@ function wireIpc() {
       // 更新分发开关跟着存档走
       syncUpdateServe(after);
 
+      // 快捷键改了就当场重挂（不用重启）
+      if (JSON.stringify(before.hotkey || {}) !== JSON.stringify(after.hotkey || {})) registerHotkey();
+
       // 换角色：重新加载渲染层就行，整个应用不用重启
       if (before.modelPath !== after.modelPath) {
         log('[settings] 换角色: ' + before.modelPath + ' → ' + after.modelPath);
@@ -2614,7 +2621,7 @@ function wireIpc() {
       }
 
       log('[settings] 存好了');
-      return { ok: true };
+      return { ok: true, hotkey: hotkeyState };
     } catch (err) {
       log('[settings] 存不上: ' + err.message);
       return { ok: false, error: err.message };
@@ -2869,8 +2876,11 @@ if (!app.requestSingleInstanceLock()) {
    * 绝不为这个弹窗打扰你 —— 快捷键没了顶多是少条近路，功能一点没少。
    */
   function registerHotkey() {
-    const key = (loadConfig().hotkey || {}).panel || 'CommandOrControl+Alt+W';
-    if (!key) return;
+    // 先全摘掉再挂 —— 设置里改完键要能当场重挂，不摘的话老键还赖着
+    try { globalShortcut.unregisterAll(); } catch (_) { /* 没挂过 */ }
+    hotkeyState = {};
+    const key = (loadConfig().hotkey || {}).panel || '';
+    if (!key) { hotkeyState.panel = 'off'; } else {
     try {
       const ok = globalShortcut.register(key, () => {
         createPanel();
@@ -2880,18 +2890,23 @@ if (!app.requestSingleInstanceLock()) {
           panelWin.focus();
         }
       });
+      hotkeyState.panel = ok ? 'ok' : 'taken';
       log(ok ? '[main] 全局快捷键 ' + key + ' 已挂上' : '[main] 全局快捷键 ' + key + ' 被别的软件占了，跳过');
     } catch (err) {
+      hotkeyState.panel = 'taken';
       log('[main] 全局快捷键挂不上: ' + err.message);
+    }
     }
 
     // 截图那个键。跟面板那个分开注册 —— 一个被占不该连累另一个
-    const sk = (loadConfig().hotkey || {}).shot || 'CommandOrControl+Alt+S';
-    if (sk) {
+    const sk = (loadConfig().hotkey || {}).shot || '';
+    if (!sk) { hotkeyState.shot = 'off'; } else {
       try {
         const ok2 = globalShortcut.register(sk, () => openShot());
+        hotkeyState.shot = ok2 ? 'ok' : 'taken';
         log(ok2 ? '[shot] 截图快捷键 ' + sk + ' 已挂上' : '[shot] 截图快捷键 ' + sk + ' 被别的软件占了，跳过');
       } catch (err) {
+        hotkeyState.shot = 'taken';
         log('[shot] 截图快捷键挂不上: ' + err.message);
       }
     }

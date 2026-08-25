@@ -64,8 +64,10 @@ const DEFAULTS = {
   // 想关掉就设成空字符串。
   hotkey: {
     panel: 'CommandOrControl+Alt+W',
-      // 截图并发进终端。Win+Shift+S 是系统占着的，别跟它抢
-    shot: 'CommandOrControl+Alt+S',
+    // 截图**默认不占键**：全局快捷键跟别的软件撞是家常便饭（实机就撞了），
+    // 而撞了之后按下去毫无反应，用户只会以为功能坏了。留空 = 不挂，
+    // 让人在设置里按一个自己确定没被占的组合（右键菜单里也能截，不设也能用）
+    shot: '',
   },
 
   // 开终端用哪个壳。auto = 有 Windows Terminal 就用它，没有才回落到
