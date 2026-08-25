@@ -567,7 +567,7 @@ class Mood extends EventEmitter {
    *
    * 不调 claude，**一分钱不花**：台词从库里挑，动作是本地算的。
    */
-  onReturn(goneMin) {
+  onReturn(goneMin, { silent = false } = {}) {
     // 晾太久了还是要扣的 —— 但回来这件事本身值一点好感，
     // 所以扣归 tick() 管，这儿只管「见到你高兴」
     this._warmUp(goneMin > 120 ? 1 : 2);
@@ -575,6 +575,9 @@ class Mood extends EventEmitter {
     this.lastSeen = Date.now();
     this.save();
 
+    // silent = main 那边有正经话要说（「你走的 40 分钟里干完了 X」）。
+    // 数值照记，嘴闭上 —— 不然两个气泡打架，汇报被「你回来啦」顶掉
+    if (silent) return;
     const bank = goneMin >= 90 ? LINES.welcomeLong : LINES.welcomeBack;
     this.flash(goneMin >= 90 ? 'lonely' : 'happy', pick(bank), 3600);
   }

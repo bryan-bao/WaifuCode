@@ -42,6 +42,10 @@ const updates = require('./updates');
 // 漏了的话一碰到没名字的线就 ReferenceError → 被 catch 吞掉 → 整排
 // 「留着的线」静默消失（排查抓的，跟 registerHotkey 一个死法）
 const cost = require('./cost');
+// 「有来有回的一天」：回来汇报 / 隔天开场 / 收工 / 久坐，全是本地拼的、不花钱
+const recap = require('./recap');
+// 口头交代的提醒（「三点提醒我开会」）
+const { remindStore } = require('./remind');
 // 手机工作台：扫码进的手机页（派活 + SSE 实时进度 + 远程放行）
 const mobile = require('./mobile');
 // 出门模式：cloudflared 免费隧道，把手机工作台暴露成临时公网地址
@@ -93,6 +97,7 @@ let chat = null;
 let terminals = null;
 let performer = null;
 let greeter = null;
+let reminders = null;      // 口头提醒的小本子（「三点提醒我开会」）
 let play = null;
 // 玩游戏 / 番茄钟期间她该闭嘴：情绪台词、主动搭话、提议唱跳全压住。
 // 一边让你专注一边在旁边碎碎念，那这个功能就是反效果。
@@ -578,6 +583,73 @@ let presenceTimer = null;
 const WELCOME_MIN = 15;
 
 let awaySince = 0; // 人是什么时候走的（0 = 人就在）
+let sitSince = Date.now(); // 上次「真正休息」是什么时候（离开 ≥5 分钟才算休息）
+const SIT_MIN = 90;        // 连坐多久开始念叨
+
+// 一天只该来一次的事（隔天开场白、收工那句）记在这儿，重启不重来
+const MARKS_FILE = path.join(STORE, 'daymarks.json');
+function dayMarks() {
+  try { return JSON.parse(fs.readFileSync(MARKS_FILE, 'utf8')) || {}; } catch (_) { return {}; }
+}
+function markDay(key) {
+  const m = dayMarks();
+  m[key] = journal.dayKey();
+  try { fs.writeFileSync(MARKS_FILE, JSON.stringify(m), 'utf8'); } catch (_) { /* 丢了就今天多说一次 */ }
+}
+
+/** 你走的这段时间的流水（可能跨了早上 5 点那条日界线，两天都要读） */
+function recordsSince(ts) {
+  const days = new Set([journal.dayKey(ts), journal.dayKey()]);
+  return [...days].flatMap((d) => journal.read(d));
+}
+
+/**
+ * 「昨天挂着一半的那条线」。从 sessions 登记簿挑：最近动过、今天还没碰、
+ * 会话还在盘上的。挑不出来就没有开场白 —— 不硬找话说。
+ */
+function leftoverLane() {
+  try {
+    const today = journal.dayKey();
+    let best = null;
+    // knownProjects 给的才是真目录 —— recentProjects 返回的是
+    // 「WaifuCode（昨天弄的）」这种显示串，拿去查线永远查不到（差点栽这儿）
+    for (const p of sessions.knownProjects()) {
+      if (!p.path || !fs.existsSync(p.path)) continue;
+      for (const l of sessions.lanes(p.path)) {
+        if (!l.alive) continue;
+        const ts = Date.parse(l.lastRun) || 0;
+        if (!ts) continue;
+        if (journal.dayKey(ts) >= today) continue;          // 今天碰过的不算「挂着」
+        if (Date.now() - ts > 4 * 86400000) continue;       // 放了四天以上的，多半是不想弄了
+        if (!best || ts > best.ts) {
+          best = { ts, dir: p.path, laneId: l.id, name: l.name || '', turns: l.turns || 0,
+                   project: p.name || path.basename(p.path) };
+        }
+      }
+    }
+    return best;
+  } catch (err) {
+    log('[recap] 找不着昨天的线: ' + err.message);
+    return null;
+  }
+}
+
+/** 隔天第一次见面：昨天那条线还挂着的话，问一句要不要接着弄。一天一次 */
+function tryOpener() {
+  if (quiet || (play && play.busy)) return false;
+  if (dayMarks().opener === journal.dayKey()) return false;
+  const lane = leftoverLane();
+  const r = recap.opener(lane);
+  if (!r) return false;
+  markDay('opener');
+  r.offer.dir = lane.dir;
+  r.offer.laneId = lane.laneId;
+  r.offer.laneName = lane.name;
+  send('greet:say', { say: r.say, face: r.face, offer: r.offer, hold: 25000 });
+  speakLine(r.say, { maxLen: 60 });
+  log('[recap] 隔天开场白：' + (lane.name || lane.project));
+  return true;
+}
 
 function startPresenceWatch() {
   clearInterval(presenceTimer);
@@ -603,15 +675,41 @@ function startPresenceWatch() {
     // 人回来了。这个信号以前只喂给 tick() 算数值，屏幕上一点反馈都没有 ——
     // 你走开一小时回来，她跟没事人一样坐着
     if (awaySince) {
+      const wentAt = awaySince;
       const goneMin = (Date.now() - awaySince) / 60000;
       awaySince = 0;
+      if (goneMin >= 5) sitSince = Date.now(); // 离开够久才算休息过
       if (goneMin >= WELCOME_MIN) {
         log('[presence] 你走开了 ' + Math.round(goneMin) + ' 分钟，她抬头看你一眼');
-        mood.onReturn(goneMin);          // 台词和表情（本地台词库，不花钱）
         send('pet:welcome', { goneMin }); // 动作（本地算的，不花钱）
+        // 开口说什么，按料多少挑：跨天了先问昨天挂着的线；你不在时有动静就汇报；
+        // 都没有才是普通那句「你回来啦」。台词全是本地拼的，不花钱
+        if (tryOpener()) {
+          mood.onReturn(goneMin, { silent: true });
+        } else {
+          const rep = quiet ? null : recap.welcome(recordsSince(wentAt), wentAt, goneMin);
+          if (rep) {
+            mood.onReturn(goneMin, { silent: true });
+            send('greet:say', { say: rep.say, face: rep.face, hold: 12000 });
+            speakLine(rep.say, { maxLen: 80 });
+            log('[recap] 回来汇报：' + rep.say.slice(0, 60));
+          } else {
+            mood.onReturn(goneMin);      // 台词和表情（本地台词库，不花钱）
+          }
+        }
       }
     }
     mood.onSeen();
+
+    // 久坐提醒：上次休息到现在超过 SIT_MIN 分钟就念叨一句，然后重新计时。
+    // 安静模式（专注/游戏中）不吵 —— 但计时不清零，退出安静模式该催还是催
+    if (!quiet && !(play && play.busy) && Date.now() - sitSince >= SIT_MIN * 60000) {
+      sitSince = Date.now();
+      const line = recap.SIT_LINES[Math.floor(Math.random() * recap.SIT_LINES.length)];
+      send('greet:say', { say: line, face: 'tired', hold: 9000 });
+      speakLine(line, { maxLen: 60 });
+      log('[presence] 久坐 ' + SIT_MIN + ' 分钟，催了一句');
+    }
     // 20 秒一拍而不是 60 秒：「你回来了」要是能晚一分钟才反应，那就不叫反应了。
     // 代价只是一次系统调用
   }, 20 * 1000);
@@ -2125,6 +2223,26 @@ function acceptOffer(offer) {
       break;
     }
 
+    case 'resume': {
+      // 隔天开场白的「接着弄」。跟面板上点「接着聊」走同一条路 ——
+      // 老线只列 claude 侧 alive 的（codex 的会话档不在 ~/.claude，天然被滤掉），
+      // 所以这儿写死 claude，别跟着全局默认走（面板那个坑踩过一次）
+      const noCli = guardAgent('claude');
+      if (noCli) { send('session:say', { name: '', text: noCli.error }); break; }
+      try {
+        openLaneTerminal({
+          projectPath: offer.dir, laneId: offer.laneId, laneName: offer.laneName || '',
+          task: '', agent: 'claude',
+          model: resolveDispatchModel((loadConfig().dispatch || {}).model),
+        }, { minimized: false });
+        send('session:say', { name: offer.laneName || '', text: '接上了，窗口开好了。' });
+      } catch (err) {
+        log('[recap] 接不上昨天那条线: ' + err.message);
+        send('session:say', { name: '', text: '没接上：' + err.message });
+      }
+      break;
+    }
+
     case 'joke': {
       // 笑话在提议的时候就一起写好了，所以这儿不用再花一次钱
       const joke = String(offer.payload || '').trim();
@@ -2151,6 +2269,18 @@ function runAction(a) {
     case 'hum': humLyrics(a.lyrics, a); break;
     case 'face': send('perform:face', { name: a.name }); break;
     case 'stop': stopPerform(); break;
+    case 'remind': {
+      // 「三点提醒我开会」—— 她聊天时听出来的，转手记进小本子
+      const r = reminders ? reminders.add(a) : { ok: false, error: '还没起来' };
+      if (r.ok) {
+        const d = new Date(r.when);
+        const hm = d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0');
+        send('session:say', { name: '', text: '记下了，' + hm + ' 我喊你：' + r.text });
+      } else {
+        send('session:say', { name: '', text: '这个提醒我没记上（' + r.error + '），再说一遍？' });
+      }
+      break;
+    }
     default: log('[perform] 不认识的动作: ' + a.act);
   }
 }
@@ -3071,6 +3201,46 @@ if (!app.requestSingleInstanceLock()) {
     startCursorWatch();
     startPresenceWatch();
     registerHotkey();
+
+    // 隔天开场白：开机 12 秒后问一次（让开场那句先说完）。
+    // 一直开着跨了天的机器走 presence 那条路（回来的第一眼补问）
+    setTimeout(() => { try { tryOpener(); } catch (err) { log('[recap] 开场白没说成: ' + err.message); } }, 12 * 1000);
+
+    // 口头提醒：30 秒查一拍。到点的都冒出来 —— 含桌宠关着时错过的
+    // （过点 10 分钟以上算「错过」，措辞不一样）。提醒**穿透安静模式**：
+    // 你亲口交代的事，专注中也得喊
+    reminders = remindStore(path.join(STORE, 'reminders.json'));
+    const remindTimer = setInterval(() => {
+      try {
+        for (const r of reminders.due()) {
+          const late = Date.now() - r.when > 10 * 60000;
+          const say = late ? '呃…这条提醒过点了：' + r.text + '（刚才你不在）'
+                           : '到点啦！' + r.text;
+          send('greet:say', { say, face: late ? 'panic' : 'excited', hold: 30000 });
+          speakLine(say, { important: true, maxLen: 60 });
+          log('[remind] 喊了：' + r.text);
+        }
+      } catch (err) { log('[remind] 查提醒出错: ' + err.message); }
+    }, 30 * 1000);
+    if (remindTimer.unref) remindTimer.unref();
+
+    // 收工那句：深夜（23 点后到凌晨 5 点前）你还在敲，她打个哈欠带一句今日总结。
+    // 一天一次；quiet / 没干正事 / 人不在，都不说
+    const windTimer = setInterval(() => {
+      try {
+        const h = new Date().getHours();
+        if (h < 23 && h >= 5) return;
+        if (quiet || (play && play.busy) || awaySince) return;
+        if (dayMarks().windDown === journal.dayKey()) return;
+        const r = recap.windDown(journal.today());
+        if (!r) return;
+        markDay('windDown');
+        send('greet:say', { say: r.say, face: r.face, hold: 15000 });
+        speakLine(r.say, { maxLen: 80 });
+        log('[recap] 收工那句说了');
+      } catch (err) { log('[recap] 收工那句没说成: ' + err.message); }
+    }, 10 * 60 * 1000);
+    if (windTimer.unref) windTimer.unref();
 
     // 升级后第一次启动：弹一版「这个版本更新了什么」。说明是打包时从 git
     // 提交收集的（release-notes.json 随包带着）。全新安装不弹 —— seenVersion
