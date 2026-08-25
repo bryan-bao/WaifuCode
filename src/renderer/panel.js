@@ -848,15 +848,40 @@ function drawQr(url, urls) {
     img.innerHTML = q.createImgTag(5, 8);
   } catch (_) { img.textContent = url; }
   $('qr-urls').innerHTML = (urls || []).map((u) => '<div>' + esc(u) + '</div>').join('');
+  qrLink = url || '';
 }
+let qrLink = '';
 
 $('mobile').onclick = async () => {
   const r = await window.waifu.mobileInfo();
   if (!r || !r.ok) { msg((r && r.error) || '手机工作台起不来', 'err'); return; }
-  drawQr((r.urls && r.urls[0]) || '', r.urls || []);
+  // 出门模式已经开着的话，显示的就该是公网那个地址 —— 关掉这个窗口
+  // 服务和隧道都还在，再打开要能接着用（不然用户会以为断了）
+  if (r.tunnelUrl) {
+    $('qr-go').dataset.on = '1';
+    $('qr-go').textContent = '关掉出门模式';
+    $('qr-tip').textContent = '出门模式开着呢。关掉这个窗口不影响手机那边';
+    drawQr(r.tunnelUrl, [r.tunnelUrl]);
+  } else {
+    $('qr-go').dataset.on = '';
+    $('qr-go').textContent = '出门模式（不同网络也能用）';
+    $('qr-tip').textContent = '关掉这个窗口不会断开手机 —— 服务一直开着';
+    drawQr((r.urls && r.urls[0]) || '', r.urls || []);
+  }
   $('qr-mask').style.display = 'flex';
 };
 $('qr-close').onclick = () => { $('qr-mask').style.display = 'none'; };
+
+// 复制链接：手机上不方便扫码时（比如你要微信发给自己），直接拿链接
+$('qr-copy').onclick = async () => {
+  if (!qrLink) return;
+  try {
+    await navigator.clipboard.writeText(qrLink);
+    $('qr-tip').textContent = '链接复制好了 —— 这串带着口令，别发到群里';
+  } catch (_) {
+    $('qr-tip').textContent = '复制不了，长按下面那行地址自己选吧';
+  }
+};
 
 // 出门模式：不在同一个网络也能用（cloudflared 免费隧道，临时公网地址）。
 // 每次开地址都不一样，所以照样给二维码；关掉隧道当场作废

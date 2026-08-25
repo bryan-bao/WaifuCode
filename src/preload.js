@@ -65,6 +65,10 @@ contextBridge.exposeInMainWorld('waifu', {
   // 出门模式：起/断公网隧道（不在同一个网络也能用）
   mobileTunnel: (on) => ipcRenderer.invoke('mobile:tunnel', on),
 
+  // 截图那层浮罩：框好了 / 取消了
+  shotPick: (r) => ipcRenderer.send('shot:pick', r),
+  shotCancel: () => ipcRenderer.send('shot:cancel'),
+
   // --- 版本更新（局域网分发）---
   updateCheck: (src) => ipcRenderer.invoke('update:check', src),
   updateApply: () => ipcRenderer.invoke('update:apply'),

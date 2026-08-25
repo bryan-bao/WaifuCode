@@ -2,6 +2,7 @@
 
 const {
   app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell,
+  clipboard,
   globalShortcut,
 } = require('electron');
 const path = require('path');
@@ -41,6 +42,8 @@ const updates = require('./updates');
 const mobile = require('./mobile');
 // 出门模式：cloudflared 免费隧道，把手机工作台暴露成临时公网地址
 const tunnel = require('./tunnel');
+// 截图：框一块直接发进正在跑的那个终端
+const shot = require('./shot');
 const { startServer } = require('./server');
 const { profileFor } = require('./profiles');
 const { Voice } = require('./voice');
@@ -791,9 +794,12 @@ function wireEvents() {
     // 一段就过来说话」，不是「别记我干过什么」—— 所以下面这两笔在
     // e.quiet 时照样落地，只有播报那半段会提前收工。
     journal.add('report', {
+      // termId：手机详情页要按线把「这条线之前汇报过什么」捞回来。
+      // 内存里的时间线是这轮开的窗口才有，重启/老窗口一条都没有
+      termId: e.id,
       project: e.project, lane: e.laneName,
       tools: e.toolCount, errors: e.errorCount, files: e.files,
-      brief: briefly(e.text, 60),
+      brief: briefly(e.text, 160), // 60 字看不出「做到哪了」，手机详情页要靠它
     });
 
     // 顺手记进这个项目的小抄，下次开终端带给她。
@@ -889,6 +895,92 @@ function wireEvents() {
 // change 事件每次工具调用都来一发，10 秒节流 —— tooltip 不值得每秒重算
 let trayTipAt = 0;
 let trayTipPending = null;
+// ─── 截图 ────────────────────────────────────────────────────────────────────
+/**
+ * 盖一层透明浮罩让你框一块。**跨所有显示器**：拿所有屏的并集当窗口，
+ * 这样双屏、竖屏、缩放不一样的机器都能框到。
+ *
+ * 【坐标这件事必须说清楚】浮罩里给的是 DIP（跟缩放走），而截图那头
+ * CopyFromScreen 要的是物理像素 —— 缩放 125% 的机器上直接拿 DIP 去截，
+ * 截出来的框会小一圈还偏位。所以中间必须过一次 dipToScreenRect。
+ */
+function openShot() {
+  if (shotWin && !shotWin.isDestroyed()) { shotWin.focus(); return; }
+  const all = screen.getAllDisplays();
+  const x = Math.min(...all.map((d) => d.bounds.x));
+  const y = Math.min(...all.map((d) => d.bounds.y));
+  const right = Math.max(...all.map((d) => d.bounds.x + d.bounds.width));
+  const bottom = Math.max(...all.map((d) => d.bounds.y + d.bounds.height));
+
+  shotWin = new BrowserWindow({
+    x, y, width: right - x, height: bottom - y,
+    frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true,
+    resizable: false, movable: false, hasShadow: false, fullscreenable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
+    },
+  });
+  shotWin.setAlwaysOnTop(true, 'screen-saver');
+  shotWin.loadFile(path.join(__dirname, 'renderer', 'shot.html'));
+  shotWin.on('closed', () => { shotWin = null; });
+  shotWin.once('ready-to-show', () => { shotWin.show(); shotWin.focus(); });
+}
+
+/** 截完了发给谁：最近有动静的那条活线（关掉的、干完的都不算） */
+function shotTarget() {
+  if (!terminals) return null;
+  const live = terminals.list().filter((t) => t.status !== 'closed' && t.status !== 'done');
+  if (!live.length) return null;
+  // list() 已经把活着的排在前面，这儿再按「刚才有动静」挑一次
+  return live[0];
+}
+
+async function doShot(rect) {
+  const win = shotWin;
+  shotWin = null;
+  // **先把浮罩关干净再拍**：不关的话拍到的是自己那层灰罩。
+  // closed 事件之后再等 120ms —— 窗口没了不等于屏幕已经重画完
+  if (win && !win.isDestroyed()) { win.destroy(); }
+  await new Promise((r) => setTimeout(r, 120));
+
+  const dir = path.join(DATA_ROOT, 'shots');
+  try {
+    // DIP → 物理像素（缩放不是 100% 的机器上不换算就截歪）
+    const phys = screen.dipToScreenRect(null, {
+      x: Math.round(rect.x), y: Math.round(rect.y),
+      width: Math.round(rect.w), height: Math.round(rect.h),
+    });
+    const file = await shot.grab({
+      x: phys.x, y: phys.y, w: phys.width, h: phys.height, dir, log,
+    });
+    shot.sweep(dir);
+
+    const target = shotTarget();
+    if (!target) {
+      // 没有开着的终端：图存下来了，路径给你，别让这一下白截
+      try { clipboard.writeText(file); } catch (_) { /* 剪贴板占用 */ }
+      send('session:say', { name: '', text: '截好了，可现在没有开着的终端。路径给你复制好了：' + path.basename(file) });
+      return { ok: true, file, delivered: false };
+    }
+    // 路径写进 prompt 是官方支持的给图方式（剪贴板贴图要模拟 Alt+V，
+    // 跨应用不稳）。她那边看到路径会自己去读这张图
+    const line = '看看这张截图：' + file;
+    const r = await terminals.sendText(target.id, line);
+    if (r && r.ok) {
+      send('session:say', { name: target.name, text: '截图发给「' + target.name + '」那条线了。', termId: target.id });
+      return { ok: true, file, delivered: true };
+    }
+    try { clipboard.writeText(file); } catch (_) { /* 剪贴板占用 */ }
+    send('session:say', { name: '', text: '截好了但没送进终端（' + ((r && r.error) || '未知') + '）。路径复制好了。' });
+    return { ok: false, file, error: (r && r.error) || '没送进去' };
+  } catch (err) {
+    log('[shot] 截图没成: ' + err.message);
+    send('session:say', { name: '', text: '截图没成：' + err.message });
+    return { ok: false, error: err.message };
+  }
+}
+
 function stopTunnel() {
   if (tunnelHandle) { try { tunnelHandle.stop(); } catch (_) { /* 已经没了 */ } tunnelHandle = null; }
 }
@@ -1424,6 +1516,7 @@ let updateSrv = null;      // 分发服务（开着才有）
 let mobileSrv = null;      // 手机工作台服务（面板点过「手机」才有）
 let mobileToday = null;    // 今天花费的 10 秒缓存 —— SSE 每 0.8 秒一推，别每推都扫流水
 let tunnelHandle = null;   // 出门模式的隧道（开着才有）
+let shotWin = null;        // 截图那层浮罩（框的时候才有）
 let docsWin = null;        // 功能手册窗口（面板上「说明书」开的，单例）
 let updateLatest = null;   // 上次探到的远端 manifest —— 面板开晚了靠它补显示
 
@@ -1451,6 +1544,38 @@ function syncUpdateServe(cfg) {
 }
 
 // ─── 手机工作台 ──────────────────────────────────────────────────────────────
+/**
+ * 详情 = 内存里的时间线 + **流水账里这条线之前的阶段汇报**。
+ *
+ * 内存那份只有「这轮开的窗口」才有；桌宠重启过、或者窗口是上午开的，
+ * 打开详情就是一张白纸 —— 而用户点进来最想知道的恰恰是「做到哪了」。
+ * 流水账里每条 report 都记着（今天 + 昨天，够用了），按 termId 捞回来。
+ */
+function detailWithHistory(id) {
+  const d = terminals ? terminals.detail(id) : null;
+  if (!d) return null;
+  let past = [];
+  try {
+    const rows = [...journal.read(Date.now() - 86400000), ...journal.read()];
+    past = rows
+      .filter((r) => r.type === 'report' && r.termId === id && r.brief)
+      .map((r) => ({ at: +new Date(r.at), kind: 'her', text: r.brief }));
+  } catch (_) { /* 流水读不到就只给内存那份 */ }
+  if (!past.length) return d;
+
+  // 合起来按时间排，同一句话不重复摆（内存那份和流水那份会有重叠）
+  const seen = new Set();
+  const all = [...past, ...(d.timeline || [])]
+    .sort((a, b) => a.at - b.at)
+    .filter((e) => {
+      const k = e.kind + '|' + String(e.text).slice(0, 40);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  return { ...d, timeline: all.slice(-40) };
+}
+
 /**
  * 让手机翻电脑上的文件夹（选项目用）。
  *
@@ -1533,7 +1658,10 @@ function ensureMobile() {
   if (!(cfg.mobile || {}).enabled) config.patch({ mobile: { enabled: true } });
 
   const urls = updates.lanIPs().map((ip) => 'http://' + ip + ':' + port + '/?t=' + token);
-  if (mobileSrv) return Promise.resolve({ ok: true, urls, port });
+  // 出门模式开着的话，把公网地址一起带回去 —— 关了二维码窗口再打开，
+  // 面板要能如实显示「现在是开着的、地址是这个」，而不是装作没开过
+  const tunnelUrl = tunnelHandle ? tunnelHandle.url + '/?t=' + token : null;
+  if (mobileSrv) return Promise.resolve({ ok: true, urls, port, tunnelUrl });
 
   return new Promise((resolve) => {
     const srv = mobile.createMobileServer({
@@ -1555,7 +1683,7 @@ function ensureMobile() {
           }
         },
         approve: (id, allow) => (terminals ? terminals.approveRemote(id, allow) : { ok: false, error: '终端管理还没起来' }),
-        detail: (id) => (terminals ? terminals.detail(id) : null),
+        detail: (id) => detailWithHistory(id),
         send: (id, text) => (terminals ? terminals.sendText(id, text) : { ok: false, error: '终端管理还没起来' }),
         browse: (dir) => browseDirs(dir),
       },
@@ -1569,7 +1697,7 @@ function ensureMobile() {
     srv.listen(port, '0.0.0.0', () => {
       mobileSrv = srv;
       log('[mobile] 手机工作台开在 :' + port);
-      resolve({ ok: true, urls, port });
+      resolve({ ok: true, urls, port, tunnelUrl });
     });
   });
 }
@@ -2136,6 +2264,7 @@ function wireIpc() {
     const menu = Menu.buildFromTemplate([
       ...workItem,
       { label: '派个活…', click: () => createPanel() },
+      { label: '截个图发给她…', click: () => openShot() },
       { label: '跟她聊聊…', click: () => createChatWindow() },
       { label: '设置…', click: () => createSettingsWindow() },
       { type: 'separator' },
@@ -2607,6 +2736,13 @@ function wireIpc() {
     docsWin.on('closed', () => { docsWin = null; });
   });
 
+  // 截图浮罩：框好了 / 取消了
+  ipcMain.on('shot:pick', (_e, rect) => { doShot(rect || {}); });
+  ipcMain.on('shot:cancel', () => {
+    if (shotWin && !shotWin.isDestroyed()) shotWin.destroy();
+    shotWin = null;
+  });
+
   // 手机工作台：起服务（幂等）并把扫码用的地址给面板
   ipcMain.handle('mobile:info', () => ensureMobile());
 
@@ -2747,6 +2883,17 @@ if (!app.requestSingleInstanceLock()) {
       log(ok ? '[main] 全局快捷键 ' + key + ' 已挂上' : '[main] 全局快捷键 ' + key + ' 被别的软件占了，跳过');
     } catch (err) {
       log('[main] 全局快捷键挂不上: ' + err.message);
+    }
+
+    // 截图那个键。跟面板那个分开注册 —— 一个被占不该连累另一个
+    const sk = (loadConfig().hotkey || {}).shot || 'CommandOrControl+Alt+S';
+    if (sk) {
+      try {
+        const ok2 = globalShortcut.register(sk, () => openShot());
+        log(ok2 ? '[shot] 截图快捷键 ' + sk + ' 已挂上' : '[shot] 截图快捷键 ' + sk + ' 被别的软件占了，跳过');
+      } catch (err) {
+        log('[shot] 截图快捷键挂不上: ' + err.message);
+      }
     }
   }
 

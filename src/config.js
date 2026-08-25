@@ -64,6 +64,8 @@ const DEFAULTS = {
   // 想关掉就设成空字符串。
   hotkey: {
     panel: 'CommandOrControl+Alt+W',
+      // 截图并发进终端。Win+Shift+S 是系统占着的，别跟它抢
+    shot: 'CommandOrControl+Alt+S',
   },
 
   // 开终端用哪个壳。auto = 有 Windows Terminal 就用它，没有才回落到
