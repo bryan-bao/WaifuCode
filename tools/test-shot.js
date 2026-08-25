@@ -1,7 +1,7 @@
 'use strict';
 // 截图那条链的自检。真截一小块（不碰用户屏幕内容，只看尺寸对不对），
 // 外加把几条「不许退」的规矩钉住：坐标要换算、拍之前浮罩必须没了、
-// 图不能只进剪贴板（那就等于没解决用户的问题）。
+// 图进剪贴板要放位图、以及**不许替用户发进终端**（他要的是可粘贴）。
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -44,10 +44,14 @@ const check = (cond, label) => {
           '框的坐标要 DIP→物理像素换算 —— 缩放 125% 的机器上不换算就截歪');
     check(/win\.destroy\(\)[\s\S]{0,200}setTimeout/.test(seg),
           '先把浮罩关干净再拍（不然拍到自己那层灰罩）');
-    check(seg.includes('terminals.sendText'),
-          '截完直接送进终端 —— 只丢剪贴板就等于没解决「还得二次粘贴」');
+    // 用户明确要的是「可粘贴」而不是「自动发」（2026-08-25）：
+    // 替他挑一条线发出去，猜错就是把图贴给了别人那条活
+    check(seg.includes('clipboard.writeImage'),
+          '图进剪贴板放的是**位图**（粘路径要她再读一次盘，还看不见预览）');
+    check(!seg.includes('terminals.sendText'),
+          '截完不许替用户发进终端 —— 粘哪儿、配什么话、什么时候发是他的事');
     check(seg.includes('clipboard.writeText'),
-          '送不进去时把路径复制给用户，别让这一下白截');
+          '图读不回来时退而复制路径，别让这一下白截');
     const sh = fs.readFileSync(path.join(__dirname, '..', 'src', 'shot.js'), 'utf8');
     check(sh.includes('EncodedCommand'),
           '脚本走 base64 传给 PowerShell（这个项目在它的编码上栽过一次）');

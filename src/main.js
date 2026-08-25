@@ -46,7 +46,7 @@ const cost = require('./cost');
 const mobile = require('./mobile');
 // 出门模式：cloudflared 免费隧道，把手机工作台暴露成临时公网地址
 const tunnel = require('./tunnel');
-// 截图：框一块直接发进正在跑的那个终端
+// 截图：框一块，图进剪贴板（自己 Ctrl+V 粘到哪儿是哪儿）
 const shot = require('./shot');
 const { startServer } = require('./server');
 const { profileFor } = require('./profiles');
@@ -941,15 +941,6 @@ function openShot() {
   shotWin.once('ready-to-show', () => { shotWin.show(); shotWin.focus(); });
 }
 
-/** 截完了发给谁：最近有动静的那条活线（关掉的、干完的都不算） */
-function shotTarget() {
-  if (!terminals) return null;
-  const live = terminals.list().filter((t) => t.status !== 'closed' && t.status !== 'done');
-  if (!live.length) return null;
-  // list() 已经把活着的排在前面，这儿再按「刚才有动静」挑一次
-  return live[0];
-}
-
 async function doShot(rect) {
   const win = shotWin;
   shotWin = null;
@@ -970,24 +961,21 @@ async function doShot(rect) {
     });
     shot.sweep(dir);
 
-    const target = shotTarget();
-    if (!target) {
-      // 没有开着的终端：图存下来了，路径给你，别让这一下白截
-      try { clipboard.writeText(file); } catch (_) { /* 剪贴板占用 */ }
-      send('session:say', { name: '', text: '截好了，可现在没有开着的终端。路径给你复制好了：' + path.basename(file) });
-      return { ok: true, file, delivered: false };
+    // 【只放剪贴板，不替用户发。】原来是截完直接 sendText 打进「最近那条活线」——
+    // 用户明说了不要：图得是**可粘贴**的，粘进哪个框、配什么话、什么时候发，
+    // 是他自己的事（同一张图也可能是要贴给别的窗口的）。而且「最近那条」
+    // 本来就是猜的，猜错就是把图发错了人。
+    const img = nativeImage.createFromPath(file);
+    if (!img.isEmpty()) {
+      clipboard.writeImage(img);
+      send('session:say', { name: '', text: '截好了，Ctrl+V 直接粘进输入框就行。' });
+      return { ok: true, file, copied: 'image' };
     }
-    // 路径写进 prompt 是官方支持的给图方式（剪贴板贴图要模拟 Alt+V，
-    // 跨应用不稳）。她那边看到路径会自己去读这张图
-    const line = '看看这张截图：' + file;
-    const r = await terminals.sendText(target.id, line);
-    if (r && r.ok) {
-      send('session:say', { name: target.name, text: '截图发给「' + target.name + '」那条线了。', termId: target.id });
-      return { ok: true, file, delivered: true };
-    }
-    try { clipboard.writeText(file); } catch (_) { /* 剪贴板占用 */ }
-    send('session:say', { name: '', text: '截好了但没送进终端（' + ((r && r.error) || '未知') + '）。路径复制好了。' });
-    return { ok: false, file, error: (r && r.error) || '没送进去' };
+    // 图读不回来（罕见：盘满、杀软锁文件）。路径也是能粘的 —— 粘进去
+    // 她会自己去读这张图，总比这一下白截强
+    try { clipboard.writeText(file); } catch (_) { /* 剪贴板被别人占着 */ }
+    send('session:say', { name: '', text: '图存下了但复制不了，路径给你了：' + path.basename(file) });
+    return { ok: true, file, copied: 'path' };
   } catch (err) {
     log('[shot] 截图没成: ' + err.message);
     send('session:say', { name: '', text: '截图没成：' + err.message });
@@ -2334,7 +2322,7 @@ function wireIpc() {
     const menu = Menu.buildFromTemplate([
       ...workItem,
       { label: '派个活…', click: () => createPanel() },
-      { label: '截个图发给她…', click: () => openShot() },
+      { label: '截个图（复制）…', click: () => openShot() },
       { label: '跟她聊聊…', click: () => createChatWindow() },
       { label: '设置…', click: () => createSettingsWindow() },
       { type: 'separator' },

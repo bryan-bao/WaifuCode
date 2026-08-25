@@ -11,6 +11,9 @@ config.json
 # 探 codex 行为时用的临时 CODEX_HOME（tools 里那些探针会造，2MB 起步）
 .tmp-codexhome/
 
+# 截图（截给她看的图，全是你屏幕上的东西）
+shots/
+
 # 运行日志
 *.log
 
