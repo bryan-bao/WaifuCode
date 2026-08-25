@@ -46,12 +46,16 @@ const check = (cond, label) => {
           '先把浮罩关干净再拍（不然拍到自己那层灰罩）');
     // 用户明确要的是「可粘贴」而不是「自动发」（2026-08-25）：
     // 替他挑一条线发出去，猜错就是把图贴给了别人那条活
-    check(seg.includes('clipboard.writeImage'),
-          '图进剪贴板放的是**位图**（粘路径要她再读一次盘，还看不见预览）');
+    // 只放位图是**不行**的（实机试出来的）：终端的 Ctrl+V 走「粘贴文字」，
+    // 剪贴板里只有位图它拿到的是空的，按下去毫无反应。文字和图必须一起放
+    check(seg.includes("clipboard.write({ text: paste, image: img })"),
+          '文字和图一起进剪贴板 —— 只放位图的话终端里根本粘不出来');
     check(!seg.includes('terminals.sendText'),
           '截完不许替用户发进终端 —— 粘哪儿、配什么话、什么时候发是他的事');
     check(seg.includes('clipboard.writeText'),
-          '图读不回来时退而复制路径，别让这一下白截');
+          '位图读不回来时至少把路径复制上，别让这一下白截');
+    check(seg.includes("const paste = ") && seg.includes(".test(file) ? "),
+          '路径带空格要加引号（用户名有空格的机器上会被拆成两截）');
     const sh = fs.readFileSync(path.join(__dirname, '..', 'src', 'shot.js'), 'utf8');
     check(sh.includes('EncodedCommand'),
           '脚本走 base64 传给 PowerShell（这个项目在它的编码上栽过一次）');

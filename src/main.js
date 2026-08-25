@@ -965,17 +965,24 @@ async function doShot(rect) {
     // 用户明说了不要：图得是**可粘贴**的，粘进哪个框、配什么话、什么时候发，
     // 是他自己的事（同一张图也可能是要贴给别的窗口的）。而且「最近那条」
     // 本来就是猜的，猜错就是把图发错了人。
+    // 【文字和图一起放，主力是文字。】只放位图行不通 —— 实机试过粘不进去：
+    // 终端的 Ctrl+V 走的是「粘贴**文字**」那条路（Windows Terminal 自己
+    // 就把这个键占了），剪贴板里只有位图时它拿到的是空的，按下去毫无反应。
+    // 所以放的是**图片路径**：任何终端都粘得进，发出去她自己会去读这张图。
+    // 位图同时也放着 —— 粘进聊天软件、文档里那边要的就是图。
     const img = nativeImage.createFromPath(file);
-    if (!img.isEmpty()) {
-      clipboard.writeImage(img);
-      send('session:say', { name: '', text: '截好了，Ctrl+V 直接粘进输入框就行。' });
-      return { ok: true, file, copied: 'image' };
+    // 用户名带空格的机器上（C: 反斜杠 Users 反斜杠 Li Ming 那种）不加引号会被拆成两截
+    const paste = /\s/.test(file) ? '"' + file + '"' : file;
+    try {
+      if (img.isEmpty()) clipboard.writeText(paste);
+      else clipboard.write({ text: paste, image: img });
+    } catch (err) {
+      log('[shot] 剪贴板写不进去: ' + err.message);
+      send('session:say', { name: '', text: '图存下了但复制不了（剪贴板被别的软件占着）：' + path.basename(file) });
+      return { ok: false, file, error: err.message };
     }
-    // 图读不回来（罕见：盘满、杀软锁文件）。路径也是能粘的 —— 粘进去
-    // 她会自己去读这张图，总比这一下白截强
-    try { clipboard.writeText(file); } catch (_) { /* 剪贴板被别人占着 */ }
-    send('session:say', { name: '', text: '图存下了但复制不了，路径给你了：' + path.basename(file) });
-    return { ok: true, file, copied: 'path' };
+    send('session:say', { name: '', text: '截好了，Ctrl+V 粘进输入框，回车发给她。' });
+    return { ok: true, file, copied: img.isEmpty() ? 'path' : 'both' };
   } catch (err) {
     log('[shot] 截图没成: ' + err.message);
     send('session:say', { name: '', text: '截图没成：' + err.message });
