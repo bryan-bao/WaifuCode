@@ -81,6 +81,7 @@
       "!*.log",
       "!config.json",
       "!.pack-state.json",
+      "!bin",
       "!updates",
       "!update-download",
       "!package-lock.json",

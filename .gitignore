@@ -38,3 +38,6 @@ update-download/
 # 打包状态（上次打到哪个提交）和生成的更新说明 —— 都是打包机自己的
 .pack-state.json
 release-notes.json
+
+# 出门模式运行时下的 cloudflared（50 多 MB，每台机器自己下）
+bin/
