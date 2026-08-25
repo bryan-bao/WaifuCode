@@ -863,7 +863,9 @@ $('qr-close').onclick = () => { $('qr-mask').style.display = 'none'; };
 $('qr-go').onclick = async () => {
   const on = $('qr-go').dataset.on !== '1';
   $('qr-go').disabled = true;
-  $('qr-tip').textContent = on ? '正在开出门通道…第一次要下个小工具，稍等' : '正在关…';
+  $('qr-tip').textContent = on
+    ? '正在开出门通道…要等一分多钟（公网地址要传播开），第一次还要下个小工具。开好会自动换二维码'
+    : '正在关…';
   const r = await window.waifu.mobileTunnel(on);
   $('qr-go').disabled = false;
   if (!r || !r.ok) {

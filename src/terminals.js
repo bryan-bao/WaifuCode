@@ -1952,9 +1952,22 @@ class TerminalManager extends EventEmitter {
     const rec = this.items.get(id);
     if (!rec) return null;
     const row = this.list().find((t) => t.id === id) || {};
+    // 时间线是这轮才开始记的 —— 这之前开的窗口、以及桌宠重启认回来的窗口，
+    // 手上一条都没有。**别给用户一张白纸**：拿现有字段兜一份出来
+    // （当初派的活、这轮在干什么、最近一次汇报、最近一次报错），
+    // 时间用启动时刻兜底，标上「（之前的）」不冒充精确时刻
+    let tl = (rec.timeline || []).slice(-40);
+    if (!tl.length) {
+      const t0 = rec.startedAt || Date.now();
+      if (rec.task) tl.push({ at: t0, kind: 'you', text: rec.task, rough: true });
+      if (rec.lastPrompt && rec.lastPrompt !== rec.task) tl.push({ at: t0, kind: 'you', text: rec.lastPrompt, rough: true });
+      if (rec.lastError) tl.push({ at: t0, kind: 'error', text: rec.lastError, rough: true });
+      if (rec.lastReport) tl.push({ at: rec.lastReportAt || t0, kind: 'her', text: rec.lastReport, rough: true });
+      if (rec.status === 'waiting' && rec.waitDetail) tl.push({ at: Date.now(), kind: 'wait', text: '在等你确认：' + rec.waitDetail, rough: true });
+    }
     return {
       ...row,
-      timeline: (rec.timeline || []).slice(-40),
+      timeline: tl,
       files: row.files || [],
       // 能不能在手机上继续追问：窗口还活着才行（关了就只能看历史）
       canSend: rec.status !== 'closed',

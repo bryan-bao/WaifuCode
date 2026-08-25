@@ -146,7 +146,8 @@
   </header>
 
   <div class="card">
-    <h3>派个活（终端开在电脑上）</h3>
+    <h3>派个活（就在电脑上那些终端里干）</h3>
+    <select id="target"><option value="">开一条新的线</option></select>
     <div class="chips" id="projects"></div>
     <div class="row2" style="align-items:center">
       <input id="dir" placeholder="项目目录" spellcheck="false" style="margin-bottom:0" />
@@ -215,10 +216,33 @@
     } catch (e) { msg('网络断了？' + e.message, 'err'); }
   }
 
+  // 「派给谁」：开新线，还是接着电脑上已经开着的某条线说。
+  // 后者走的是「往那个终端里打一句话」—— 跟你走到电脑前敲进去一模一样，
+  // 不会另开窗口（这正是手机远程办公的关键：接着干，不是重新开一摊）
+  function syncTargetUI() {
+    const live = $('target').value !== '';
+    $('dir').parentElement.style.display = live ? 'none' : 'flex';
+    $('agent').parentElement.style.display = live ? 'none' : 'flex';
+    $('projects').style.display = live ? 'none' : 'flex';
+    $('task').placeholder = live ? '接着说一句（直接进那个终端）' : '要干什么活';
+    $('go').textContent = live ? '发给那条线' : '派活';
+  }
+  $('target').onchange = syncTargetUI;
+
   function render(s) {
     if (!s) return;
     $('who').textContent = s.name || '小依';
     $('today').textContent = (s.mood ? s.mood + ' · ' : '') + '今天 ' + (money(s.todayUsd) || '¥0');
+
+    // 「派给谁」下拉：把电脑上还开着的线列出来
+    const sel = $('target');
+    const keep = sel.value;
+    const live = (s.terminals || []).filter((t) => t.status !== 'closed');
+    sel.innerHTML = '<option value="">开一条新的线</option>' +
+      live.map((t) => '<option value="' + esc(t.id) + '">接着「' +
+        esc((t.project || t.name) + (t.laneName ? ' · ' + t.laneName : '')) + '」说</option>').join('');
+    sel.value = live.some((t) => t.id === keep) ? keep : '';
+    syncTargetUI();
 
     // 项目 chips
     const pj = $('projects');
@@ -312,7 +336,8 @@
     const tl = (d.timeline || []).map((e) => {
       const hm = new Date(e.at).toTimeString().slice(0, 5);
       return '<div class="e ' + e.kind + '"><div class="when"><span class="who">' +
-        (KIND[e.kind] || '') + '</span>' + hm + '</div><div class="txt">' + esc(e.text) + '</div></div>';
+        (KIND[e.kind] || '') + '</span>' + hm + (e.rough ? ' 左右' : '') +
+        '</div><div class="txt">' + esc(e.text) + '</div></div>';
     }).join('') || '<div class="empty">还没有进度。她开工后这里会实时长出来</div>';
 
     const files = (d.files || []).map((f) => '<span class="f">' + esc(f.name) + (f.hits > 1 ? ' ×' + f.hits : '') + '</span>').join('');
@@ -336,7 +361,8 @@
       '</div>' + approveBox +
       '<div class="card"><h3>进度</h3><div class="tl">' + tl + '</div></div>' +
       (d.canSend
-        ? '<div class="say"><div class="row"><textarea id="d-say" placeholder="继续说一句（会直接打进电脑上那个终端）"></textarea>' +
+        ? '<div class="say"><div style="font-size:11px;color:var(--faint);padding:0 2px 6px">说的话会直接打进电脑上那个终端窗口，跟你走过去敲一模一样</div>' +
+          '<div class="row"><textarea id="d-say" placeholder="接着说……"></textarea>' +
           '<button id="d-send">发送</button></div><div id="d-msg" style="font-size:12px;min-height:18px;padding:4px 2px"></div></div>'
         : '<div class="empty">这个窗口已经关了，只能看历史</div>');
 
@@ -439,6 +465,25 @@
   $('go').onclick = async () => {
     const dir = $('dir').value.trim();
     const task = $('task').value.trim();
+    const to = $('target').value;
+
+    // 选了现有的线：直接打进那个终端，不开新窗口
+    if (to) {
+      if (!task) return msg('还没说要说什么', 'err');
+      $('go').disabled = true;
+      msg('正在打进电脑上那个终端…');
+      try {
+        const r = await fetch(api('/api/send'), {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: to, text: task }),
+        }).then((x) => x.json());
+        if (r && r.ok) { msg('说出去了，进度看下面那条线', 'ok'); $('task').value = ''; }
+        else msg((r && r.error) || '没说出去', 'err');
+      } catch (e) { msg('网络断了？' + e.message, 'err'); }
+      $('go').disabled = false;
+      return;
+    }
+
     if (!dir) return msg('先选或填项目目录', 'err');
     if (!task) return msg('还没说要干什么活', 'err');
     $('go').disabled = true;

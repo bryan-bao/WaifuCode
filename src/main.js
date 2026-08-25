@@ -2627,8 +2627,12 @@ function wireIpc() {
     try {
       if (!tunnel.installed(DATA_ROOT)) {
         log('[tunnel] 下 cloudflared…');
-        send('session:say', { name: '', text: '出门模式要先下个小工具（几 MB），稍等一下下…' });
-        await tunnel.install(DATA_ROOT);
+        send('session:say', { name: '', text: '出门模式要先下个小工具（50 多 MB），第一次慢一点，稍等…' });
+        let lastPct = 0;
+        await tunnel.install(DATA_ROOT, (pct) => {
+          // 每涨 20% 报一次，别把日志刷爆
+          if (pct >= lastPct + 20) { lastPct = pct; log('[tunnel] 下到 ' + pct + '%'); }
+        }, log);
         log('[tunnel] cloudflared 装好了');
       }
       tunnelHandle = await tunnel.start({ dataRoot: DATA_ROOT, port: info.port, log });
