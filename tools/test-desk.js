@@ -82,6 +82,8 @@ console.log('\n[6] 接线：静默死角逐个钉');
   const stage = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'stage.js'), 'utf8');
   check(/dragover[\s\S]{0,80}preventDefault/.test(stage),
         'dragover 必须 preventDefault，不然 drop 被内核吞了');
+  check(/pet:cursor[^]{0,200}setThrough/.test(stage),
+        '穿透状态吃 pet:cursor 轮询 —— OS 拖拽期间没有 mousemove，不吃轮询的话拖放整个是死的');
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   check(main.includes("require('./desk')"), 'desk 在 main 里 require 过（「用而不引」那个死法）');
   check(/case 'commitmsg'/.test(main), '「拟一条」按钮有人接');

@@ -196,14 +196,29 @@ window.waifu.on('chat:done', (e) => {
   }
   setBusy(false);
   scrollDown();
+  // 排队的求助放下一条；都问完了把你的草稿还回输入框
+  if (askQueue.length) pumpAsk();
+  else if (savedDraft !== null) { $('input').value = savedDraft; savedDraft = null; }
 });
 
 // 主进程替你发问（拖了日志过来 / 按了剪贴板求助键）。
-// 走的就是你手敲的那条 send() —— 气泡、打字光标、计费，一个不少
-window.waifu.on('chat:ask', (e) => {
-  if (!e || !e.text || busy) return;
-  $('input').value = e.text;
+// 走的就是你手敲的那条 send() —— 气泡、打字光标、计费，一个不少。
+// **busy 时不许丢**（她正说着话你按了求助键，那句话人间蒸发，评审抓的）：
+// 排队，说完这轮接着问。也不许覆盖你敲了一半的草稿 —— 草稿先存起来，
+// 求助发完还给你
+const askQueue = [];
+let savedDraft = null;
+function pumpAsk() {
+  if (busy || !askQueue.length) return;
+  const t = askQueue.shift();
+  if (savedDraft === null && $('input').value.trim()) savedDraft = $('input').value;
+  $('input').value = t;
   send();
+}
+window.waifu.on('chat:ask', (e) => {
+  if (!e || !e.text) return;
+  askQueue.push(e.text);
+  pumpAsk();
 });
 
 window.waifu.on('chat:error', (e) => {
@@ -216,6 +231,8 @@ window.waifu.on('chat:error', (e) => {
     addTurn('her', (e && e.error) || '出错了', 'err');
   }
   setBusy(false);
+  if (askQueue.length) pumpAsk();
+  else if (savedDraft !== null) { $('input').value = savedDraft; savedDraft = null; }
 });
 
 // ---------------------------------------------------------------------------

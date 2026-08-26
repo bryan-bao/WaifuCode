@@ -62,6 +62,8 @@ function prompt(persona, facts, aboutBits) {
     'markdown，150~300 字，别用列表堆数据 —— 要像日记，有你的情绪和你的话。',
     '写这几样：这周陪他干了什么（挑重要的说）、哪天最忙/最累、',
     '你印象最深的一件小事（从下面的汇报原话里挑，别编）、结尾一两句你想对他说的话。',
+    '**只许写事实清单里有的事**：他的表情、房间里发生的画面、你没亲眼见过的场景，',
+    '一概不许虚构 —— 编出来的温馨是假的，他一眼就看得出来。感想可以有，画面不许编。',
     '数字别罗列，挑一两个说到点上就行。',
     '',
     '【这周的流水（事实，别编造之外的）】',
@@ -136,11 +138,16 @@ function _codex(p, log) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1);
         try {
           const msg = JSON.parse(line);
-          const t = msg.type || (msg.msg && msg.msg.type) || '';
-          const m = msg.msg || msg;
-          if (/agent_message$/.test(t) && m.message) reply += m.message;
-          if (/turn.completed|token_count/.test(t) && m.usage) usage = m.usage;
-          if (m.model) model = m.model;
+          // 格式**照抄 chat.js 那套实测过的**（item.completed / agent_message）。
+          // 第一版凭记忆写了旧格式（msg.msg.message），一个事件都对不上，
+          // codex 机器上周记永远「没写出来」还不报错（评审抓的）
+          if (msg.type === 'item.completed' && msg.item &&
+              msg.item.type === 'agent_message' && msg.item.text) {
+            reply += (reply ? '\n' : '') + String(msg.item.text);
+          } else if (msg.type === 'turn.completed' && msg.usage) {
+            usage = msg.usage;
+            if (msg.usage.model) model = msg.usage.model;
+          }
         } catch (_) { /* 不是 json 的行不管 */ }
       }
     });

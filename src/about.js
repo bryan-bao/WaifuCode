@@ -16,6 +16,9 @@
 
 const fs = require('fs');
 const path = require('path');
+// 打码用流水那边现成的：密钥、绝对路径一套规则（notes.js 也这么干）。
+// 小本子会被反复喂回提示词、还能从托盘直接翻 —— 更没理由留敏感原文
+const { redact } = require('./journal');
 
 const KEEP = 60;      // 最多记这么多条，攒满了挤掉最老的
 const LINE_MAX = 60;  // 一条最长（这是「一件事」，不是一段话）
@@ -43,7 +46,7 @@ function aboutStore(file) {
 
   return {
     add(text, now = Date.now()) {
-      let t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, LINE_MAX);
+      let t = redact(String(text || '')).replace(/\s+/g, ' ').trim().slice(0, LINE_MAX);
       if (t.length < 2) return { ok: false };
       const list = load();
       if (list.some((e) => norm(e.text) === norm(t))) return { ok: false, dup: true };
@@ -55,6 +58,10 @@ function aboutStore(file) {
     },
 
     list() { return load(); },
+
+    /** 只保证文件存在（带头部说明），一条记忆都不写。给「点开看看」用 ——
+     *  占位话走 add() 的话会被当成真记忆喂进提示词（评审抓的） */
+    ensure() { if (!fs.existsSync(file)) save([]); },
 
     /** 喂给聊天系统提示词的那份（最近 n 条）。空着就返回 ''，别占提示词 */
     forPrompt(n = 12) {

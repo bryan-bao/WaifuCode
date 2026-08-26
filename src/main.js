@@ -1148,9 +1148,11 @@ async function doShot(rect, from) {
  * 窗口可能还没开：开完等页面加载好再推，不然那句话掉地上没人捡。
  */
 function askChat(text) {
-  const wasOpen = chatWin && !chatWin.isDestroyed();
+  // 「开着」必须是「加载完了」—— 第一问刚把窗口拉起来、第二问接踵而至时，
+  // 窗口存在但页面还在加载，直接 send 就丢了（评审抓的）
+  const wasReady = chatWin && !chatWin.isDestroyed() && !chatWin.webContents.isLoading();
   createChatWindow();
-  if (wasOpen) { send('chat:ask', { text }); return; }
+  if (wasReady) { send('chat:ask', { text }); return; }
   chatWin.webContents.once('did-finish-load', () => {
     setTimeout(() => send('chat:ask', { text }), 300);
   });
@@ -1170,9 +1172,15 @@ function routeDrop(paths) {
 
   switch (kind) {
     case 'dir': {
-      // 文件夹 = 要派活。面板叫出来，目录替你填好
+      // 文件夹 = 要派活。面板叫出来，目录替你填好。
+      // **面板可能是刚创建的**：页面没加载完就推，prefill 落地上、
+      // 她还嘴硬「帮你填好了」（评审抓的）—— 跟 askChat 同款等法
+      const panelWasReady = panelWin && !panelWin.isDestroyed() && !panelWin.webContents.isLoading();
       createPanel();
-      send('panel:prefill', { dir: p });
+      if (panelWasReady) send('panel:prefill', { dir: p });
+      else panelWin.webContents.once('did-finish-load', () => {
+        setTimeout(() => send('panel:prefill', { dir: p }), 200);
+      });
       send('session:say', { name: '', text: '收到，面板上目录帮你填好了：' + path.basename(p) });
       break;
     }
@@ -1192,7 +1200,7 @@ function routeDrop(paths) {
     case 'image': {
       // 图跟截图一个待遇：路径 + 位图一起进剪贴板，粘给哪条线都行
       const img = nativeImage.createFromPath(p);
-      const paste = /s/.test(p) ? '"' + p + '"' : p;
+      const paste = /\s/.test(p) ? '"' + p + '"' : p; // \s：测空白，不是字母 s（笔误栽过）
       try {
         if (img.isEmpty()) clipboard.writeText(paste);
         else clipboard.write({ text: paste, image: img });
@@ -1248,11 +1256,12 @@ function startFullscreenWatch() {
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64],
       { timeout: 10000, windowsHide: true }, (err, out) => {
         fsProbing = false;
-        if (err) return; // 探不出来就当没全屏 —— 误静音比不静音更糟
-        const m = /^FS ([01])/m.exec(String(out));
-        if (!m) return;
+        // 探不出来就**当没全屏喂进去**（而不是保持原状）：全屏程序关了、
+        // 探针恰好开始报错的话，保持原状 = 勿扰永远卡死（评审抓的）。
+        // 误静音比不静音糟，误解除只是多说两句话
+        const m = err ? null : /^FS ([01])/m.exec(String(out));
         const was = fsQuiet;
-        fsQuiet = desk.fsDebounce(fsState, m[1] === '1');
+        fsQuiet = desk.fsDebounce(fsState, Boolean(m && m[1] === '1'));
         if (fsQuiet !== was) log('[fs] 全屏勿扰' + (fsQuiet ? '开（前台全屏了，她闭嘴）' : '关'));
       });
   }, 45 * 1000);
@@ -1304,14 +1313,22 @@ function checkGitDirty(p) {
 
 // ─── 她写的周记 ─────────────────────────────────────────────────────────────
 let diaryBusy = false;
+let diaryDoneKey = '';   // 本次进程里已写过的周钥匙 —— daymarks 写盘失败时的兜底，
+                         // 没有它的话盘写不进去会每 15 分钟重烧一次钱（评审抓的）
 
 async function tryDiary() {
   try {
     if (diaryBusy) return;
-    if (new Date().getDay() !== 1) return;              // 只在周一
+    // 判「周一」必须跟 weekKey 同一套时钟（早上 5 点日界线）。
+    // 用墙钟 getDay() 的话：熬夜的周一凌晨 00:30，getDay 说是周一、
+    // dayKey 还算周日 → 凌晨写一次（记号记成周日），下午 dayKey 变周一
+    // 又写一次 —— 一个周一烧两次钱、出两份周记（评审抓的）
+    if (new Date(Date.now() - 5 * 3600 * 1000).getDay() !== 1) return;
     if (awaySince || hushed() || (play && play.busy)) return;
     const weekKey = journal.dayKey();                    // 这个周一的日期就是这周的钥匙
+    if (diaryDoneKey === weekKey) return;
     if (dayMarks().diary === weekKey) return;
+    diaryDoneKey = weekKey;
     const facts = diary.weekFacts({ readDay: journal.read, dayKeyOf: journal.dayKey });
     if (!facts) { markDay('diary'); return; }            // 这周没干什么，跳过也算写过
     diaryBusy = true;
@@ -2766,7 +2783,7 @@ function wireIpc() {
       { label: '她记的关于你的事…', click: () => {
         // 明文可翻可删：错了的记忆你能直接删那行，她就忘了
         if (!about) return;
-        if (!fs.existsSync(about.file)) about.add('（这儿还空着 —— 聊天里提到你自己的事她就会记）');
+        about.ensure(); // 只落头部说明，不写占位记忆 —— 占位话会被她当真事实提起
         shell.openPath(about.file);
       } },
       { label: '跟她聊聊…', click: () => createChatWindow() },
@@ -3496,6 +3513,10 @@ if (!app.requestSingleInstanceLock()) {
     reminders = remindStore(path.join(STORE, 'reminders.json'));
     const remindTimer = setInterval(() => {
       try {
+        // 人不在（离开/锁屏）就先压着不消费 —— due() 一取就从盘上删了，
+        // 这时候弹的气泡 30 秒就没，回来什么都看不到。压着的话回来的
+        // 第一拍照常冒，过点 10 分钟以上自动走「刚才你不在」那句（评审抓的）
+        if (awaySince) return;
         for (const r of reminders.due()) {
           const late = Date.now() - r.when > 10 * 60000;
           const say = late ? '呃…这条提醒过点了：' + r.text + '（刚才你不在）'

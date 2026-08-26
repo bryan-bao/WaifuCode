@@ -133,7 +133,9 @@ function tagStart(s) {
 
 // 「关于他」的记忆标记：<<MEM:他讨厌 BOM>>。跟动作一个路数 ——
 // 在回复的同一口气里附带，记忆这件事不另花一次调用的钱
-const MEM_RE = /<<MEM:([^>]{2,160}?)>>/;
+// [^<>]：内容里不许再有别的标记开头 —— 用 [^>] 的话，她写了个没闭合的
+// <<MEM:，后面的 <<M:happy>> 会被整个吞进「记忆」，垃圾落盘还回灌提示词（评审抓的）
+const MEM_RE = /<<MEM:([^<>]{2,160}?)>>/;
 
 /** 把记忆标记摘出来。剥全部（codex 可能一轮吐好几段），条目全收 */
 function extractMemory(text) {
@@ -141,7 +143,11 @@ function extractMemory(text) {
   const g = new RegExp(MEM_RE.source, 'g');
   let m;
   while ((m = g.exec(text))) mems.push(m[1].trim());
-  return { text: text.replace(g, '').trim(), mems };
+  let out = text.replace(g, '');
+  // 没闭合/超长的残段别原样漏进气泡（tagStart 只防了流式那半）：
+  // 从残段起点掐到尾 —— MEM 永远是排在末尾的附注，掐掉不丢正文
+  out = out.replace(/<<MEM:[^]*$/, '');
+  return { text: out.trim(), mems };
 }
 
 /** 把动作指令从回复里摘出来，剩下的才是要显示给人看的话 */
@@ -202,6 +208,9 @@ class Chat extends EventEmitter {
     this.claudeBin = claudeBin;
     this.getConfig = getConfig || (() => ({}));
     this.getMoodDesc = getMoodDesc || (() => '');
+    // 解构了不赋值 = 「用而不引」同款静默死：_aboutBlock 里 this.getAbout
+    // 永远 undefined，小本子永远喂不回提示词（评审抓的）
+    this.getAbout = getAbout || (() => '');
     this.log = log || (() => {});
 
     this.sessionId = null;

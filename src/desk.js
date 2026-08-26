@@ -41,12 +41,24 @@ function kindOf(p, st) {
  */
 function tailOf(file, n = 3000) {
   const size = fs.statSync(file).size;
-  const from = Math.max(0, size - n * 3); // utf8 一个汉字 3 字节，宁多读别少读
-  const buf = Buffer.alloc(Math.min(size, n * 3));
+  // Windows 的日志一大票是 UTF-16LE（PowerShell 重定向的默认就是）。
+  // 按 utf8 硬解出来是掺满 NUL 的乱码 —— 那是花真钱喂进 prompt 的（评审抓的）。
+  // 认 BOM：FF FE = UTF-16LE
+  let enc = 'utf8';
+  {
+    const head = Buffer.alloc(2);
+    const fd0 = fs.openSync(file, 'r');
+    try { fs.readSync(fd0, head, 0, 2, 0); } finally { fs.closeSync(fd0); }
+    if (head[0] === 0xff && head[1] === 0xfe) enc = 'utf16le';
+  }
+  const perChar = enc === 'utf16le' ? 2 : 3; // utf8 汉字 3 字节，宁多读别少读
+  let from = Math.max(0, size - n * perChar);
+  if (enc === 'utf16le' && from % 2) from -= 1; // 16 位对齐，切在半个码元上全是乱码
+  const buf = Buffer.alloc(Math.min(size, n * perChar));
   const fd = fs.openSync(file, 'r');
   try { fs.readSync(fd, buf, 0, buf.length, from); } finally { fs.closeSync(fd); }
-  // 掐头去掉可能切了一半的字符
-  let s = buf.toString('utf8').replace(/^�+/, '');
+  // 掐头去掉可能切了一半的字符 / BOM
+  let s = buf.toString(enc).replace(/^\uFEFF/, '').replace(/^�+/, '');
   if (s.length > n) s = s.slice(s.length - n);
   return (from > 0 ? '…（前面略）\n' : '') + s;
 }
