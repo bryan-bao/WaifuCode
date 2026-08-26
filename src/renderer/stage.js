@@ -375,6 +375,16 @@ function wireMouse() {
            y >= r.top - pad && y <= r.bottom + pad;
   }
 
+  // 穿透状态也吃主进程那条 120ms 的光标轮询（pet:cursor）。
+  // 光靠 mousemove 有个死角：**OS 拖文件期间不产生 mousemove**（OLE 拖拽
+  // 自己跑消息循环），穿透解除不了 → 拖到她身上 drop 根本落不进窗口，
+  // 拖放功能等于死的。轮询用的是 getCursorScreenPoint，拖拽期间照常有值。
+  window.waifu.on('pet:cursor', (e) => {
+    if (!e || dragging) return;
+    setThrough(!hitModel(e.x, e.y) && !hitGear(e.x, e.y) &&
+               !hitOfferButtons(e.x, e.y) && !hitBubble(e.x, e.y));
+  });
+
   window.addEventListener('mousemove', (e) => {
     if (dragging) {
       // 用 screenX/screenY：窗口正在被拖着跑，clientX 是相对窗口的，会自己抵消掉位移
@@ -1111,6 +1121,16 @@ window.waifu.on('pet:cursor', (e) => {
 // 你走开一阵子又回来了 —— 抬头看你一眼。
 // 台词和表情走的是心情系统（本地台词库），这儿只管身体：
 // 全程不调 claude，**一分钱不花**
+// 拖文件到她身上：路径交给主进程分流（文件夹→派活、歌→歌单、日志→她看）。
+// dragover 必须 preventDefault，不然浏览器内核直接把 drop 吞了
+window.addEventListener('dragover', (e) => { e.preventDefault(); });
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+    window.waifu.dropFiles([...e.dataTransfer.files]);
+  }
+});
+
 window.waifu.on('pet:welcome', (e) => {
   const long = e && e.goneMin >= 90;
   if (dancer && gestureOn) dancer.gesture(long ? 'lonely' : 'excited');

@@ -228,8 +228,11 @@ function fillWork() {
     if (!mods.length) return null;
     return mods.concat(k).join('+');
   }
+  // id ↔ 配置键。加键只改这张表 —— 原来 panel/shot 二选一的写法，
+  // 加第三个键会把它悄悄归到 shot 上
+  const HK = { 'hk-panel': 'panel', 'hk-shot': 'shot', 'hk-clip': 'clip' };
   const showKey = (id) => {
-    const v = get('hotkey.' + (id === 'hk-panel' ? 'panel' : 'shot'), '');
+    const v = get('hotkey.' + HK[id], '');
     $(id).value = v ? v.replace(/CommandOrControl/g, 'Ctrl').replace(/Control/g, 'Ctrl') : '';
   };
   let recording = null;
@@ -251,7 +254,7 @@ function fillWork() {
   document.querySelectorAll('.hk-clr').forEach((btn) => {
     btn.onclick = () => {
       stopRec();
-      set('hotkey.' + (btn.dataset.for === 'hk-panel' ? 'panel' : 'shot'), '');
+      set('hotkey.' + HK[btn.dataset.for], '');
       showKey(btn.dataset.for);
       $('hk-state').textContent = '清掉了 —— 保存之后这个快捷键就没了';
     };
@@ -263,9 +266,9 @@ function fillWork() {
     if (e.key === 'Escape') { $('hk-state').textContent = '没改'; stopRec(); return; }
     const acc = accelOf(e);
     if (!acc) { $('hk-state').textContent = '得带上 Ctrl / Alt / Shift 之类 —— 光一个键会在你打字时乱触发'; return; }
-    const which = recording === 'hk-panel' ? 'panel' : 'shot';
-    const other = which === 'panel' ? 'shot' : 'panel';
-    if (get('hotkey.' + other, '') === acc) {
+    const which = HK[recording];
+    const clash = Object.values(HK).some((k) => k !== which && get('hotkey.' + k, '') === acc);
+    if (clash) {
       $('hk-state').textContent = '这个键另一个功能在用了，换一个';
       return;
     }
@@ -275,6 +278,7 @@ function fillWork() {
   }, true);
   showKey('hk-panel');
   showKey('hk-shot');
+  showKey('hk-clip');
 
   $('up-check').onclick = async () => {
     $('up-state').textContent = '查着呢…';
@@ -332,6 +336,7 @@ $('save').onclick = async () => {
     const words = [];
     if (hk.panel === 'taken') words.push('叫面板那个键被别的软件占了');
     if (hk.shot === 'taken') words.push('截图那个键被别的软件占了');
+    if (hk.clip === 'taken') words.push('剪贴板求助那个键被别的软件占了');
     if (words.length) { msg(words.join('；') + ' —— 换一个吧', 'err'); }
     else { msg(dirtyModel ? '存好了，她这就换个人出来' : '存好了'); }
   dirtyModel = false;

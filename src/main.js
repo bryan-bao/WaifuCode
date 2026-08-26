@@ -42,6 +42,15 @@ const updates = require('./updates');
 // 漏了的话一碰到没名字的线就 ReferenceError → 被 catch 吞掉 → 整排
 // 「留着的线」静默消失（排查抓的，跟 registerHotkey 一个死法）
 const cost = require('./cost');
+// 「有来有回的一天」：回来汇报 / 隔天开场 / 收工 / 久坐，全是本地拼的、不花钱
+const recap = require('./recap');
+// 口头交代的提醒（「三点提醒我开会」）
+const { remindStore } = require('./remind');
+// 桌面感知：拖文件分类、久未提交状态机、全屏判定
+const desk = require('./desk');
+// 「关于你」的小本子 + 她写的周记
+const { aboutStore } = require('./about');
+const diary = require('./diary');
 // 手机工作台：扫码进的手机页（派活 + SSE 实时进度 + 远程放行）
 const mobile = require('./mobile');
 // 出门模式：cloudflared 免费隧道，把手机工作台暴露成临时公网地址
@@ -93,10 +102,17 @@ let chat = null;
 let terminals = null;
 let performer = null;
 let greeter = null;
+let reminders = null;      // 口头提醒的小本子（「三点提醒我开会」）
+let about = null;          // 「关于你」的小本子（她聊天时听到就记）
 let play = null;
 // 玩游戏 / 番茄钟期间她该闭嘴：情绪台词、主动搭话、提议唱跳全压住。
 // 一边让你专注一边在旁边碎碎念，那这个功能就是反效果。
 let quiet = false;
+let fsQuiet = false;       // 前台在全屏（开会/游戏/看片），她自动闭嘴
+// 「现在该不该闭嘴」只从这一个口问。quiet 是玩法要的安静（专注模式、游戏中），
+// fsQuiet 是全屏勿扰 —— 分开存是因为退出机制完全不同：一个由 play 收，
+// 一个由探针收，合在一个变量里会互相踩
+function hushed() { return quiet || fsQuiet; }
 let lastGreetAt = 0;
 let hookPort = null; // hook 服务实际抢到的端口，开终端时要告诉那边往哪汇报
 // 当前发型，右键菜单里打勾用。真正的值在 whenReady 里从 config 读
@@ -578,6 +594,73 @@ let presenceTimer = null;
 const WELCOME_MIN = 15;
 
 let awaySince = 0; // 人是什么时候走的（0 = 人就在）
+let sitSince = Date.now(); // 上次「真正休息」是什么时候（离开 ≥5 分钟才算休息）
+const SIT_MIN = 90;        // 连坐多久开始念叨
+
+// 一天只该来一次的事（隔天开场白、收工那句）记在这儿，重启不重来
+const MARKS_FILE = path.join(STORE, 'daymarks.json');
+function dayMarks() {
+  try { return JSON.parse(fs.readFileSync(MARKS_FILE, 'utf8')) || {}; } catch (_) { return {}; }
+}
+function markDay(key) {
+  const m = dayMarks();
+  m[key] = journal.dayKey();
+  try { fs.writeFileSync(MARKS_FILE, JSON.stringify(m), 'utf8'); } catch (_) { /* 丢了就今天多说一次 */ }
+}
+
+/** 你走的这段时间的流水（可能跨了早上 5 点那条日界线，两天都要读） */
+function recordsSince(ts) {
+  const days = new Set([journal.dayKey(ts), journal.dayKey()]);
+  return [...days].flatMap((d) => journal.read(d));
+}
+
+/**
+ * 「昨天挂着一半的那条线」。从 sessions 登记簿挑：最近动过、今天还没碰、
+ * 会话还在盘上的。挑不出来就没有开场白 —— 不硬找话说。
+ */
+function leftoverLane() {
+  try {
+    const today = journal.dayKey();
+    let best = null;
+    // knownProjects 给的才是真目录 —— recentProjects 返回的是
+    // 「WaifuCode（昨天弄的）」这种显示串，拿去查线永远查不到（差点栽这儿）
+    for (const p of sessions.knownProjects()) {
+      if (!p.path || !fs.existsSync(p.path)) continue;
+      for (const l of sessions.lanes(p.path)) {
+        if (!l.alive) continue;
+        const ts = Date.parse(l.lastRun) || 0;
+        if (!ts) continue;
+        if (journal.dayKey(ts) >= today) continue;          // 今天碰过的不算「挂着」
+        if (Date.now() - ts > 4 * 86400000) continue;       // 放了四天以上的，多半是不想弄了
+        if (!best || ts > best.ts) {
+          best = { ts, dir: p.path, laneId: l.id, name: l.name || '', turns: l.turns || 0,
+                   project: p.name || path.basename(p.path) };
+        }
+      }
+    }
+    return best;
+  } catch (err) {
+    log('[recap] 找不着昨天的线: ' + err.message);
+    return null;
+  }
+}
+
+/** 隔天第一次见面：昨天那条线还挂着的话，问一句要不要接着弄。一天一次 */
+function tryOpener() {
+  if (hushed() || (play && play.busy)) return false;
+  if (dayMarks().opener === journal.dayKey()) return false;
+  const lane = leftoverLane();
+  const r = recap.opener(lane);
+  if (!r) return false;
+  markDay('opener');
+  r.offer.dir = lane.dir;
+  r.offer.laneId = lane.laneId;
+  r.offer.laneName = lane.name;
+  send('greet:say', { say: r.say, face: r.face, offer: r.offer, hold: 25000 });
+  speakLine(r.say, { maxLen: 60 });
+  log('[recap] 隔天开场白：' + (lane.name || lane.project));
+  return true;
+}
 
 function startPresenceWatch() {
   clearInterval(presenceTimer);
@@ -603,15 +686,41 @@ function startPresenceWatch() {
     // 人回来了。这个信号以前只喂给 tick() 算数值，屏幕上一点反馈都没有 ——
     // 你走开一小时回来，她跟没事人一样坐着
     if (awaySince) {
+      const wentAt = awaySince;
       const goneMin = (Date.now() - awaySince) / 60000;
       awaySince = 0;
+      if (goneMin >= 5) sitSince = Date.now(); // 离开够久才算休息过
       if (goneMin >= WELCOME_MIN) {
         log('[presence] 你走开了 ' + Math.round(goneMin) + ' 分钟，她抬头看你一眼');
-        mood.onReturn(goneMin);          // 台词和表情（本地台词库，不花钱）
         send('pet:welcome', { goneMin }); // 动作（本地算的，不花钱）
+        // 开口说什么，按料多少挑：跨天了先问昨天挂着的线；你不在时有动静就汇报；
+        // 都没有才是普通那句「你回来啦」。台词全是本地拼的，不花钱
+        if (tryOpener()) {
+          mood.onReturn(goneMin, { silent: true });
+        } else {
+          const rep = hushed() ? null : recap.welcome(recordsSince(wentAt), wentAt, goneMin);
+          if (rep) {
+            mood.onReturn(goneMin, { silent: true });
+            send('greet:say', { say: rep.say, face: rep.face, hold: 12000 });
+            speakLine(rep.say, { maxLen: 80 });
+            log('[recap] 回来汇报：' + rep.say.slice(0, 60));
+          } else {
+            mood.onReturn(goneMin);      // 台词和表情（本地台词库，不花钱）
+          }
+        }
       }
     }
     mood.onSeen();
+
+    // 久坐提醒：上次休息到现在超过 SIT_MIN 分钟就念叨一句，然后重新计时。
+    // 安静模式（专注/游戏中）不吵 —— 但计时不清零，退出安静模式该催还是催
+    if (!hushed() && !(play && play.busy) && Date.now() - sitSince >= SIT_MIN * 60000) {
+      sitSince = Date.now();
+      const line = recap.SIT_LINES[Math.floor(Math.random() * recap.SIT_LINES.length)];
+      send('greet:say', { say: line, face: 'tired', hold: 9000 });
+      speakLine(line, { maxLen: 60 });
+      log('[presence] 久坐 ' + SIT_MIN + ' 分钟，催了一句');
+    }
     // 20 秒一拍而不是 60 秒：「你回来了」要是能晚一分钟才反应，那就不叫反应了。
     // 代价只是一次系统调用
   }, 20 * 1000);
@@ -683,9 +792,9 @@ function wireEvents() {
   mood.on('change', (e) => {
     // 表情该换还得换（专注的时候她也会累），但**嘴要闭上**：
     // 番茄钟期间她在旁边碎碎念「有点累了…」，这功能就白做了
-    send('mood:change', quiet ? { ...e, line: null } : e);
+    send('mood:change', hushed() ? { ...e, line: null } : e);
     // 只念她自己的情绪台词。干活时的输出又长又密，全念出来会很吵。
-    if (e.line && !quiet) speakLine(e.line);
+    if (e.line && !hushed()) speakLine(e.line);
   });
 
   // 到日子了（认识满一个月、一起干完第一百个活…）。话和动作 mood 那边已经
@@ -1032,6 +1141,224 @@ async function doShot(rect, from) {
   }
 }
 
+// ─── 桌面感知：拖文件 / 剪贴板求助 ─────────────────────────────────────────
+
+/**
+ * 替你把一句话打进聊天框并发出去（她在聊天窗口里答）。
+ * 窗口可能还没开：开完等页面加载好再推，不然那句话掉地上没人捡。
+ */
+function askChat(text) {
+  // 「开着」必须是「加载完了」—— 第一问刚把窗口拉起来、第二问接踵而至时，
+  // 窗口存在但页面还在加载，直接 send 就丢了（评审抓的）
+  const wasReady = chatWin && !chatWin.isDestroyed() && !chatWin.webContents.isLoading();
+  createChatWindow();
+  if (wasReady) { send('chat:ask', { text }); return; }
+  chatWin.webContents.once('did-finish-load', () => {
+    setTimeout(() => send('chat:ask', { text }), 300);
+  });
+}
+
+/** 拖到她身上的东西分流。一次只接第一个 —— 拖一把过来意图就不明了 */
+function routeDrop(paths) {
+  const p = paths && paths[0] ? String(paths[0]) : '';
+  if (!p) return;
+  let st;
+  try { st = fs.statSync(p); } catch (_) {
+    send('session:say', { name: '', text: '这个我够不着（读不了）：' + path.basename(p) });
+    return;
+  }
+  const kind = desk.kindOf(p, st);
+  log('[drop] ' + kind + ': ' + p + (paths.length > 1 ? '（还拖了 ' + (paths.length - 1) + ' 个，只接第一个）' : ''));
+
+  switch (kind) {
+    case 'dir': {
+      // 文件夹 = 要派活。面板叫出来，目录替你填好。
+      // **面板可能是刚创建的**：页面没加载完就推，prefill 落地上、
+      // 她还嘴硬「帮你填好了」（评审抓的）—— 跟 askChat 同款等法
+      const panelWasReady = panelWin && !panelWin.isDestroyed() && !panelWin.webContents.isLoading();
+      createPanel();
+      if (panelWasReady) send('panel:prefill', { dir: p });
+      else panelWin.webContents.once('did-finish-load', () => {
+        setTimeout(() => send('panel:prefill', { dir: p }), 200);
+      });
+      send('session:say', { name: '', text: '收到，面板上目录帮你填好了：' + path.basename(p) });
+      break;
+    }
+    case 'music': {
+      // 歌收进歌单。**拷贝不搬家** —— 拖过来不等于同意把原文件挪走
+      try {
+        const name = desk.freshName(MUSIC_DIR, path.basename(p));
+        fs.mkdirSync(MUSIC_DIR, { recursive: true });
+        fs.copyFileSync(p, path.join(MUSIC_DIR, name));
+        send('session:say', { name: '', text: '收进歌单了：' + name + '。想听就说～' });
+      } catch (err) {
+        log('[drop] 歌拷不进来: ' + err.message);
+        send('session:say', { name: '', text: '这首没收进来：' + err.message });
+      }
+      break;
+    }
+    case 'image': {
+      // 图跟截图一个待遇：路径 + 位图一起进剪贴板，粘给哪条线都行
+      const img = nativeImage.createFromPath(p);
+      const paste = /\s/.test(p) ? '"' + p + '"' : p; // \s：测空白，不是字母 s（笔误栽过）
+      try {
+        if (img.isEmpty()) clipboard.writeText(paste);
+        else clipboard.write({ text: paste, image: img });
+        send('session:say', { name: '', text: '图放剪贴板了，Ctrl+V 粘给哪条线都行。' });
+      } catch (err) {
+        send('session:say', { name: '', text: '剪贴板被占着，没放进去：' + err.message });
+      }
+      break;
+    }
+    case 'text': {
+      // 日志/代码：读**尾巴**拿去问她（报错永远在尾巴上，整个塞进去是白花钱）
+      try {
+        const tail = desk.tailOf(p, 3000);
+        askChat('帮我看看这个文件有什么问题，说说结论就行。\n文件：' + p + '\n内容（结尾部分）：\n' + tail);
+      } catch (err) {
+        send('session:say', { name: '', text: '文件读不了：' + err.message });
+      }
+      break;
+    }
+    default:
+      send('session:say', { name: '', text: '这个我看不懂……丢文件夹、日志或者歌给我吧。' });
+  }
+}
+
+// ─── 全屏勿扰 ────────────────────────────────────────────────────────────────
+// 你在全屏（开会投屏/游戏/看片）时她主动出声，是这类产品最社死的场景。
+// 探针：45 秒问一次「前台窗口是不是盖满了它那块屏」。
+// **进入要连着两拍**（切窗口瞬间会闪一下全屏），**退出一拍就退**。
+// 桌面本体（Progman/WorkerW）和系统壳层（CoreWindow：锁屏/开始菜单/搜索）不算 ——
+const FS_PROBE_PS = [
+  "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class U{[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out R r);[DllImport(\"user32.dll\")]public static extern int GetClassName(IntPtr h,System.Text.StringBuilder s,int n);[StructLayout(LayoutKind.Sequential)]public struct R{public int L;public int T;public int Rt;public int B;}}'",
+  'Add-Type -AssemblyName System.Windows.Forms',
+  '$h=[U]::GetForegroundWindow()',
+  '$r=New-Object U+R',
+  '[U]::GetWindowRect($h,[ref]$r)|Out-Null',
+  '$sb=New-Object System.Text.StringBuilder 256',
+  '[U]::GetClassName($h,$sb,256)|Out-Null',
+  '$cls=$sb.ToString()',
+  '$b=[System.Windows.Forms.Screen]::FromHandle($h).Bounds',
+  '$fs=($r.L -le ($b.X+4)) -and ($r.T -le ($b.Y+4)) -and ($r.Rt -ge ($b.X+$b.Width-4)) -and ($r.B -ge ($b.Y+$b.Height-4))',
+  "if(@('Progman','WorkerW','Windows.UI.Core.CoreWindow','') -contains $cls){$fs=$false}",
+  "Write-Output ('FS ' + $(if($fs){1}else{0}))",
+].join('\n');
+
+const fsState = {};       // desk.fsDebounce 的状态
+let fsProbing = false;    // 上一发还没回来就别叠
+
+function startFullscreenWatch() {
+  const b64 = Buffer.from(FS_PROBE_PS, 'utf16le').toString('base64');
+  const timer = setInterval(() => {
+    if (fsProbing) return;
+    fsProbing = true;
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', b64],
+      { timeout: 10000, windowsHide: true }, (err, out) => {
+        fsProbing = false;
+        // 探不出来就**当没全屏喂进去**（而不是保持原状）：全屏程序关了、
+        // 探针恰好开始报错的话，保持原状 = 勿扰永远卡死（评审抓的）。
+        // 误静音比不静音糟，误解除只是多说两句话
+        const m = err ? null : /^FS ([01])/m.exec(String(out));
+        const was = fsQuiet;
+        fsQuiet = desk.fsDebounce(fsState, Boolean(m && m[1] === '1'));
+        if (fsQuiet !== was) log('[fs] 全屏勿扰' + (fsQuiet ? '开（前台全屏了，她闭嘴）' : '关'));
+      });
+  }, 45 * 1000);
+  if (timer.unref) timer.unref();
+}
+
+// ─── git 值日生 ──────────────────────────────────────────────────────────────
+// 改动攒了三个钟头没提交，她念叨一句（一天一个项目最多一次），
+// 点「拟一条」派个终端去写提交信息给你过目 —— **先别真提交**。
+const gitDirty = {}; // { 项目路径小写: 第一次看见脏的时刻 }
+
+function startGitWatch() {
+  const timer = setInterval(() => {
+    try {
+      if (awaySince || hushed()) return; // 人不在/不该吵，连查都不查
+      const projects = sessions.knownProjects()
+        .filter((p) => p.path && p.lastRun &&
+                Date.now() - Date.parse(p.lastRun) < 7 * 86400000 &&
+                fs.existsSync(path.join(p.path, '.git')))
+        .slice(0, 6);
+      for (const p of projects) checkGitDirty(p);
+    } catch (err) { log('[git] 值日生出错: ' + err.message); }
+  }, 30 * 60 * 1000);
+  if (timer.unref) timer.unref();
+}
+
+function checkGitDirty(p) {
+  const key = p.path.toLowerCase();
+  execFile('git', ['-C', p.path, 'status', '--porcelain'], { timeout: 15000, windowsHide: true },
+    (err, out) => {
+      if (err) return; // git 不在/仓库坏了都不关她事
+      const n = String(out).split(/\r?\n/).filter(Boolean).length;
+      if (!desk.gitNagCheck(gitDirty, key, n)) return;
+      // 该念叨了 —— 但一天一个项目最多一次
+      const markKey = 'git:' + key;
+      if (dayMarks()[markKey] === journal.dayKey()) return;
+      const m = dayMarks(); m[markKey] = journal.dayKey();
+      try { fs.writeFileSync(MARKS_FILE, JSON.stringify(m), 'utf8'); } catch (_) { /* 明天再念叨一次也死不了 */ }
+      const say = '「' + (p.name || path.basename(p.path)) + '」攒了 ' + n +
+                  ' 个文件的改动，三个多钟头没提交了。要不要我拟条提交信息？';
+      send('greet:say', {
+        say, face: 'curious', hold: 20000,
+        offer: { kind: 'commitmsg', label: '拟一条', dir: p.path },
+      });
+      speakLine(say, { maxLen: 60 });
+      log('[git] 念叨了 ' + p.path + '（' + n + ' 个文件没提交）');
+    });
+}
+
+// ─── 她写的周记 ─────────────────────────────────────────────────────────────
+let diaryBusy = false;
+let diaryDoneKey = '';   // 本次进程里已写过的周钥匙 —— daymarks 写盘失败时的兜底，
+                         // 没有它的话盘写不进去会每 15 分钟重烧一次钱（评审抓的）
+
+async function tryDiary() {
+  try {
+    if (diaryBusy) return;
+    // 判「周一」必须跟 weekKey 同一套时钟（早上 5 点日界线）。
+    // 用墙钟 getDay() 的话：熬夜的周一凌晨 00:30，getDay 说是周一、
+    // dayKey 还算周日 → 凌晨写一次（记号记成周日），下午 dayKey 变周一
+    // 又写一次 —— 一个周一烧两次钱、出两份周记（评审抓的）
+    if (new Date(Date.now() - 5 * 3600 * 1000).getDay() !== 1) return;
+    if (awaySince || hushed() || (play && play.busy)) return;
+    const weekKey = journal.dayKey();                    // 这个周一的日期就是这周的钥匙
+    if (diaryDoneKey === weekKey) return;
+    if (dayMarks().diary === weekKey) return;
+    diaryDoneKey = weekKey;
+    const facts = diary.weekFacts({ readDay: journal.read, dayKeyOf: journal.dayKey });
+    if (!facts) { markDay('diary'); return; }            // 这周没干什么，跳过也算写过
+    diaryBusy = true;
+    markDay('diary');                                    // 先记号 —— 失败也别这周反复烧钱重试
+    const r = await diary.write({
+      claudeBin: resolveClaudeBin(),
+      getConfig: loadConfig,
+      persona: (loadConfig().persona || {}).text || '',
+      facts,
+      aboutBits: about ? about.sample(2) : [],
+      log,
+    });
+    diaryBusy = false;
+    if (!r) { log('[diary] 这周没写出来，下周一再说'); return; }
+    const file = path.join(STORE, 'diary', weekKey + '.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, r.text + '\n', 'utf8');
+    journal.add('diary', { costUsd: r.costUsd || 0 });
+    log('[diary] 写好了 ' + file + '（$' + (r.costUsd || 0).toFixed(4) + '）');
+    send('greet:say', {
+      say: '我写了这周的周记，要看吗？', face: 'shy', hold: 25000,
+      offer: { kind: 'diary', label: '看看', file },
+    });
+    speakLine('我写了这周的周记，要看吗？', { maxLen: 30 });
+  } catch (err) {
+    diaryBusy = false;
+    log('[diary] 出岔子: ' + err.message);
+  }
+}
+
 // 全局快捷键。**必须是顶层函数**：设置里改完键要当场重挂，而那条路在
 // wireIpc 里 —— 原来它嵌在 createTray 里，跨作用域调用直接 ReferenceError，
 // 被 handler 的 try/catch 吞掉，表现是「保存好了但按了没反应」（实机踩过）
@@ -1068,6 +1395,26 @@ function registerHotkey() {
     } catch (err) {
       hotkeyState.shot = 'taken';
       log('[shot] 截图快捷键挂不上: ' + err.message);
+    }
+  }
+
+  // 剪贴板求助键：任何地方复制了报错，按一下她拿去看。
+  // **只在你按键那一刻读一次剪贴板** —— 不做任何后台偷看
+  const ck = (loadConfig().hotkey || {}).clip || '';
+  if (!ck) { hotkeyState.clip = 'off'; } else {
+    try {
+      const ok3 = globalShortcut.register(ck, () => {
+        let t = '';
+        try { t = clipboard.readText().trim(); } catch (_) { /* 被占着 */ }
+        if (!t) { send('session:say', { name: '', text: '剪贴板里没有文字呀。先复制报错再按这个键。' }); return; }
+        if (t.length > 2500) t = t.slice(0, 2500) + '\n…（太长了，掐掉了后面）';
+        askChat('帮我看看这个（我刚复制的），说说是怎么回事：\n' + t);
+      });
+      hotkeyState.clip = ok3 ? 'ok' : 'taken';
+      log(ok3 ? '[clip] 求助快捷键 ' + ck + ' 已挂上' : '[clip] 求助快捷键 ' + ck + ' 被别的软件占了，跳过');
+    } catch (err) {
+      hotkeyState.clip = 'taken';
+      log('[clip] 求助快捷键挂不上: ' + err.message);
     }
   }
 }
@@ -1348,6 +1695,8 @@ async function greetOnTouch(kind) {
     songs: songs.map((s) =>
       s.title + (s.artist ? '（' + s.artist + '）' : '') + (s.bpm ? ' ' + s.bpm + 'BPM' : '')),
     projects: sessions ? sessions.recentProjects() : [],
+    // 小本子随机抽两条 —— 搭话像认识很久的人，靠的就是这个
+    about: about ? about.sample(2) : [],
     // 私聊窗口刚聊过的话。桌面上这个她和聊天框里那个她**是同一个人**，
     // 不带这个的话，你刚在聊天框跟她说完话、回头戳一下桌面上的她，
     // 她会一脸茫然地重新自我介绍
@@ -2125,6 +2474,53 @@ function acceptOffer(offer) {
       break;
     }
 
+    case 'diary': {
+      // 周记写好了，点「看看」直接开文件
+      if (offer.file && fs.existsSync(offer.file)) shell.openPath(offer.file);
+      break;
+    }
+
+    case 'commitmsg': {
+      // git 值日生的「拟一条」。派个终端去看 diff 写提交信息 ——
+      // 花钱的是这一下（正常派活的价），点按钮 = 你同意了
+      const agent = resolveDispatchAgent((loadConfig().dispatch || {}).agent);
+      const noCli2 = guardAgent(agent);
+      if (noCli2) { send('session:say', { name: '', text: noCli2.error }); break; }
+      try {
+        openLaneTerminal({
+          projectPath: offer.dir, laneName: '拟提交信息',
+          task: '看看这个仓库还没提交的改动（git status、git diff），帮我拟一条像样的提交信息给我过目。**先别真的提交**，等我确认。',
+          agent,
+          model: agent === 'codex' ? undefined : resolveDispatchModel((loadConfig().dispatch || {}).model),
+        }, { minimized: false });
+        send('session:say', { name: '拟提交信息', text: '好，我去看看改了什么，拟好念给你听。' });
+      } catch (err) {
+        log('[git] 拟提交信息没派出去: ' + err.message);
+        send('session:say', { name: '', text: '没派出去：' + err.message });
+      }
+      break;
+    }
+
+    case 'resume': {
+      // 隔天开场白的「接着弄」。跟面板上点「接着聊」走同一条路 ——
+      // 老线只列 claude 侧 alive 的（codex 的会话档不在 ~/.claude，天然被滤掉），
+      // 所以这儿写死 claude，别跟着全局默认走（面板那个坑踩过一次）
+      const noCli = guardAgent('claude');
+      if (noCli) { send('session:say', { name: '', text: noCli.error }); break; }
+      try {
+        openLaneTerminal({
+          projectPath: offer.dir, laneId: offer.laneId, laneName: offer.laneName || '',
+          task: '', agent: 'claude',
+          model: resolveDispatchModel((loadConfig().dispatch || {}).model),
+        }, { minimized: false });
+        send('session:say', { name: offer.laneName || '', text: '接上了，窗口开好了。' });
+      } catch (err) {
+        log('[recap] 接不上昨天那条线: ' + err.message);
+        send('session:say', { name: '', text: '没接上：' + err.message });
+      }
+      break;
+    }
+
     case 'joke': {
       // 笑话在提议的时候就一起写好了，所以这儿不用再花一次钱
       const joke = String(offer.payload || '').trim();
@@ -2151,6 +2547,18 @@ function runAction(a) {
     case 'hum': humLyrics(a.lyrics, a); break;
     case 'face': send('perform:face', { name: a.name }); break;
     case 'stop': stopPerform(); break;
+    case 'remind': {
+      // 「三点提醒我开会」—— 她聊天时听出来的，转手记进小本子
+      const r = reminders ? reminders.add(a) : { ok: false, error: '还没起来' };
+      if (r.ok) {
+        const d = new Date(r.when);
+        const hm = d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0');
+        send('session:say', { name: '', text: '记下了，' + hm + ' 我喊你：' + r.text });
+      } else {
+        send('session:say', { name: '', text: '这个提醒我没记上（' + r.error + '），再说一遍？' });
+      }
+      break;
+    }
     default: log('[perform] 不认识的动作: ' + a.act);
   }
 }
@@ -2372,6 +2780,12 @@ function wireIpc() {
       ...workItem,
       { label: '派个活…', click: () => createPanel() },
       { label: '截个图（复制）…', click: () => openShot() },
+      { label: '她记的关于你的事…', click: () => {
+        // 明文可翻可删：错了的记忆你能直接删那行，她就忘了
+        if (!about) return;
+        about.ensure(); // 只落头部说明，不写占位记忆 —— 占位话会被她当真事实提起
+        shell.openPath(about.file);
+      } },
       { label: '跟她聊聊…', click: () => createChatWindow() },
       { label: '设置…', click: () => createSettingsWindow() },
       { type: 'separator' },
@@ -2872,6 +3286,12 @@ function wireIpc() {
     docsWin.on('closed', () => { docsWin = null; });
   });
 
+  // 拖到她身上的文件（路径在 preload 里换好了）
+  ipcMain.on('drop:files', (_e, paths) => {
+    try { routeDrop(Array.isArray(paths) ? paths.map(String) : []); }
+    catch (err) { log('[drop] 分流出错: ' + err.message); }
+  });
+
   // 截图浮罩：框好了 / 取消了
   // 哪层浮罩报上来的很关键：它的原点决定了框在哪块屏上（见 doShot）
   ipcMain.on('shot:pick', (e, rect) => {
@@ -3031,6 +3451,7 @@ if (!app.requestSingleInstanceLock()) {
       claudeBin: resolveClaudeBin(),
       getConfig: loadConfig,
     });
+    about = aboutStore(path.join(STORE, 'about-you.md'));
     chat = new Chat({
       storeDir: STORE,
       log,
@@ -3038,6 +3459,14 @@ if (!app.requestSingleInstanceLock()) {
       getConfig: loadConfig,
       // 把心情接进聊天：她烦躁的时候说出来的话就该不一样
       getMoodDesc: () => (mood ? mood.describe() : ''),
+      // 小本子喂回给她 —— 记得才谈得上「自然提起」，也防她重复记
+      getAbout: () => about.forPrompt(),
+    });
+    // 她在回复里附了 <<MEM:...>>（听到了关于他的事）→ 记进小本子。
+    // 不额外说话 —— 回复本身已经自然接过话头了，再蹦一句「记下了」很出戏
+    chat.on('memory', (t) => {
+      const r = about.add(t);
+      if (r.ok) log('[about] 记了一条：' + r.text);
     });
     performer = new Performer({ log, storeDir: STORE });
     greeter = new Greeter({ log, claudeBin: resolveClaudeBin(), getConfig: loadConfig });
@@ -3070,7 +3499,59 @@ if (!app.requestSingleInstanceLock()) {
     createTray();
     startCursorWatch();
     startPresenceWatch();
+    startFullscreenWatch();
+    startGitWatch();
     registerHotkey();
+
+    // 隔天开场白：开机 12 秒后问一次（让开场那句先说完）。
+    // 一直开着跨了天的机器走 presence 那条路（回来的第一眼补问）
+    setTimeout(() => { try { tryOpener(); } catch (err) { log('[recap] 开场白没说成: ' + err.message); } }, 12 * 1000);
+
+    // 口头提醒：30 秒查一拍。到点的都冒出来 —— 含桌宠关着时错过的
+    // （过点 10 分钟以上算「错过」，措辞不一样）。提醒**穿透安静模式**：
+    // 你亲口交代的事，专注中也得喊
+    reminders = remindStore(path.join(STORE, 'reminders.json'));
+    const remindTimer = setInterval(() => {
+      try {
+        // 人不在（离开/锁屏）就先压着不消费 —— due() 一取就从盘上删了，
+        // 这时候弹的气泡 30 秒就没，回来什么都看不到。压着的话回来的
+        // 第一拍照常冒，过点 10 分钟以上自动走「刚才你不在」那句（评审抓的）
+        if (awaySince) return;
+        for (const r of reminders.due()) {
+          const late = Date.now() - r.when > 10 * 60000;
+          const say = late ? '呃…这条提醒过点了：' + r.text + '（刚才你不在）'
+                           : '到点啦！' + r.text;
+          send('greet:say', { say, face: late ? 'panic' : 'excited', hold: 30000 });
+          speakLine(say, { important: true, maxLen: 60 });
+          log('[remind] 喊了：' + r.text);
+        }
+      } catch (err) { log('[remind] 查提醒出错: ' + err.message); }
+    }, 30 * 1000);
+    if (remindTimer.unref) remindTimer.unref();
+
+    // 她写的周记：每周一你在电脑前时写一篇（一周一次、几分钱、写不出拉倒）。
+    // 15 分钟查一拍条件，真正动笔在 tryDiary 里
+    const diaryTimer = setInterval(() => { tryDiary(); }, 15 * 60 * 1000);
+    if (diaryTimer.unref) diaryTimer.unref();
+    setTimeout(() => { tryDiary(); }, 90 * 1000); // 开机也查一次（周一早上第一次开机）
+
+    // 收工那句：深夜（23 点后到凌晨 5 点前）你还在敲，她打个哈欠带一句今日总结。
+    // 一天一次；quiet / 没干正事 / 人不在，都不说
+    const windTimer = setInterval(() => {
+      try {
+        const h = new Date().getHours();
+        if (h < 23 && h >= 5) return;
+        if (hushed() || (play && play.busy) || awaySince) return;
+        if (dayMarks().windDown === journal.dayKey()) return;
+        const r = recap.windDown(journal.today());
+        if (!r) return;
+        markDay('windDown');
+        send('greet:say', { say: r.say, face: r.face, hold: 15000 });
+        speakLine(r.say, { maxLen: 80 });
+        log('[recap] 收工那句说了');
+      } catch (err) { log('[recap] 收工那句没说成: ' + err.message); }
+    }, 10 * 60 * 1000);
+    if (windTimer.unref) windTimer.unref();
 
     // 升级后第一次启动：弹一版「这个版本更新了什么」。说明是打包时从 git
     // 提交收集的（release-notes.json 随包带着）。全新安装不弹 —— seenVersion
