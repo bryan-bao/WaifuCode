@@ -182,6 +182,21 @@ console.log('\n[8] 跨作用域调用：定义在 A 函数里、却在 B 函数�
   }
   check(bad.length === 0, '没有跨作用域调用' + (bad.length ? '：' + bad.join('；') : ''));
 }
+console.log('\n[9] 留着的线那排 chip：不许裂、不许没头没脑');
+{
+  // 实拍反馈：线名是从任务原话自动取的，一长就在 chip 内部断行 ——
+  // 一个圆角块裂成上下两半，看着像浮在别的东西上面
+  const html = read('src/renderer/panel.html');
+  const lanesCss = html.slice(html.indexOf('#lanes {'), html.indexOf('#lanes {') + 400);
+  check(lanesCss.includes('display: flex'), '#lanes 是 flex 容器（普通 block 会让 chip 内部断行）');
+  check(lanesCss.includes('white-space: nowrap') && lanesCss.includes('text-overflow: ellipsis'),
+        'chip 一行到底 + 省略号（一条线永远是一个完整的小块）');
+  const js = read('src/renderer/panel.js');
+  check(js.includes('lanes-label') && js.includes('接着聊：'),
+        '这排有小标题说明它是什么（没有的话用户问「这些怎么会在上面」）');
+  check(js.includes('raw.slice(0, 8)') && js.includes('c.title = raw'),
+        '线名截短显示、全文进 title（chip 不是拿来读任务的）');
+}
 console.log('');
 console.log(bad === 0 ? '\x1b[32m全过了\x1b[0m' : '\x1b[31m' + bad + ' 项没过\x1b[0m');
 process.exit(bad === 0 ? 0 : 1);

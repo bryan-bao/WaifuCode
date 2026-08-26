@@ -560,7 +560,7 @@ function wirePlay() {
     quiet = Boolean(e.on);
     // 专注期间「到日子了」那句也别冒出来 —— 不挡的话它会被下面那层吞掉台词，
     // 但里程碑已经算响过了，等于白白错过一次
-    if (mood) mood.quiet = quiet;
+    if (mood) mood.quiet = quiet || fsQuiet;
     log('[play] ' + (quiet ? '安静模式开（专注中，她不吵你）' : '安静模式关'));
   });
 
@@ -852,6 +852,11 @@ function wireEvents() {
   // --- 开出去的终端：她在旁边盯着 ---------------------------------------
 
   terminals.on('change', () => {
+    // 她盯着几条活线，喂给心情系统 —— 盯梢费一点神（远小于自己干活），
+    // 一条都没有时她才真正在歇着（精力回血的判据，跟你的键鼠无关）。
+    // 用 liveCount 不用 list()：change 事件每次工具调用都来一发，
+    // list() 每次都顺手刷全量算钱，这儿只要个数（评审抓的）
+    try { if (mood) mood.watching = terminals.liveCount(); } catch (_) { /* 喂不上下拍再说 */ }
     send('term:change', { count: terminals.liveCount() });
     refreshTrayTip();
     if (mobileSrv) mobileSrv.pushState(); // 手机那头的长连接跟着动
@@ -1265,6 +1270,8 @@ function startFullscreenWatch() {
         const m = err ? null : /^FS ([01])/m.exec(String(out));
         const was = fsQuiet;
         fsQuiet = desk.fsDebounce(fsState, Boolean(m && m[1] === '1'));
+        // 勿扰也喂给心情系统：里程碑/羁绊道喜这种一次性的事，别在全屏里消费掉
+        if (mood) mood.quiet = quiet || fsQuiet;
         if (fsQuiet !== was) log('[fs] 全屏勿扰' + (fsQuiet ? '开（前台全屏了，她闭嘴）' : '关'));
       });
   }, 45 * 1000);

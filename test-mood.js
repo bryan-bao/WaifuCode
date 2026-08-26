@@ -120,26 +120,37 @@ check('心情往上走了一点', m.snapshot().mood >= before.mood, true);
 check('没被带成忙碌状态', m.busy, false);
 
 console.log('');
-console.log('陪你坐一整天，她该越来越累（以前这条从没发生过：精力每分钟 +2，永远顶在 100）：');
+console.log('精力跟着**她的活**走，不跟你的键鼠走（重构后的核心语义）：');
 {
+  // 上一版的病根：你的键鼠在动 = 她在耗精力。可键鼠动的是你 ——
+  // 机器上总有动静，她永远没有休息窗口，真实存档量到 energy 死在 0。
+  // 现在：自己干活最费、盯你的终端小费、都没有就回血（跟你在不在无关）。
   const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-day-'));
   const d = new Mood({ storeDir: tmp2 });
-  d.energy = 100; d.affection = 100; d.mood = 70;
+  d.energy = 90; d.affection = 60; d.mood = 70;
   d.removeAllListeners();
 
-  const marks = {};
-  for (let min = 1; min <= 10 * 60; min++) {
-    d.lastSeen = Date.now();     // 你一直在电脑前
-    d.lastInteract = Date.now(); // 而且时不时理她一下（这条单独测）
+  // 你在电脑前敲了四小时代码，但她手上没活：她该歇着，不该累
+  for (let min = 1; min <= 4 * 60; min++) {
+    d.lastSeen = Date.now(); d.lastInteract = Date.now();
     d.tick();
-    if (min % 60 === 0) marks[min / 60] = { e: Math.round(d.energy), s: d.computeState() };
   }
-  const row = (h) => h + 'h 精力' + String(marks[h].e).padStart(3) + ' → ' + marks[h].s;
-  console.log('       ' + [2, 4, 6, 8, 10].map(row).join('   '));
+  console.log('       你敲四小时代码（她没活）→ 精力 ' + Math.round(d.energy));
+  check('你忙你的，她没活就不累（键鼠不再扣她精力）', d.energy >= 90, true);
 
-  check('坐两小时还精神', marks[2].e > 70, true);
-  check('六小时后该喊累了', ['tired', 'sleepy'].includes(marks[6].s), true);
-  check('十小时后撑不住了', marks[10].e < 20, true);
+  // 她自己闷头干活四小时：明显累
+  d.energy = 90; d.busy = true;
+  for (let min = 1; min <= 4 * 60; min++) { d.tick(); }
+  d.busy = false;
+  console.log('       她自己干四小时活 → 精力 ' + Math.round(d.energy));
+  check('自己干活会真累', d.energy < 25, true);
+
+  // 盯着你开的终端八小时：也累，但慢得多
+  d.energy = 90; d.watching = 2;
+  for (let min = 1; min <= 8 * 60; min++) { d.tick(); }
+  d.watching = 0;
+  console.log('       盯你终端八小时 → 精力 ' + Math.round(d.energy));
+  check('盯梢费神但远小于自己干', d.energy > 5 && d.energy < 60, true);
   fs.rmSync(tmp2, { recursive: true, force: true });
 }
 
@@ -173,15 +184,13 @@ console.log('**电脑不关机，人走开，她也得能歇过来**（这条以
   check('**一夜不碰电脑就该回满**', marks[9] >= 99, true);
   check('回满了就不再是困的', d.computeState() !== 'sleepy', true);
 
-  // 反过来也得守住：人回来了就该接着耗，不能变成永远满格
-  d.energy = 100;
-  for (let min = 1; min <= 6 * 60; min++) {
-    d.lastSeen = Date.now();    // 你回来了，一直在电脑前
-    d.lastInteract = Date.now();
-    d.tick();
-  }
-  console.log('       人回来陪坐六小时后: 精力 ' + Math.round(d.energy));
-  check('人一回来照样会累（没退回「永远顶在 100」那个老毛病）', d.energy < 50, true);
+  // 反过来的守则改了：满格不再是毛病 —— 只要她**手上有活**就会耗。
+  // 「永远满格」的旧病根（+2/分无脑回血）靠「干活必扣」堵住
+  d.energy = 100; d.busy = true;
+  for (let min = 1; min <= 3 * 60; min++) { d.tick(); }
+  d.busy = false;
+  console.log('       满格接一个三小时的活: 精力 ' + Math.round(d.energy));
+  check('有活干就绝不可能焊死在满格', d.energy < 30, true);
 
   fs.rmSync(tmp3, { recursive: true, force: true });
 }
@@ -232,16 +241,17 @@ console.log('人在旁边却晾着她 vs 人压根不在 —— 这两件事不�
   const mk = () => {
     const t = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-away-'));
     const d = new Mood({ storeDir: t });
-    d.energy = 80; d.affection = 100; d.mood = 60;
+    // 从「还算热络」起步（重构后 100 是要维护的高位，不是常态）
+    d.energy = 80; d.affection = 55; d.mood = 60;
     d.removeAllListeners();
     return { d, t };
   };
 
   const ignored = mk();   // 你就在电脑前，只是不理她
   const gone = mk();      // 你人不在
-  const long = Date.now() - 3 * 3600 * 1000;
+  const long = Date.now() - 6 * 3600 * 1000;
 
-  for (let min = 1; min <= 3 * 60; min++) {
+  for (let min = 1; min <= 6 * 60; min++) {
     ignored.d.lastSeen = Date.now();  // 键鼠一直在动
     ignored.d.lastInteract = long;    // 但三小时没碰过她
     ignored.d.tick();
@@ -251,18 +261,16 @@ console.log('人在旁边却晾着她 vs 人压根不在 —— 这两件事不�
     gone.d.tick();
   }
 
-  console.log('       晾着她三小时 → 亲密度 ' + Math.round(ignored.d.affection) +
+  console.log('       晾着她六小时 → 亲近 ' + Math.round(ignored.d.affection) +
               '，她' + (ignored.d.computeState() === 'lonely' ? '闹脾气了' : '还好'));
-  console.log('       你不在三小时 → 亲密度 ' + Math.round(gone.d.affection) +
+  console.log('       你不在六小时 → 亲近 ' + Math.round(gone.d.affection) +
               '，她' + (gone.d.computeState() === 'lonely' ? '闹脾气了' : '还好'));
 
-  check('被晾着掉得明显', ignored.d.affection < 70, true);
-  // 人不在时也会掉一点点（她毕竟一个人待着），但要慢一个数量级。
-  // 这里 lastSeen 是钉死在三小时前的，所以每一拍都按「已经走了三小时」算，
-  // 比真实情况扣得还多一些 —— 真跑起来只会更温和
-  check('人不在的时候她基本能理解', gone.d.affection > 85, true);
+  // 重构后放缓了（专注写两小时代码不算冷落）：晾一下午才看得出委屈
+  check('被晾一下午掉得明显', ignored.d.affection < 35, true);
+  check('人不在的时候她基本能理解', gone.d.affection > 45, true);
   check('晾久了真的会闹脾气（README 吹了很久的功能）',
-        ignored.d.affection < gone.d.affection - 20, true);
+        ignored.d.computeState() === 'lonely', true);
 
   fs.rmSync(ignored.t, { recursive: true, force: true });
   fs.rmSync(gone.t, { recursive: true, force: true });
@@ -340,5 +348,88 @@ check('数值落盘了', typeof saved.mood === 'number' && typeof saved.affectio
 
 m.dispose();
 console.log('');
+
+console.log('');
+console.log('【重构新增】精力是日周期：睡醒重置，永远不会死在 0：');
+{
+  const t = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-roll-'));
+  const d = new Mood({ storeDir: t });
+  d.removeAllListeners();
+  d.energy = 3;                       // 昨晚干到只剩 3
+  d.lastDay = '2020-01-01';           // 假装上次见面是很久以前
+  d._rollDay();
+  console.log('       昨晚剩 3 → 新的一天精力 ' + Math.round(d.energy));
+  check('睡醒重置到高位（日周期的保证书）', d.energy >= 86, true);
+  d.energy = 95; d.lastDay = '2020-01-02'; d._rollDay();
+  check('本来就更高就不动（不当回血外挂）', d.energy >= 95, true);
+  fs.rmSync(t, { recursive: true, force: true });
+}
+
+console.log('');
+console.log('【重构新增】亲密拆两层：亲近会回落、羁绊只进不退：');
+{
+  const t = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-bond-'));
+  const d = new Mood({ storeDir: t, getTotals: () => ({ turns: 500, tasks: 80, costUsd: 0 }) });
+  d.removeAllListeners();
+
+  // 处了很久的人：见过 60 天、干成 40 个活、熬过 5 个夜
+  d.daysSeen = 60; d.tasksDone = 40; d.nights = 5; d._bondCache = null;
+  const b = d.bond();
+  console.log('       60 天/40 活/5 夜/500 轮 → 羁绊「' + b.title + '」（' + b.xp + ' 经验，LV' + b.level + '）');
+  check('羁绊等级算得出来', b.level >= 3, true);
+  check('羁绊给亲近撑地板（处得深就回不到陌生）', b.floor > 20, true);
+
+  // 亲近每天回落，但落不穿羁绊的地板
+  d.affection = b.floor + 1;
+  d.lastDay = '2020-01-01'; d._rollDay();
+  check('每日回落不穿地板', d.affection >= b.floor, true);
+
+  // 羁绊升级要道喜
+  const events = [];
+  d.on('milestone', (e) => events.push(e));
+  d.lastBondLevel = 0; d._bondCache = null;
+  d._bondCheck();
+  check('升级道喜（只有好事的那个口）', events.length === 1 && /羁绊/.test(events[0].text), true);
+  d._bondCheck();
+  check('同级不重复道喜', events.length, 1);
+  fs.rmSync(t, { recursive: true, force: true });
+}
+
+console.log('');
+console.log('【重构新增】老存档迁移：焊死的 100 压一档迁入，死 0 的精力救活：');
+{
+  const t = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-mig-'));
+  fs.writeFileSync(path.join(t, 'mood.json'), JSON.stringify({
+    energy: 0, mood: 84, affection: 100,   // 用户真实存档就长这样
+    lastInteract: Date.now(), lastSeen: Date.now(), lastTick: Date.now(),
+  }));
+  const d = new Mood({ storeDir: t });
+  d.removeAllListeners();
+  console.log('       旧 {精力0 亲密100} → 新 {精力' + Math.round(d.energy) + ' 亲近' + Math.round(d.closeness) + '}');
+  check('焊死的 100 迁成有上涨空间的高位', d.closeness > 60 && d.closeness < 75, true);
+  check('死 0 的精力救活（迁移完第一天不能还是困脸）', d.energy >= 60, true);
+  // 新存档写盘后再读，不再走迁移
+  d.closeness = 80; d.save();
+  const d2 = new Mood({ storeDir: t });
+  d2.removeAllListeners();
+  check('新字段落盘后原样读回（不重复迁移）', Math.round(d2.closeness), 80);
+  // 老名字也还写着 —— 万一降回旧版本，不失忆
+  const raw = JSON.parse(fs.readFileSync(path.join(t, 'mood.json'), 'utf8'));
+  check('存档里保留老名字 affection（降级回旧版不失忆）', Math.round(raw.affection), 80);
+  // 评审抓过的三条，钉死：
+  // ① 地板永远压在 lonely 阈值（25）之下 —— 顶穿的话老用户永不闹脾气
+  d.daysSeen=999;d.tasksDone=999;d.nights=99;d._bondCache=null;
+  check('满级羁绊的地板也顶不穿 lonely 阈值', d.bond().floor < 25, true);
+  // ② 低于地板的不许被冷落分支反向抬回地板
+  d.closeness=10;d._coolDown(1);
+  check('低于地板时冷落不涨好感', d.closeness, 10);
+  // ③ 道喜必须排在 tick 的 _sync 之后（同拍冲掉那个坑）
+  const src=fs.readFileSync(require('path').join(__dirname,'src','mood.js'),'utf8');
+  const tickBody=src.slice(src.indexOf('tick()'));
+  check('羁绊道喜排在常规 _sync 之后（不被同拍冲掉）',
+        tickBody.indexOf('_bondCheck') > tickBody.indexOf('_sync(tick'), true);
+  fs.rmSync(t, { recursive: true, force: true });
+}
+
 console.log(fail === 0 ? '全部通过' : (fail + ' 项没过'));
 process.exit(fail === 0 ? 0 : 1);
