@@ -20,6 +20,6 @@
   ; 新版第一次启动靠它知道「你是从哪个版本升上来的」。老版本（0.1.x）的
   ; 存档里没记 seenVersion，没这张条子的话升级说明弹窗一声不吭。
   ; data 目录不随包发布、装新版时不会被动（实测多轮重装它都原样在）。
-  CreateDirectory "$INSTDIRdata"
-  CopyFiles /SILENT "$INSTDIResourcesapppackage.json" "$INSTDIRdataprev-app-package.json"
+  CreateDirectory "$INSTDIR\data"
+  CopyFiles /SILENT "$INSTDIR\resources\app\package.json" "$INSTDIR\data\prev-app-package.json"
 !macroend
