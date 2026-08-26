@@ -234,6 +234,14 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-update-'));
     check((nsh.match(/Sleep '.slice(1,0)'/) || /Sleep 1[02]00/.test(nsh)),
           '强杀之间留足收尸时间（默认那套零间隔复查，Electron 四进程收不完）');
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    // 旧版是谁：安装器动手前抄条子，新版第一次启动拿它对版本 ——
+    // 0.1.x 的存档里没记 seenVersion，没条子的话升级说明一声不吭
+    check(nsh.includes('prev-app-package.json') && /CopyFiles/.test(nsh),
+          '安装器换文件之前先抄一张「旧版是谁」的条子进 data');
+    check(main2.includes('prev-app-package.json') && /if \(!seen\)/.test(main2),
+          '存档没记 seenVersion 时用条子兜底 —— 手动重装/老版本升级也能弹对比');
+    check(/unlinkSync\(prevMark\)/.test(main2),
+          '条子用过就撕（留着会在下次误导）');
     check(pkg.build.nsis.include === 'build/installer.nsh',
           'nsis.include 指到它 —— 不指的话这个文件就是摆设');
   }

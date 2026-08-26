@@ -16,4 +16,10 @@
   Sleep 1200
   nsExec::Exec `taskkill /f /im "${APP_EXECUTABLE_FILENAME}"`
   Sleep 600
+  ; 动手换文件**之前**，把旧版的 package.json 抄一张条子到 data 里 ——
+  ; 新版第一次启动靠它知道「你是从哪个版本升上来的」。老版本（0.1.x）的
+  ; 存档里没记 seenVersion，没这张条子的话升级说明弹窗一声不吭。
+  ; data 目录不随包发布、装新版时不会被动（实测多轮重装它都原样在）。
+  CreateDirectory "$INSTDIRdata"
+  CopyFiles /SILENT "$INSTDIResourcesapppackage.json" "$INSTDIRdataprev-app-package.json"
 !macroend

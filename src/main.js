@@ -3584,7 +3584,17 @@ if (!app.requestSingleInstanceLock()) {
     // 还是空的说明没有「从哪个版本升上来」这回事，只默默记下当前版本
     try {
       const cur = app.getVersion();
-      const seen = (loadConfig().update || {}).seenVersion || '';
+      let seen = (loadConfig().update || {}).seenVersion || '';
+      // 存档里没记「上次见过哪版」的（0.1.x 老版本没这个字段、或存档被清过），
+      // 用安装器动手前抄的那张条子（data/prev-app-package.json）——
+      // 没有这一手，从老版本手动重装上来的人一句说明都看不到
+      const prevMark = path.join(ROOT, 'data', 'prev-app-package.json');
+      if (!seen) {
+        try {
+          seen = JSON.parse(fs.readFileSync(prevMark, 'utf8')).version || '';
+          if (seen) log('[update] 安装器留的条子：从 v' + seen + ' 升上来的');
+        } catch (_) { /* 全新安装没有条子，正常 */ }
+      }
       if (seen && seen !== cur) {
         const rn = JSON.parse(fs.readFileSync(path.join(ROOT, 'release-notes.json'), 'utf8'));
         // **跳版也要补显**：从 0.2.0 直接升到 1.0.1 的人，中间每一版的
@@ -3610,6 +3620,9 @@ if (!app.requestSingleInstanceLock()) {
         }
       }
       if (seen !== cur) config.patch({ update: { seenVersion: cur } });
+      // 条子用过就撕（存档里已经记下了，条子留着会在下次误导）。
+      // Program Files 下删不动就随它 —— seenVersion 的优先级在它前面
+      try { fs.unlinkSync(prevMark); } catch (_) { /* 没有或删不掉都无妨 */ }
     } catch (_) { /* 没有说明文件就不弹，照常起 */ }
 
     // 手机工作台开过就一直开 —— 手机书签才随时能用（没开过完全不存在）
