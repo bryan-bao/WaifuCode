@@ -669,12 +669,24 @@ async function renderLanes(dir, mine) {
       const lb = $('lanes');
       if (lb) {
         lb.innerHTML = '';
-        for (const l of lanes) {
-          if (!l.alive) continue; // 会话记录都没了的线，接过去也是新开，别骗人
+        const usable = lanes.filter((l) => l.alive);
+        // 一句话说清这排是什么 —— 不写的话就是几个没头没脑的圆块挂在那儿，
+        // 用户第一反应是「这些怎么会在上面」（实拍反馈）
+        if (usable.length) {
+          const tag = document.createElement('span');
+          tag.className = 'lanes-label';
+          tag.textContent = '接着聊：';
+          lb.appendChild(tag);
+        }
+        for (const l of usable) {
           const c = document.createElement('span');
           c.className = 'chip';
-          c.textContent = '↻ ' + (l.name || l.hint || '一条旧线');
-          c.title = '这个项目留着的线，点一下开个终端接着聊（她记得聊到哪儿）\n' +
+          // 线名是从任务原话自动取的，可能是一整句话。截短显示，全文进 title ——
+          // chip 是「认得出是哪条」就够了，不是拿来读任务的
+          const raw = String(l.name || l.hint || '一条旧线').replace(/\s+/g, ' ').trim();
+          const short = raw.length > 8 ? raw.slice(0, 8) + '…' : raw;
+          c.textContent = '↻ ' + short;
+          c.title = raw + '\n\n这个项目留着的线，点一下开个终端接着聊（她记得聊到哪儿）\n' +
             '最后用过：' + String(l.lastRun || '').slice(0, 16).replace('T', ' ') +
             (l.turns ? ' · 聊过 ' + l.turns + ' 轮' : '');
           c.onclick = async () => {

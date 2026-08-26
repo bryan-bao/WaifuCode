@@ -383,8 +383,15 @@
   .term.strug .led { background: #f87171; box-shadow: 0 0 7px #f87171; animation: pulse 1.2s ease-in-out infinite; }
   .term.stuckled .led { background: var(--warn); box-shadow: 0 0 7px var(--warn); }
   .gitinfo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #lanes { margin-top: 4px; }
-  #lanes .chip { margin-right: 4px; }
+  /* 【必须是 flex 容器。】原来是普通 block + inline-block 的 chip：
+     线名是从任务原话自动取的，一长就**在 chip 内部断行** —— 一个圆角块
+     裂成上下两半，看着像浮在别的东西上面（用户实拍反馈）。
+     flex + nowrap + 省略号：一条线永远是一个完整的小块 */
+  #lanes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
+  #lanes .chip {
+    max-width: 132px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #lanes .lanes-label { font-size: 11px; color: var(--dim); opacity: .75; }
   .daily { font-size: 11px; color: var(--dim); margin-top: 5px; line-height: 1.8; }
   .daily b { color: var(--fg); }
   .term .warnline {
