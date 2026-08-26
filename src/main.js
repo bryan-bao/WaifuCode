@@ -852,6 +852,11 @@ function wireEvents() {
   // --- 开出去的终端：她在旁边盯着 ---------------------------------------
 
   terminals.on('change', () => {
+    // 她盯着几条活线，喂给心情系统 —— 盯梢费一点神（远小于自己干活），
+    // 一条都没有时她才真正在歇着（精力回血的判据，跟你的键鼠无关）。
+    // 用 liveCount 不用 list()：change 事件每次工具调用都来一发，
+    // list() 每次都顺手刷全量算钱，这儿只要个数（评审抓的）
+    try { if (mood) mood.watching = terminals.liveCount(); } catch (_) { /* 喂不上下拍再说 */ }
     send('term:change', { count: terminals.liveCount() });
     refreshTrayTip();
     if (mobileSrv) mobileSrv.pushState(); // 手机那头的长连接跟着动

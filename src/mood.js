@@ -24,6 +24,20 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const REST_PER_HOUR = 11;
 const REST_PER_MIN = REST_PER_HOUR / 60;
 
+// ── 羁绊（只进不退的那一层）───────────────────────────────────────────────
+// 亲密拆成两层的下半层：上半层「亲近」会波动、要维护；这一层按一起经历过的
+// 事攒经验，**永不下降** —— 「处了半年」这件事本身不该因为你出差一周就清零。
+// 经验全来自单调递增的计数（见过几天、干成几个活、熬过几个夜、聊过几轮），
+// 所以天然只涨不跌，不需要任何防回退逻辑。
+const BOND_LEVELS = [
+  { xp: 0,    title: '刚认识' },
+  { xp: 60,   title: '熟人' },
+  { xp: 180,  title: '搭档' },
+  { xp: 420,  title: '老搭档' },
+  { xp: 900,  title: '战友' },
+  { xp: 1800, title: '家人' },
+];
+
 // 这里只管「她是什么情绪」，不管「这情绪该用哪张脸」——
 // 表情命名每个模型都不一样，那层映射交给 src/profiles.js。
 
@@ -90,7 +104,8 @@ const MILESTONES = [
     lines: ['你连着七天来找我了…嗯，我记着呢。', '一周了，你每天都在。'] },
   { id: 'day30', state: 'shy', test: (s) => s.days >= 30,
     lines: ['今天满一个月了。', '认识一个月啦…感觉比一个月久。'] },
-  { id: 'aff90', state: 'shy', test: (s) => s.aff >= 90,
+  // 新系统里亲近是要维护的（每日回落），90 几乎摸不到 —— 80 才是「处得很好」
+  { id: 'aff90', state: 'shy', test: (s) => s.aff >= 80,
     lines: ['……我好像挺习惯你在旁边的。', '跟你处着挺舒服的，就这样吧。'] },
   { id: 'night10', state: 'tired', test: (s) => s.nights >= 10,
     lines: ['这是第十个陪你熬的夜了。你悠着点啊。', '又是半夜…第十次了，我数着呢。'] },
@@ -134,11 +149,20 @@ class Mood extends EventEmitter {
     // 测试造 Mood 时会读到真实数据目录，账本里程碑就永远不可测了
     this.getTotals = getTotals || null;
 
-    // 默认值：刚认识，心情中性，精力充沛
+    // 默认值：刚认识，心情中性，精力充沛。
+    // closeness（亲近）就是原来的 affection —— 改名是因为语义变了：
+    // 它现在是**会回落的**那一层温度，「只涨不跌」的部分挪去了羁绊（bond）
     this.energy = 80;
     this.mood = 62;
-    this.affection = 50;
+    this.closeness = 50;
     this.errorStreak = 0;
+    // 面板上开着几条活线（main 喂）。她盯着别人干活也费一点神，
+    // 但远小于自己干 —— 更重要的是：没活、没互动，她就在歇着
+    this.watching = 0;
+    // 羁绊等级缓存（升级要道喜，得知道上次是几级）。-1 = 还没对齐过
+    this.lastBondLevel = -1;
+    this._bondCache = null;
+    this._bondCacheAt = 0;
 
     this.busy = false;
     this.state = 'normal';
@@ -190,6 +214,18 @@ class Mood extends EventEmitter {
     if (this.timer.unref) this.timer.unref();
   }
 
+  // 旧名兼容：外面（和老测试）读写 affection 的地方全都还能用，
+  // 落到的是同一个数 —— 亲近（closeness）
+  get affection() { return this.closeness; }
+  set affection(v) { this.closeness = v; }
+
+  /** 亲近往下扣，地板由羁绊撑着。**本来就在地板下的不许被抬上来** ——
+   *  Math.max 直接用的话，冷落一个低于地板的人反而是在给她涨好感（评审抓的） */
+  _coolDown(amount) {
+    const f = this.bond().floor;
+    if (this.closeness > f) this.closeness = Math.max(f, this.closeness - amount);
+  }
+
   _load() {
     try {
       // 摘 BOM：带 BOM 的 UTF-8 会让 JSON.parse 抛错，被下面的 catch 一接，
@@ -198,7 +234,16 @@ class Mood extends EventEmitter {
       const s = JSON.parse(fs.readFileSync(this.file, 'utf8').replace(/^﻿/, ''));
       this.energy = clamp(s.energy ?? this.energy);
       this.mood = clamp(s.mood ?? this.mood);
-      this.affection = clamp(s.affection ?? this.affection);
+      // 老存档只有 affection。**不能原样搬**：老系统里它只涨不跌，
+      // 存档十有八九焊死在 100 —— 直接搬过来，新系统的「维护出来的高位」
+      // 就从天花板起步，回落显得像惩罚。压一档迁入（100 → 68），
+      // 「处得熟」这层意思由羁绊接着（它按真实经历算，不吃这次折损）
+      this.closeness = s.closeness != null ? clamp(s.closeness)
+        : s.affection != null ? clamp(35 + s.affection * 0.33)
+        : this.closeness;
+      // -1 = 还没对齐过（首拍静默记级，不道喜）。注意不能 || 0：
+      // 0 是「真的还在刚认识」这一级，不是「没记过」
+      this.lastBondLevel = s.lastBondLevel != null ? s.lastBondLevel : -1;
       this.lastInteract = s.lastInteract || Date.now();
       this.lastSeen = s.lastSeen || this.lastInteract;
 
@@ -255,12 +300,16 @@ class Mood extends EventEmitter {
       if (downH > 0.5) {
         this.energy = clamp(this.energy + Math.min(100, downH * REST_PER_HOUR));
       }
+      // 从旧系统迁上来的「精力干死在 0」（老判定把你的键鼠活动当成她在干活，
+      // 一路漏光）。新系统精力是日周期的，起步给她回到能活动的水平 ——
+      // 不然迁移完第一天她还是那张困脸，用户以为什么都没改
+      if (this.energy < 25 && s.closeness == null) this.energy = 70;
 
       // 太久没上线，亲密度会掉一点。但睡一觉起来不该翻脸，所以从 10 小时才起算，
       // 而且封顶 —— 出差一周回来她可以生气，但不该把之前处的都清零
       const awayI = Math.max(0, (Date.now() - this.lastInteract) / 3600000);
       if (awayI > 10) {
-        this.affection = clamp(this.affection - Math.min(18, (awayI - 10) * 0.9));
+        this._coolDown(Math.min(12, (awayI - 10) * 0.6));
       }
     } catch (_) {
       /* 第一次跑，没有存档很正常 */
@@ -275,7 +324,9 @@ class Mood extends EventEmitter {
           {
             energy: this.energy,
             mood: this.mood,
-            affection: this.affection,
+            closeness: this.closeness,
+            affection: this.closeness, // 老版本读得懂的名字，降级回去不失忆
+            lastBondLevel: this.lastBondLevel,
             lastInteract: this.lastInteract,
             lastSeen: this.lastSeen,
             // 桌宠活到哪一刻。下次启动靠它算「关掉的那段时间」该补多少精力
@@ -341,15 +392,62 @@ class Mood extends EventEmitter {
    * 也不会比现在更熟。
    */
   _warmUp(amount) {
-    const room = Math.max(0, 100 - this.affection) / 100;
-    this.affection = clamp(this.affection + amount * (0.15 + room * 0.85));
+    const room = Math.max(0, 100 - this.closeness) / 100;
+    this.closeness = clamp(this.closeness + amount * (0.15 + room * 0.85));
+  }
+
+  /**
+   * 羁绊：按一起经历过的事攒的等级，**只进不退**。
+   * 经验源全是单调计数：见过几天、干成几个活、熬过几个夜、账本里聊过几轮。
+   * getTotals 读的是 lifetime.json（一个小文件），但 _stats 每次表情变化都要
+   * 带上它 —— 60 秒缓存一层，别把文件读成高频操作。
+   * floor：羁绊越深，亲近的地板越高 —— 处成家人了，再怎么冷落也回不到陌生。
+   */
+  bond() {
+    const now = Date.now();
+    if (this._bondCache && now - this._bondCacheAt < 60000) return this._bondCache;
+    let jt = null;
+    try { jt = this.getTotals ? this.getTotals() : null; } catch (_) { /* 账本坏了按 0 算 */ }
+    const xp = Math.round(
+      this.daysSeen * 8 + this.tasksDone * 4 + this.nights * 12 +
+      (jt ? Math.floor((jt.turns || 0) / 10) : 0));
+    let level = 0;
+    for (let i = 0; i < BOND_LEVELS.length; i++) if (xp >= BOND_LEVELS[i].xp) level = i;
+    const next = level + 1 < BOND_LEVELS.length ? BOND_LEVELS[level + 1].xp : null;
+    this._bondCache = {
+      level, xp, next,
+      title: BOND_LEVELS[level].title,
+      // 地板必须压在 lonely 阈值（25）之下 —— 原来 20+level*3 在二级起就
+      // ≥26，「晾久了闹脾气」对处得久的人永久失效（评审抓的）。
+      // 现在最深也 23：处成家人闹脾气来得慢，但不是不会来
+      floor: Math.min(23, 18 + level),
+    };
+    this._bondCacheAt = now;
+    return this._bondCache;
+  }
+
+  /** 羁绊升级了没有。升了就道喜（数值系统里唯一「只有好事」的口） */
+  _bondCheck() {
+    const b = this.bond();
+    // 首次对齐（老存档没记过级）：静默记下当前级，不补发道喜 ——
+    // 处了半年的人升级上来听到「我们是搭档了诶」不是惊喜是犯傻
+    // （跟 _milestone 的首次对齐同一条规矩，评审抓的）
+    if (this.lastBondLevel < 0) { this.lastBondLevel = b.level; this.save(); return; }
+    if (b.level > this.lastBondLevel) {
+      this.lastBondLevel = b.level;
+      this.save();
+      this.flash('happy', '欸……我们现在算是「' + b.title + '」了吧？嘿嘿。', 5200);
+      this.emit('milestone', { id: 'bond-' + b.level, text: '羁绊升到「' + b.title + '」' });
+    }
   }
 
   _stats() {
+    const b = this.bond();
     return {
       energy: Math.round(this.energy),
       mood: Math.round(this.mood),
-      affection: Math.round(this.affection),
+      affection: Math.round(this.closeness), // 面板的「亲近」条
+      bond: { level: b.level, title: b.title, xp: b.xp, next: b.next },
     };
   }
 
@@ -414,11 +512,13 @@ class Mood extends EventEmitter {
     this.busy = false;
     this.lastTaskEnd = Date.now();
     const mins = (elapsedMs || 0) / 60000;
-    this.energy = clamp(this.energy - Math.min(20, 5 + mins * 0.8));
+    // 收尾小扣一笔就行 —— 干活过程每分钟都扣过了，这儿再来 20 就是重复计费
+    this.energy = clamp(this.energy - Math.min(8, 2 + mins * 0.15));
 
     let line;
     if (ok) {
       this.tasksDone += 1; // 砸了的不算数
+      this._bondCache = null; // 经验变了，别让面板上的羁绊数字滞后一分钟
       // 一次没报错就干完的，格外得意
       const clean = !errorCount;
       this.mood = clamp(this.mood + (clean ? 18 : 10));
@@ -468,9 +568,13 @@ class Mood extends EventEmitter {
       s.energy >= 70 ? '精神头很足' :
       s.energy >= 40 ? '不算太累' :
       s.energy >= 20 ? '有点累了' : '快困死了';
+    // 亲近管「最近热不热络」，羁绊管「处了多深」—— 两层分开说，
+    // 出差一周回来：羁绊还是老搭档（说话随意），亲近低了（先小小抱怨一句）
     const close =
-      s.affection >= 75 ? '你们很熟了，说话可以随意些' :
-      s.affection >= 40 ? '你们算熟' : '你最近有点冷落她，她心里有点小情绪';
+      (s.closeness >= 70 ? '最近很热络' :
+       s.closeness >= 40 ? '最近还算热络' : '你最近有点冷落她，她心里有点小情绪') +
+      '；你们处到「' + s.bond.title + '」这个份上了' +
+      (s.bond.level >= 3 ? '，说话可以很随意' : '');
 
     const extra = [];
     if (s.state === 'frustrated') extra.push('刚被一堆报错折腾得很烦躁');
@@ -653,16 +757,25 @@ class Mood extends EventEmitter {
     //
     // 所以现在人不在是**回血**，不是少扣。速率跟关机那条曲线对齐（11/小时），
     // 一夜不碰电脑就回满，跟原来「关机一整晚回满」的设计意图完全一致。
-    if (away) {
-      this.energy = clamp(this.energy + REST_PER_MIN);
-    } else {
-      // 不干活也会累，只是慢。深夜更费 —— 熬夜的人自己知道。
-      //   闲着     -0.18/分 → 陪你坐六个钟头开始喊累，九个钟头撑不住
-      //   有活在跑 -0.4/分  → 陪你干活累得快得多
-      //   深夜     再乘 1.6 → 熬夜格外费
-      let drain = this.busy ? 0.4 : 0.18;
-      if (this.isLateNight()) drain *= 1.6;
+    // 【上一版的病根：精力跟着**你的键鼠**扣。】键鼠动的是你，不是她在干活 ——
+    // 机器上总有动静（终端跑着、你在用电脑），她永远被判「在陪干活」，
+    // 永远没有休息窗口，实际存档量到 energy 死在 0、常年一张困脸。
+    // 现在只看**她自己的活**：
+    //   自己闷头干活（busy）        -0.4/分，深夜 ×1.5
+    //   盯着你开的终端（watching）  -0.15/分 —— 盯梢费神，但远小于自己干
+    //   都没有                      +0.35/分回血（跟你在不在电脑前无关！）
+    // 配合 _rollDay 的「睡醒重置」，精力是日周期：晚上干得多真的会困，
+    // 第二天又精神 —— 永远不会死在 0。
+    if (this.busy) {
+      let drain = 0.4;
+      if (this.isLateNight()) drain *= 1.5;
       this.energy = clamp(this.energy - drain);
+    } else if (this.watching > 0) {
+      this.energy = clamp(this.energy - 0.15);
+    } else {
+      // +0.35/分 = 21/时：午休一个半小时回三分之一（不是回满 —— 那样下午
+      // 永远精神）；一夜（7 小时+）照样满血。跟 _rollDay 的睡醒重置双保险
+      this.energy = clamp(this.energy + 0.35);
     }
 
     // 桌宠活着的最后时刻。_load() 靠它算「关掉的那段时间」补多少 ——
@@ -672,24 +785,32 @@ class Mood extends EventEmitter {
     // --- 亲密度 -------------------------------------------------------------
     // 你人不在的时候扣得很慢（她知道你不在，不算冷落）；
     // 你就在电脑前却不理她，那才是真的晾着，扣得快
+    // 亲近的地板由羁绊撑着：处成老搭档了，再怎么冷落也回不到陌生
     if (away) {
-      if (goneMin > 90) this.affection = clamp(this.affection - 0.05);
+      // 人不在她能理解 —— 掉得极慢（一天不到 1 分/时），真正的分离惩罚
+      // 在 _load 里按离线时长算一次
+      if (goneMin > 90) this._coolDown(0.015);
     } else if (idleMin > 45) {
-      this.affection = clamp(this.affection - 0.22);
+      // 人在电脑前却不理她。原来 -0.22/分（一小时掉 13）太狠 —— 你专注写
+      // 两小时代码不是冷落她。放缓到 -0.1/分，真晾一下午才看得出委屈
+      this._coolDown(0.1);
     }
 
     // --- 心情 ---------------------------------------------------------------
     // 回归的目标不是固定的 60 —— 累的时候、被冷落的时候，
     // 心情自然就该低一些。以前不管什么状态都往 60 收，
     // 加上干成一个活 +18，长期就黏在 80 以上（happy 的门槛），一年到头一张笑脸。
-    const base = clamp(55 + (this.energy - 50) * 0.16 + (this.affection - 50) * 0.1, 25, 85);
-    this.mood += (base - this.mood) * 0.05;
+    // 振幅拉开（22~90）、回归放慢（0.05 → 0.03）：事件的冲击留得住，
+    // 一天里看得出起伏 —— 原来不管出什么事都很快缩回窄带，一年到头一张脸
+    const base = clamp(48 + (this.energy - 50) * 0.22 + (this.closeness - 50) * 0.18, 22, 90);
+    this.mood += (base - this.mood) * 0.03;
     this.mood = clamp(this.mood);
 
     // 熬夜也是一起熬的，记一笔（一天最多记一次）
     if (this.isLateNight() && this.lastNightDay !== dayKey()) {
       this.nights += 1;
       this.lastNightDay = dayKey();
+      this._bondCache = null; // 熬夜数进羁绊经验
     }
 
     const before = this.state;
@@ -709,6 +830,11 @@ class Mood extends EventEmitter {
       this.flash(ms.state, ms.line, 5200);
       this.save();
       this.emit('milestone', { id: ms.id, text: ms.line });
+    } else if (!this.busy && !this.quiet) {
+      // 羁绊升级的道喜。**必须排在 _sync 之后**（跟里程碑同一条规矩：
+      // flash 要盖过这一拍的常规台词，放前面就被 _sync 当场冲掉，评审抓的）；
+      // busy/quiet 时不发也不记级 —— 下一拍自然补发，不会吞
+      this._bondCheck();
     }
   }
 
@@ -739,6 +865,18 @@ class Mood extends EventEmitter {
     // 昨天见过 → 接上；隔了一天以上 → 从 1 重新数
     this.streak = this.lastDay === dayKey(Date.now() - 86400000) ? this.streak + 1 : 1;
     this.daysSeen += 1;
+
+    // 新的一天（早上 5 点日界线）：
+    // · 精力睡醒重置 —— 昨晚再累，今天也从 86 起步（本来就更高就不动）。
+    //   这一条就是「永远不会死在 0」的保证书
+    // · 亲近自然回落一点 —— 高位是**维护**出来的才有意义；地板由羁绊撑着，
+    //   处得越深回落越有底
+    this._bondCache = null; // 先失效：见面天数刚 +1，下面的地板要按今天的算（评审抓的顺序）
+    if (this.lastDay !== '') { // 第一次建档不算「新的一天」
+      this.energy = clamp(Math.max(this.energy, 86));
+      this._coolDown(1.5);
+    }
+
     this.lastDay = today;
     this.save();
   }
@@ -793,11 +931,14 @@ class Mood extends EventEmitter {
   }
 
   snapshot() {
+    const b = this.bond();
     return {
       state: this.state,
       energy: Math.round(this.energy),
       mood: Math.round(this.mood),
-      affection: Math.round(this.affection),
+      affection: Math.round(this.closeness),
+      closeness: Math.round(this.closeness),
+      bond: { level: b.level, title: b.title, xp: b.xp, next: b.next },
       busy: this.busy,
       errorStreak: this.errorStreak,
       // 记日子的那几个，面板上「今天」那一栏要用

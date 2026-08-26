@@ -33,6 +33,10 @@ function setMood(s) {
   $('b-energy').style.width = s.energy + '%';
   $('b-mood').style.width = s.mood + '%';
   $('b-aff').style.width = s.affection + '%';
+  // 羁绊：只进不退那层。挂在状态行里，不另占一块
+  if (s.bond && $('state-bond')) {
+    $('state-bond').textContent = s.bond.title + (s.bond.next ? '（' + s.bond.xp + '/' + s.bond.next + '）' : '（满级）');
+  }
   $('state').textContent = STATE_TEXT[s.state] || s.state;
   $('hint').textContent = STATE_HINT[s.state] || '';
 }
