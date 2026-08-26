@@ -247,7 +247,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-update-'));
     // 0.1.x 的存档里没记 seenVersion，没条子的话升级说明一声不吭
     check(nsh.includes('prev-app-package.json') && /CopyFiles/.test(nsh),
           '安装器换文件之前先抄一张「旧版是谁」的条子进 data');
-    check(main2.includes('prev-app-package.json') && /if \(!seen\)/.test(main2),
+    check(main2.includes('prev-app-package.json') && main2.includes('dirname(process.execPath)'),
           '存档没记 seenVersion 时用条子兜底 —— 手动重装/老版本升级也能弹对比');
     check(/unlinkSync\(prevMark\)/.test(main2),
           '条子用过就撕（留着会在下次误导）');

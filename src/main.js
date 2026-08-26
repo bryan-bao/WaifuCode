@@ -3588,7 +3588,9 @@ if (!app.requestSingleInstanceLock()) {
       // 存档里没记「上次见过哪版」的（0.1.x 老版本没这个字段、或存档被清过），
       // 用安装器动手前抄的那张条子（data/prev-app-package.json）——
       // 没有这一手，从老版本手动重装上来的人一句说明都看不到
-      const prevMark = path.join(ROOT, 'data', 'prev-app-package.json');
+      // 条子在**安装根**的 data 里（exe 旁边）—— 不是 ROOT：打包后 ROOT 是
+      // resources/app，差两层，读不到条子弹窗就一声不吭（实机踩的）
+      const prevMark = path.join(path.dirname(process.execPath), 'data', 'prev-app-package.json');
       if (!seen) {
         try {
           seen = JSON.parse(fs.readFileSync(prevMark, 'utf8')).version || '';
