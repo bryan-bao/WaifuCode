@@ -411,6 +411,9 @@ footer{
 
 <section id="s11">
   <h2>12 · 疑难杂症</h2>
+  <p><strong>更新时喊「WaifuCode 无法关闭」？</strong>新版已修。从老版本升级的这一次还可能碰到：右键托盘点「退出」把她彻底关掉，再去 <code>data\update-download\</code> 里手动双击安装包。</p>
+  <p><strong>检测不到新版？</strong>按顺序查：① 发包那台电脑上的桌宠开着没有（分发跟着桌宠走，桌宠一关别人就够不着）；② 更新源的 IP 变没变（路由器重启后可能换了）；③ 发包机的 Windows 防火墙是不是把它拦了（第一次弹「是否允许」点了取消就会一直拦）。</p>
+
   <table>
     <tr><th>现象</th><th>怎么回事</th></tr>
     <tr><td>终端里突然满屏乱码</td><td>多半是跑的某个 .bat 里有 <code>chcp 936</code> 改了整个窗口的代码页。救急：<code>/exit</code> 后敲 <code>chcp 65001</code> 再 <code>claude -c</code>；根治要改那个 bat</td></tr>

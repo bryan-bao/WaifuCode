@@ -2230,7 +2230,24 @@ async function _applyUpdate() {
     }
     log('[update] 安装器起来了，退出让路');
     send('session:say', { name: '', text: '新版下好啦，安装器出来了 —— 我先退下，装完再见！' });
-    setTimeout(() => app.quit(), 2500); // 给气泡和安装器一点起身时间
+    // 【必须死透，不能只是「开始退出」。】安装器那头会反复查
+    // 「WaifuCode.exe 还在吗」，查到就弹「无法关闭」。app.quit() 走的
+    // 那串事件里任何一步抛了/卡了，进程就僵住 —— 所以这儿手动把
+    // 该收的收了（每步兜住），最后 app.exit() 一刀切：它不走事件链，
+    // 没有任何东西能拦住它
+    setTimeout(() => {
+      const step = (fn) => { try { fn(); } catch (_) { /* 收不上也不能拦退出 */ } };
+      step(() => stopTunnel());
+      step(() => { if (updateSrv) updateSrv.close(); });
+      step(() => { if (mobileSrv) mobileSrv.close(); });
+      step(() => { if (sessions) sessions.stopAll(); });
+      step(() => { if (terminals) terminals.dispose(); });
+      step(() => { if (chat) chat.dispose(); });
+      step(() => { if (mood) mood.dispose(); });
+      step(() => { if (voice) voice.dispose(); });
+      log('[update] 收拾完了，死透让路');
+      app.exit(0);
+    }, 1500); // 给气泡 1.5 秒露脸 —— 安装器要人点几下才走到检查那步，来得及
     return { ok: true };
   } catch (err) {
     log('[update] 更新没成: ' + err.message);
@@ -3259,7 +3276,16 @@ function wireIpc() {
       return { ok: false, error: err.message };
     }
   });
-  ipcMain.handle('app:info', () => ({
+  ipcMain.handle('app:info', () => {
+    // 面板一开就顺手查一次新版（配了源、且手上还没有已探到的才查）。
+    // 不查的话：开机 20 秒内打开面板看不到更新按钮，用户以为「检测不到」——
+    // 实机反馈的。异步放着跑，查到了走 update:available 推送，面板自己会亮
+    if (((loadConfig().update || {}).source || '').trim() && !updateLatest) {
+      checkUpdate().catch(() => { /* 查不到就等下一班 */ });
+    }
+    return appInfoData();
+  });
+  function appInfoData() { return ({
     claudeBin: resolveClaudeBin(),
     root: ROOT,
     dataRoot: DATA_ROOT,
@@ -3269,7 +3295,7 @@ function wireIpc() {
     updatePort: Number((loadConfig().update || {}).port) || 47200,
     // 已经探到、还没装的新版本号（面板开晚了靠这个补显示）
     updateAvailable: updateLatest ? updateLatest.version : null,
-  }));
+  }); }
 
   // 面板上的「说明书」：把随包带的功能手册开在一个独立窗口里。
   // 手册是单文件 HTML（图全内嵌），asar 又是关的，loadFile 直接就能吃
@@ -3627,12 +3653,17 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {});
 
   app.on('before-quit', () => {
-    stopTunnel(); // 出门模式的隧道跟着桌宠一起收 —— 别把公网口留在那儿
-    if (sessions) sessions.stopAll();
-    if (terminals) terminals.dispose();
-    if (chat) chat.dispose();
-    if (mood) mood.dispose();
-    if (voice) voice.dispose();
+    // 【每步必须各自兜住。】这里抛出去就是主进程未捕获异常 → Electron
+    // 弹原生错误框 → 进程僵在弹窗后面**再也退不掉**。装新版时表现为
+    // NSIS 反复喊「WaifuCode 无法关闭」（错误框还常被安装器挡住，
+    // 你只看到怎么关都关不掉）—— 实机排查出来的
+    const step = (fn) => { try { fn(); } catch (err) { log('[quit] 收尾一步没做成: ' + err.message); } };
+    step(() => stopTunnel()); // 出门模式的隧道跟着桌宠一起收 —— 别把公网口留在那儿
+    step(() => { if (sessions) sessions.stopAll(); });
+    step(() => { if (terminals) terminals.dispose(); });
+    step(() => { if (chat) chat.dispose(); });
+    step(() => { if (mood) mood.dispose(); });
+    step(() => { if (voice) voice.dispose(); });
   });
 
   app.on('activate', () => {

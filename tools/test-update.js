@@ -171,6 +171,16 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-update-'));
           '升级后第一次启动弹「这版更新了什么」（seenVersion 挡着全新安装不弹）');
     check(main.includes('delete next.update.seenVersion'),
           '设置窗保存不许把 seenVersion 冲掉（跟 announced 同一个坑）');
+
+    // ── 退场必须死透（2026-08-26 实机排查）──────────────────────────
+    // 安装器会反复查「WaifuCode.exe 还在吗」，查到就弹「无法关闭」。
+    // app.quit() 那串事件里任何一步抛了，主进程就僵在原生错误框后面永远不退
+    check(/step\(\(\) => stopTunnel/.test(main),
+          'before-quit 每步各自兜住 —— 一步抛出去进程就僵死在错误框后面');
+    check(main.includes('app.exit(0)') && main.includes('死透让路'),
+          '装新版的退场走 app.exit（不走 quit 事件链，没有东西能拦住它）');
+    check(/app:info[^]{0,400}checkUpdate\(\)/.test(main),
+          '面板一开就查一次新版 —— 不查的话开机 20 秒内看不到按钮，用户以为检测不到');
   }
 
   if (failed) {
