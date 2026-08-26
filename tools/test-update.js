@@ -234,6 +234,15 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-update-'));
     check((nsh.match(/Sleep '.slice(1,0)'/) || /Sleep 1[02]00/.test(nsh)),
           '强杀之间留足收尸时间（默认那套零间隔复查，Electron 四进程收不完）');
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    // 【最重的一条】默认卸载/升级是 RMDir /r $INSTDIR 连锅端 —— data 里的
+    // 存档/记忆/流水跟着陪葬，**升级一次失忆一次**（金丝雀实测阵亡才发现）
+    check(nsh.includes('customRemoveFiles'),
+          '顶掉默认的删旧文件 —— 不顶的话升级就是给用户洗记忆');
+    {
+      const rm = nsh.slice(nsh.indexOf('customRemoveFiles'));
+      check(!/data/.test(rm.split(String.fromCharCode(10)).filter((l) => /RMDir|Delete/.test(l)).join('')),
+            'customRemoveFiles 的删除命令一个都不许碰 data');
+    }
     // 旧版是谁：安装器动手前抄条子，新版第一次启动拿它对版本 ——
     // 0.1.x 的存档里没记 seenVersion，没条子的话升级说明一声不吭
     check(nsh.includes('prev-app-package.json') && /CopyFiles/.test(nsh),
