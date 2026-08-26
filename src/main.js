@@ -87,7 +87,10 @@ const writeLog = logfile.makeWriter(LOG_FILE);
 
 function log(...args) {
   writeLog('[' + new Date().toISOString() + '] ' + args.join(' ') + '\n');
-  console.log(...args);
+  // 控制台回显**只给开发**。打包版的 Electron 会攀附启动它的那个控制台 ——
+  // 从终端/脚本里把她拉起来，日志就整屏灌进人家窗口（实机把用户的
+  // Claude Code 界面刷满过）。文件里全都有，打包版没理由再往外吐
+  if (!app.isPackaged) console.log(...args);
 }
 
 let petWin = null;
