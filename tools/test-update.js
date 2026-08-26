@@ -183,6 +183,50 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-update-'));
           '面板一开就查一次新版 —— 不查的话开机 20 秒内看不到按钮，用户以为检测不到');
   }
 
+  console.log('\n[跳版补显] 更新说明摞历史，隔几版升上来也一条不丢');
+  {
+    const u = require('../src/updates');
+    // 打包机上从老格式（单版）一路摞上来
+    let rn = { version: '1.0.0', notes: ['三批大功能'] };  // 老格式
+    rn = u.mergeNotes(rn, '1.0.1', ['修更新安装']);
+    check(rn.history.length === 2 && rn.history[0].version === '1.0.1',
+          '老格式的单版文件也算一条历史，不丢');
+    rn = u.mergeNotes(rn, '1.0.1', ['修更新安装', '重打补的']);
+    check(rn.history.length === 2 && rn.history[0].notes.length === 2,
+          '同版重打是替换那一条，不是再摞一条');
+    for (let i = 2; i <= 14; i++) rn = u.mergeNotes(rn, '1.0.' + i, ['第' + i + '版']);
+    check(rn.history.length === 10, '历史封顶 10 版（现在 ' + rn.history.length + ' 版）');
+
+    // 用户那个场景：0.2.1 直接跳 1.0.1，两版说明都得看到
+    const rn2 = u.mergeNotes({ version: '1.0.0', notes: ['三批大功能'] }, '1.0.1', ['修更新安装']);
+    const show = u.notesSince(rn2, '0.2.1', '1.0.1');
+    check(show.length === 2 && show[0].version === '1.0.1' && show[1].version === '1.0.0',
+          '0.2.1 跳 1.0.1：两版都列出来、新的在前');
+    check(u.notesSince(rn2, '1.0.0', '1.0.1').length === 1,
+          '从 1.0.0 升上来只看 1.0.1 的（看过的不重复弹）');
+    check(u.notesSince(rn2, '1.0.1', '1.0.1').length === 0,
+          '没升级就一版都不弹');
+    check(u.notesSince({ version: '1.0.0', notes: ['x'] }, '0.2.1', '1.0.0').length === 1,
+          '没有 history 的老文件退回单版行为');
+    const main2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+    check(main2.includes('updates.notesSince'), '弹窗那头真用了 notesSince（不是自己另写一套）');
+    const pk = fs.readFileSync(path.join(__dirname, 'pack.js'), 'utf8');
+    check(pk.includes('mergeNotes'), '打包那头真用了 mergeNotes（覆盖式写法不许回来）');
+    // 弹窗排版：新增在前、修复居中、优化收尾（用户点名的顺序）
+    check(u.classifyNote('修：拖着她走会慢慢变大') === 'fix' &&
+          u.classifyNote('手机工作台第一批：扫码即入') === 'new' &&
+          u.classifyNote('合并「智能工作伙伴」三批') === 'opt',
+          '条目自动分组：修 xx→修复、功能→新增、合并整理→优化');
+    check(main2.includes('notes.html') && main2.includes('classifyNote'),
+          '升级说明开的是排版窗口（notes.html），不再是原生素弹框');
+    const nh = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'notes.html'), 'utf8');
+    check(['新增', '修复', '优化'].every((w) => nh.includes(w)) &&
+          nh.indexOf('new') < nh.indexOf('fix'),
+          '页面三组齐全、新增排最前');
+    check(nh.includes('esc('), '条目过 esc 再进 innerHTML —— 提交信息里的尖括号不许当 HTML 跑');
+    check(pk.includes('--no-merges'), '收集说明排掉合并提交（「合并 xx」跟具体条目重复）');
+  }
+
   if (failed) {
     console.log('\n\x1b[31m✗ ' + failed + ' 条没过\x1b[0m');
     process.exitCode = 1;

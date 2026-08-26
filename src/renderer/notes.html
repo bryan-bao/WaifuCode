@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>更新了什么</title>
+<style>
+  /* 跟面板一家人的暗色。数据从 query 里来，这页不碰 IPC、不需要 preload */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: #0d0f16; color: #e6e8f0;
+    font: 14px/1.7 "Microsoft YaHei", "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    padding: 20px 24px 14px;
+    border-bottom: 1px solid #1c2333;
+    background: linear-gradient(180deg, #12162200, #12162280);
+  }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header h1 b { color: #5eead4; font-weight: 700; }
+  header p { color: #8b93a7; font-size: 12.5px; margin-top: 3px; }
+  main { flex: 1; overflow-y: auto; padding: 6px 24px 16px; }
+  main::-webkit-scrollbar { width: 8px; }
+  main::-webkit-scrollbar-thumb { background: #272e3f; border-radius: 4px; }
+
+  .ver { margin-top: 18px; }
+  .ver-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+  .ver-head .v {
+    font-size: 15px; font-weight: 700; color: #5eead4;
+    background: #5eead414; border: 1px solid #5eead433;
+    padding: 1px 10px; border-radius: 999px;
+  }
+  .ver-head .d { color: #626b80; font-size: 12px; }
+
+  .grp { margin: 10px 0 4px; }
+  .tag {
+    display: inline-block; font-size: 11.5px; font-weight: 600;
+    padding: 0 8px; border-radius: 4px; line-height: 20px; margin-bottom: 6px;
+  }
+  .tag.new { color: #5eead4; background: #5eead41a; }
+  .tag.fix { color: #fca5a5; background: #f871711a; }
+  .tag.opt { color: #a5b4cf; background: #94a3b81a; }
+  ul { list-style: none; }
+  li {
+    padding: 4px 0 4px 16px; position: relative; color: #c9cfdd;
+    border-left: 2px solid #1c2333; margin-left: 4px;
+  }
+  li::before { content: ''; position: absolute; left: -4px; top: 12px;
+    width: 6px; height: 6px; border-radius: 50%; background: #38415a; }
+  .grp.new li { border-left-color: #5eead433; }
+  .grp.new li::before { background: #5eead4; }
+  .grp.fix li { border-left-color: #f8717133; }
+  .grp.fix li::before { background: #f87171; }
+
+  footer {
+    padding: 12px 24px; border-top: 1px solid #1c2333;
+    display: flex; justify-content: flex-end; gap: 10px; align-items: center;
+  }
+  footer .hint { margin-right: auto; color: #626b80; font-size: 12px; }
+  button {
+    background: #5eead4; color: #06251f; border: 0; border-radius: 8px;
+    padding: 7px 26px; font: 600 13.5px "Microsoft YaHei", sans-serif; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+</style>
+</head>
+<body>
+  <header>
+    <h1 id="title">更新好了</h1>
+    <p id="sub"></p>
+  </header>
+  <main id="list"></main>
+  <footer>
+    <span class="hint">完整玩法见面板上的「说明书」</span>
+    <button onclick="window.close()">知道了</button>
+  </footer>
+<script>
+  // 数据全在 query 里（主进程 loadFile 时塞的），这页零 IPC
+  const q = new URLSearchParams(location.search);
+  let data = [];
+  try { data = JSON.parse(q.get('data') || '[]'); } catch (_) { /* 空着也能开 */ }
+  const from = q.get('from') || '', to = q.get('to') || '';
+
+  document.getElementById('title').innerHTML =
+    '更新到 <b>v' + esc(to) + '</b>';
+  document.getElementById('sub').textContent = data.length > 1
+    ? '从 v' + from + ' 一口气跨了 ' + data.length + ' 个版本 —— 中间每一版的变化都在下面'
+    : '从 v' + from + ' 升上来，这一版的变化：';
+
+  const GRPS = [['new', '新增'], ['fix', '修复'], ['opt', '优化']];
+  const box = document.getElementById('list');
+  for (const v of data) {
+    const sec = document.createElement('section');
+    sec.className = 'ver';
+    let h = '<div class="ver-head"><span class="v">v' + esc(v.version) + '</span>' +
+            (v.at ? '<span class="d">' + esc(v.at) + '</span>' : '') + '</div>';
+    for (const [key, label] of GRPS) {
+      const items = (v.groups && v.groups[key]) || [];
+      if (!items.length) continue;
+      h += '<div class="grp ' + key + '"><span class="tag ' + key + '">' + label + '</span><ul>' +
+           items.map((n) => '<li>' + esc(n) + '</li>').join('') + '</ul></div>';
+    }
+    sec.innerHTML = h;
+    box.appendChild(sec);
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+</script>
+</body>
+</html>

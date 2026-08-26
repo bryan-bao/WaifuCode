@@ -277,7 +277,7 @@ step(0, '版本号');
     let sinceHash = null;
     try { sinceHash = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).lastCommit || null; } catch (_) { /* 第一次 */ }
     const range = sinceHash ? [sinceHash + '..HEAD'] : ['-15'];
-    const r = run('git', ['log', '--format=%s'].concat(range), { quiet: true });
+    const r = run('git', ['log', '--no-merges', '--format=%s'].concat(range), { quiet: true });
     const ver = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
     let notes = [];
     if (r.status === 0) {
@@ -286,7 +286,13 @@ step(0, '版本号');
         .filter((l) => l && !/^Merge\b/.test(l))
         .slice(0, 12);
     }
-    fs.writeFileSync(NOTES_FILE, JSON.stringify({ version: ver, notes }, null, 2), 'utf8');
+    // **摞在历史上，不覆盖**：用户可能隔好几版才更新一次（0.2.1 直接跳
+    // 1.0.1），只留最后一版的话中间那些大功能他永远看不到说明。
+    // 摞/换/封顶的规矩在 updates.mergeNotes 里（有自检守着）
+    let prevNotes = null;
+    try { prevNotes = JSON.parse(fs.readFileSync(NOTES_FILE, 'utf8')); } catch (_) { /* 第一次 */ }
+    const updatesLib = require(path.join(ROOT, 'src', 'updates'));
+    fs.writeFileSync(NOTES_FILE, JSON.stringify(updatesLib.mergeNotes(prevNotes, ver, notes), null, 2), 'utf8');
     if (notes.length) {
       console.log('');
       console.log('  这一版的更新说明（' + notes.length + ' 条，朋友装完第一次启动会看到）：');

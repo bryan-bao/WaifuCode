@@ -133,6 +133,47 @@ function createServer({ dir, log }) {
 }
 
 // 本机局域网 IPv4，给设置页显示「让朋友填这个」
+// ── 更新说明的攒法与选法（pack.js 写、main.js 读，逻辑收在这儿才测得住）──
+
+// 打包时把这一版的说明**摞在历史上**，而不是覆盖 —— 用户可能隔着好几版
+// 才更新一次（0.2.1 直接跳 1.0.1），只留最后一版的话，中间那些大功能
+// 他永远看不到说明。同版重打就替换那一条；历史封顶 10 版。
+// 一条说明归哪组：新增 / 修复 / 优化。给弹窗排版用 —— 新增放最前面，
+// 然后是修的 bug，最后是优化整理。按提交信息的关键词判：
+//   修复：开头带「修」、或提到修复/排障/坑/静默失效/没反应/乱码这类病症
+//   优化：合并/重构/整理/文档/版本号这类家务
+//   其余全算新增 —— 功能提交的措辞五花八门，兜底进「新增」比漏掉强。
+// 想让分类更准：提交信息以「修：」开头就必进修复区（惯例写进开发手册）
+function classifyNote(text) {
+  const t = String(text || '');
+  if (/^修|修复|排障|堵|坑|静默失效|没反应|乱码|误报/.test(t)) return 'fix';
+  if (/^(合并|重构|整理|打磨|优化|除旧|收拾|清理|文档|README|版本号|自检|测试)/.test(t) || /不入库|gitignore/.test(t)) return 'opt';
+  return 'new';
+}
+
+function mergeNotes(prev, version, notes, at) {
+  const old = prev && typeof prev === 'object' ? prev : {};
+  // 老格式（单版）也算一条历史 —— 升级打包机上的旧文件不丢
+  let hist = Array.isArray(old.history) ? old.history.slice()
+    : (old.version && Array.isArray(old.notes) ? [{ version: old.version, notes: old.notes }] : []);
+  hist = hist.filter((h) => h && h.version && cmpVer(h.version, version) !== 0);
+  hist.unshift({ version, notes: notes || [], at: at || new Date().toISOString().slice(0, 10) });
+  hist.sort((a, b) => cmpVer(b.version, a.version));
+  return { version, notes: notes || [], history: hist.slice(0, 10) };
+}
+
+// 升级后弹窗该给他看哪几版：seen（他上次用的）< v <= cur（现在装的），
+// 新的在前。没有 history 的老文件退回单版行为。
+function notesSince(rn, seenVer, curVer) {
+  if (!rn) return [];
+  const hist = Array.isArray(rn.history) && rn.history.length ? rn.history
+    : (rn.version && Array.isArray(rn.notes) ? [{ version: rn.version, notes: rn.notes }] : []);
+  return hist
+    .filter((h) => h && Array.isArray(h.notes) && h.notes.length &&
+                   cmpVer(h.version, seenVer) > 0 && cmpVer(h.version, curVer) <= 0)
+    .sort((a, b) => cmpVer(b.version, a.version));
+}
+
 function lanIPs() {
   const out = [];
   const ifs = os.networkInterfaces();
@@ -213,6 +254,7 @@ function download(source, manifest, destDir) {
 }
 
 module.exports = {
+  mergeNotes, notesSince, classifyNote,
   cmpVer, bumpVer, parseArtifact, newestArtifact, sha256File, manifestFor,
   createServer, lanIPs, normalizeSource, fetchLatest, download, ART_RE,
 };

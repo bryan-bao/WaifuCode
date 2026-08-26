@@ -3587,13 +3587,25 @@ if (!app.requestSingleInstanceLock()) {
       const seen = (loadConfig().update || {}).seenVersion || '';
       if (seen && seen !== cur) {
         const rn = JSON.parse(fs.readFileSync(path.join(ROOT, 'release-notes.json'), 'utf8'));
-        if (rn && rn.version === cur && Array.isArray(rn.notes) && rn.notes.length) {
-          dialog.showMessageBox({
-            type: 'info',
-            title: '更新到 v' + cur,
-            message: '从 v' + seen + ' 更新到 v' + cur + '，这一版：',
-            detail: rn.notes.map((n) => '· ' + n).join(String.fromCharCode(10)),
-            buttons: ['知道了'],
+        // **跳版也要补显**：从 0.2.0 直接升到 1.0.1 的人，中间每一版的
+        // 说明都得让他看到 —— 挑出 seen 到 cur 之间的每一版、新的在前，
+        // 每版里再按「新增 → 修复 → 优化」分组（原生弹框排不了版，
+        // 开一个独立窗口，样式跟面板一家人）
+        const show = updates.notesSince(rn, seen, cur);
+        if (show.length) {
+          const payload = show.map((h) => {
+            const g = { new: [], fix: [], opt: [] };
+            for (const n of h.notes) g[updates.classifyNote(n)].push(n);
+            return { version: h.version, at: h.at || '', groups: g };
+          });
+          const nw = new BrowserWindow({
+            width: 560, height: 640, minWidth: 460, minHeight: 400,
+            title: '更新到 v' + cur, backgroundColor: '#0d0f16',
+            autoHideMenuBar: true, icon: iconOr(APP_ICON, undefined),
+            webPreferences: { contextIsolation: true, nodeIntegration: false },
+          });
+          nw.loadFile(path.join(__dirname, 'renderer', 'notes.html'), {
+            query: { from: seen, to: cur, data: JSON.stringify(payload) },
           });
         }
       }
