@@ -560,7 +560,7 @@ function wirePlay() {
     quiet = Boolean(e.on);
     // 专注期间「到日子了」那句也别冒出来 —— 不挡的话它会被下面那层吞掉台词，
     // 但里程碑已经算响过了，等于白白错过一次
-    if (mood) mood.quiet = quiet;
+    if (mood) mood.quiet = quiet || fsQuiet;
     log('[play] ' + (quiet ? '安静模式开（专注中，她不吵你）' : '安静模式关'));
   });
 
@@ -1270,6 +1270,8 @@ function startFullscreenWatch() {
         const m = err ? null : /^FS ([01])/m.exec(String(out));
         const was = fsQuiet;
         fsQuiet = desk.fsDebounce(fsState, Boolean(m && m[1] === '1'));
+        // 勿扰也喂给心情系统：里程碑/羁绊道喜这种一次性的事，别在全屏里消费掉
+        if (mood) mood.quiet = quiet || fsQuiet;
         if (fsQuiet !== was) log('[fs] 全屏勿扰' + (fsQuiet ? '开（前台全屏了，她闭嘴）' : '关'));
       });
   }, 45 * 1000);
