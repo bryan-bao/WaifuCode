@@ -225,6 +225,17 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-update-'));
           '页面三组齐全、新增排最前');
     check(nh.includes('esc('), '条目过 esc 再进 innerHTML —— 提交信息里的尖括号不许当 HTML 跑');
     check(pk.includes('--no-merges'), '收集说明排掉合并提交（「合并 xx」跟具体条目重复）');
+    // 安装器加固：弹「无法关闭」的逻辑跑在**新安装包**里 —— 把它换成
+    // 「温柔一刀 + 强杀两刀 + 永不弹框」，老版本升上来这一跳也不再卡
+    const nsh = fs.readFileSync(path.join(__dirname, '..', 'build', 'installer.nsh'), 'utf8');
+    check(nsh.includes('customCheckAppRunning') && /taskkill .f/.test(nsh),
+          '自定义了应用还在跑的处理：强杀兜底');
+    check(!/MessageBox/.test(nsh), '永不弹「无法关闭」那个框（桌宠没有没保存的文档，直接请走）');
+    check((nsh.match(/Sleep '.slice(1,0)'/) || /Sleep 1[02]00/.test(nsh)),
+          '强杀之间留足收尸时间（默认那套零间隔复查，Electron 四进程收不完）');
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    check(pkg.build.nsis.include === 'build/installer.nsh',
+          'nsis.include 指到它 —— 不指的话这个文件就是摆设');
   }
 
   if (failed) {
