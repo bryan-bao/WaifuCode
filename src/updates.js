@@ -111,6 +111,9 @@ function createServer({ dir, log }) {
       name = decodeURIComponent(String(req.url || '').split('?')[0].replace(/^\/+/, ''));
     } catch (_) { return fail(400); }
 
+    // 谁来拉过要记一笔 —— 今天排障时想知道「对面那台到底够没够到我们」，
+    // 翻遍日志只有「分发开在 :47200」，一条请求记录都没有，两眼一抹黑
+    if (log) log('[update] ' + (req.socket.remoteAddress || '?') + ' 来拉 ' + (name || 'latest.json'));
     if (name === 'latest.json') {
       manifestFor(dir, cache).then((m) => {
         if (!m) return fail(404, '还没有包');
