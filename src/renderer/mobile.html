@@ -322,7 +322,7 @@
     $('projects').style.display = live ? 'none' : 'flex';
     $('task').placeholder = live ? '接着说一句（直接进那个终端）' : '要干什么活';
     $('go').textContent = live ? '发给那条线' : '派活';
-    fillQuick();   // 换了线/换了 CLI，这排命令跟着换
+    syncQuick();   // 换了线/换了 CLI，这排命令跟着换
   }
   $('target').onchange = syncTargetUI;
   $('agent').onchange = syncTargetUI; // 切到 codex 要把模型那行藏起来
@@ -456,16 +456,34 @@
   // 两家 CLI 的命令表不一样，按当前这家给（选了线就按那条线用的那家）。
   const QUICK = {
     claude: [
-      ['/rename', '给这条线改名'], ['/cost', '花了多少'], ['!git status', '改了啥'],
-      ['/context', '上下文'],
-      ['/compact', '压一压'], ['!git log --oneline -15', '最近提交'],
-      ['!npm test', '跑自检'], ['/status', '状态'], ['/todos', '待办'],
-      ['/model', '换模型'], ['/review', '过一遍代码'], ['/clear', '清空重开'],
+      { cmd: '/resume', why: '接回之前的会话' },
+      { cmd: '/model', why: '换模型', opts: [
+        ['claude-opus-5', 'Opus 5 · 主力'], ['claude-sonnet-5', 'Sonnet 5 · 快，省一半'],
+        ['claude-haiku-4-5', 'Haiku 4.5 · 最省'], ['claude-fable-5', 'Fable 5 · 最强最贵'],
+        ['default', '回默认'],
+      ] },
+      { cmd: '/cost', why: '花了多少' },
+      { cmd: '!git status', why: '改了啥' },
+      { cmd: '/context', why: '上下文' },
+      { cmd: '/compact', why: '压一压' },
+      { cmd: '!git log --oneline -15', why: '最近提交' },
+      { cmd: '!npm test', why: '跑自检' },
+      { cmd: '/status', why: '状态' },
+      { cmd: '/todos', why: '待办' },
+      { cmd: '/review', why: '过一遍代码' },
+      { cmd: '/rename', why: '给这条线改名' },
+      { cmd: '/clear', why: '清空重开' },
     ],
     codex: [
-      ['/status', '状态'], ['/diff', '改了啥'], ['/compact', '压一压'],
-      ['/usage', '用量'], ['/model', '换模型'], ['/approvals', '权限'],
-      ['/review', '过一遍代码'], ['/init', '写 AGENTS.md'], ['/new', '清空重开'],
+      { cmd: '/status', why: '状态' },
+      { cmd: '/diff', why: '改了啥' },
+      { cmd: '/compact', why: '压一压' },
+      { cmd: '/usage', why: '用量' },
+      { cmd: '/model', why: '换模型' },
+      { cmd: '/approvals', why: '权限' },
+      { cmd: '/review', why: '过一遍代码' },
+      { cmd: '/init', why: '写 AGENTS.md' },
+      { cmd: '/new', why: '清空重开' },
     ],
   };
 
@@ -485,38 +503,85 @@
     return $('agent').value === 'codex' ? 'codex' : 'claude';
   }
 
-  // 内容没变就不重画 —— 页面 3 秒刷一次，重画会把你横滑到的位置弹回开头
-  let quickSig = '';
-  function fillQuick() {
-    const box = $('quick');
-    if (!box) return;
-    const used = quickUse();
-    const who = agentNow();
-    const sorted = (QUICK[who] || QUICK.claude).map((x, i) => [x[0], x[1], i])
-      .sort((a, b) => ((used[b[0]] || 0) - (used[a[0]] || 0)) || (a[2] - b[2]));
-    const sig = who + '|' + sorted.map((x) => x[0]).join(',');
-    if (sig === quickSig) return;
-    quickSig = sig;
+  let detailAgent = 'claude';   // 正开着的那条线用的是哪家 CLI
+
+  function chip(cmd, why, onclick) {
+    const c = document.createElement('span');
+    c.className = 'chip';
+    c.innerHTML = '<b>' + esc(cmd) + '</b>' + (why ? '<i>' + esc(why) + '</i>' : '');
+    c.onclick = onclick;
+    return c;
+  }
+
+  /** 点一下**只填进输入框**，发不发你自己点。顺手记一次数，下回它排前面 */
+  function pick(inputId, text, countAs) {
+    const t = $(inputId);
+    if (!t) return;
+    t.value = text;
+    t.focus();
+    try {
+      const u = quickUse();
+      const k = countAs || text;
+      u[k] = (u[k] || 0) + 1;
+      localStorage.setItem('waifu.quickuse', JSON.stringify(u));
+    } catch (_) { /* 无痕模式之类，不记就不记 */ }
+  }
+
+  /**
+   * 有些命令在终端里会**弹一个选项面板**（/model 就是：上下选、回车确认）——
+   * 那个面板在电脑屏幕上，手机这头够不着，发过去就等于把那条线卡在面板里。
+   *
+   * 所以**面板摆在手机这边**：这儿选好，填出去的是**带参数的整条命令**
+   * （/model claude-sonnet-5），终端那头一步到位，根本不弹面板。
+   */
+  function showOpts(box, inputId, q) {
+    box.dataset.mode = 'opts';
     box.innerHTML = '';
-    for (const item of sorted) {
-      const cmd = item[0];
+    box.appendChild(chip('←', '返回', () => {
+      box.dataset.mode = ''; box.dataset.sig = ''; syncQuick();
+    }));
+    for (const o of q.opts) {
       const c = document.createElement('span');
       c.className = 'chip';
-      c.innerHTML = '<b>' + esc(cmd) + '</b><i>' + esc(item[1]) + '</i>';
+      c.textContent = o[1];
       c.onclick = () => {
-        const t = $('task');
-        t.value = cmd;      // 只填。发不发你点
-        t.focus();
-        try {
-          const u = quickUse();
-          u[cmd] = (u[cmd] || 0) + 1;
-          localStorage.setItem('waifu.quickuse', JSON.stringify(u));
-        } catch (_) { /* 无痕模式之类，不记就不记 */ }
+        box.dataset.mode = ''; box.dataset.sig = '';
+        pick(inputId, q.cmd + ' ' + o[0], q.cmd);
+        syncQuick();
       };
       box.appendChild(c);
     }
+    box.scrollLeft = 0;
   }
-  fillQuick();   // 第一状态回来之前先摆上，别空着
+
+  /** 把命令排进某个框（派活卡片一处、任务对话窗口一处，共用这段） */
+  function renderQuick(boxId, inputId, who) {
+    const box = $(boxId);
+    if (!box) return;
+    if (box.dataset.mode === 'opts') return;   // 正摆着选项，别被刷新冲掉
+    const used = quickUse();
+    const list = (QUICK[who] || QUICK.claude)
+      .map((q, i) => ({ cmd: q.cmd, why: q.why, opts: q.opts, i }))
+      .sort((a, b) => ((used[b.cmd] || 0) - (used[a.cmd] || 0)) || (a.i - b.i));
+    // 内容没变就不重画 —— 页面 3 秒刷一次，重画会把你横滑到的位置弹回开头
+    const sig = who + '|' + list.map((q) => q.cmd).join(',');
+    if (box.dataset.sig === sig) return;
+    box.dataset.sig = sig;
+    box.innerHTML = '';
+    for (const q of list) {
+      box.appendChild(chip(q.cmd, q.why, () => {
+        if (q.opts) showOpts(box, inputId, q);
+        else pick(inputId, q.cmd);
+      }));
+    }
+  }
+
+  /** 两处一起刷：派活卡片按上面选的 CLI，任务对话窗口按那条线自己的 */
+  function syncQuick() {
+    renderQuick('quick', 'task', agentNow());
+    if (openId) renderQuick('d-quick', 'd-say', detailAgent);
+  }
+  syncQuick();   // 第一状态回来之前先摆上，别空着
 
   // 模型选完记在这台手机上 —— 电脑面板是存进配置的，手机这边只记本地，
   // 免得手机上随手一选把电脑的默认改了（那是两个人的习惯）
@@ -644,7 +709,8 @@
   // 连同你读到哪儿一起没 —— 用户实拍「我都没点收起，碰到边缘就自动收起了，
   // 都没看全」。收起来之后欠的那一刷会自动补上
   function readingNow() {
-    return Boolean(document.querySelector('.full:not([hidden])'));
+    return Boolean(document.querySelector('.full:not([hidden])') ||
+                   document.querySelector('.quick[data-mode="opts"]'));
   }
 
   async function refreshDetail() {
@@ -699,6 +765,7 @@
       '<div class="card"><h3>进度</h3><div class="tl">' + tl + '</div></div>' +
       (d.canSend
         ? '<div class="say"><div style="font-size:11px;color:var(--faint);padding:0 2px 6px">说的话会直接打进电脑上那个终端窗口，跟你走过去敲一模一样</div>' +
+          '<div class="chips quick" id="d-quick"></div>' +
           '<div class="row"><textarea id="d-say" placeholder="接着说……"></textarea>' +
           '<button id="d-send">发送</button></div><div id="d-msg" style="font-size:12px;min-height:18px;padding:4px 2px"></div></div>'
         : '<div class="empty">这个窗口已经关了，只能看历史</div>');
@@ -706,6 +773,10 @@
     $('sheet').querySelector('.term, .card').classList.add(cls); // 灯的颜色跟着状态
     // 输入框：接着上次没打完的字（草稿存在外面，重建也丢不了），
     // 失焦时把欠下的那次刷新补上
+    // 这条线用的是哪家 CLI —— 命令表按它给（两家的斜杠命令不一样）
+    detailAgent = d.agent === 'codex' ? 'codex' : 'claude';
+    renderQuick('d-quick', 'd-say', detailAgent);
+
     const sayEl = $('d-say');
     if (sayEl) {
       if (sayDraft) sayEl.value = sayDraft;
