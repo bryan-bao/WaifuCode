@@ -1831,21 +1831,24 @@ function ensureCodexHookHash() {
   if (codexHashProbing) return;
   const notifyFile = path.join(__dirname, '..', 'hooks', 'notify.js');
   const nodeBin = terminals ? terminals.node.bin : process.execPath;
-  const want = nodeBin + '|' + notifyFile;
+  // 尾巴上那个 v2 是**挂的 hook 变了**的标记：加了 UserPromptSubmit / Stop /
+  // PreCompact 三条，老存档里那个单串哈希对不上新表，必须重问一次
+  const want = nodeBin + '|' + notifyFile + '|v2';
 
   const cur = loadConfig().codex || {};
-  if (cur.hookHash && cur.hookFor === want) return; // 存过了，路径也没变
+  if (cur.hookHashes && cur.hookFor === want) return; // 存过了，路径也没变
 
   codexHashProbing = true;
   try {
     agents.probeCodexHookHash(
       { bin: agents.resolveCodexBin(), notifyFile, nodeBin },
-      (hash) => {
+      (hashes) => {
         codexHashProbing = false;
-        if (!hash) { log('[codex] 没问到 hook 的信任哈希，这次先不带（不影响干活）'); return; }
+        const n = hashes ? Object.keys(hashes).length : 0;
+        if (!n) { log('[codex] 没问到 hook 的信任哈希，这次先不带（不影响干活）'); return; }
         try {
-          config.patch({ codex: { hookHash: hash, hookFor: want } });
-          log('[codex] hook 信任哈希存好了 ' + hash.slice(7, 15) + '… 下次开窗她就能喊你了');
+          config.patch({ codex: { hookHashes: hashes, hookHash: undefined, hookFor: want } });
+          log('[codex] hook 信任哈希存好了 ' + n + ' 条，下次开窗她就能喊你了');
         } catch (_) { /* 存不上就下次再问 */ }
       }
     );

@@ -689,8 +689,16 @@ console.log('\n[16] codex 停下来问你时她要能知道（hook 参数）');
   const w = agents.codexWatchArgs(NOTIFY, NODE);
   const line = w.join(' ');
 
-  check(w.length === 6 && w.filter((x) => x === '-c').length === 3,
-        '三条 -c：一条挂 hook，两条让 Windows Terminal 也弹通知');
+  check(w.filter((x) => x === '-c').length === 6,
+        '六条 -c：四个 hook + 两条让 Windows Terminal 也弹通知');
+  for (const ev of ['PermissionRequest', 'UserPromptSubmit', 'Stop', 'PreCompact']) {
+    check(line.includes('hooks.' + ev + '='), '挂上了 ' + ev);
+  }
+  for (const tag of ['CodexAttention', 'CodexPrompt', 'CodexStop', 'CodexCompact']) {
+    check(line.includes(' ' + tag), '事件名传给了 notify.js：' + tag);
+  }
+  check(!/hooks\.(PreToolUse|PostToolUse)=/.test(line),
+        '**不挂 per-tool 的那两个** —— 每次工具调用起一个进程会明显拖慢 codex（护栏单独议）');
   check(/hooks\.PermissionRequest=/.test(line),
         '事件名是 **PascalCase**（写成 permissionRequest 的话 hooks/list 返回空，' +
         '而且零告警零错误）');
@@ -739,6 +747,91 @@ console.log('\n[16] codex 停下来问你时她要能知道（hook 参数）');
   check(withTrust.some((x) => String(x).startsWith('hooks.state')), '存过哈希就带上信任');
   check(!term.some((x) => String(x).startsWith('hooks.state')), '没存过就不带（老行为原样）');
   check(typeof agents.probeCodexHookHash === 'function', '问哈希的探针导出来了（main.js 启动时用）');
+}
+
+console.log('\n[16b] codex 也该有的那几样：信任给齐、说得出在等什么、干完翻闲着');
+{
+  // ── 信任：多条塞进**同一个** hooks.state（分成几个 -c 会互相顶掉）──
+  const H = 'sha256:' + '0'.repeat(64);
+  const t = agents.codexTrustArgs({ 'C:\\<session-flags>\\config.toml:stop:0:0': H,
+                                    'C:\\<session-flags>\\config.toml:pre_compact:0:0': H });
+  check(t.length === 2 && t[0] === '-c' && (t[1].match(/trusted_hash/g) || []).length === 2,
+        '两条信任 → **一条 hooks.state 里两项**（分开给的话后一条把前一条整表顶掉）');
+  check(t[1].startsWith('hooks.state={') && t[1].includes("'C:") && t[1].includes('"sha256:'),
+        "key 走 TOML 字面串（单引号，里面有反斜杠）、hash 走双引号串 —— 反过来静默失效");
+  check(agents.codexTrustArgs({ k: 'sha256:xx' }).length === 0, '哈希形状不对 → 不给（宁可不带）');
+  check(agents.codexTrustArgs({ "o'brien": H }).length === 0, 'key 里有单引号 → 跳过，不拼出会解析失败的串');
+  check(agents.codexTrustArgs(null).length === 0 && agents.codexTrustArgs({}).length === 0, '没有就不给');
+  check(agents.codexTrustArgs(H).length === 2, '老存档里那个单串也认（当成 permission_request 那条）');
+
+  // ── 在等什么：载荷翻成一句人话，拿不到就闭嘴 ──
+  const ask = agents.codexAskText;
+  check(ask({ tool_name: 'shell', tool_input: { command: ['bash', '-lc', 'npm test'] } }) === 'npm test',
+        "shell 只念真正要跑的那截（['bash','-lc',…] 前两个是壳）");
+  check(ask({ tool_name: 'shell', tool_input: { command: 'git push' } }) === 'git push', '字符串形态的命令也认');
+  const patch = ask({ tool_name: 'apply_patch', tool_input: {
+    input: '*** Begin Patch\n*** Update File: src/a.js\n@@\n-x\n+y\n*** End Patch' } });
+  check(patch.includes('a.js') && !patch.includes('+y') && !patch.includes('@@'),
+        '**改文件只报文件名** —— 补丁原文绝不外传（手机上那条同款规矩）');
+  check(ask({ tool_name: 'web_search' }) === 'web_search', '别的工具至少报个工具名');
+  check(ask({}) === '' && ask(null) === '',
+        '**载荷没喂过来就是空串** —— 上游照旧只说「那边在等你确认」，不瞎编在等什么');
+
+  // ── 状态灯 / 时间线：hook 没送到时，盯档案也得把这两件事补上 ──
+  const L = (type, payload) => JSON.stringify({ timestamp: 'x', type, payload });
+  const rf2 = path.join(TMP, 'status.jsonl');
+  const tm2 = new TerminalManager({ storeDir: TMP, getConfig: () => ({}), log: () => {} });
+  const sp = { id: 'st', name: 'x', dir: TMP, task: '', sessionId: 's-st', windowName: 'w-st',
+               title: 'WaifuCode · x', agent: 'codex', codexFile: rf2, codexSessionId: 'id-st',
+               codexClaimed: true, codexOffset: 0 };
+  fs.writeFileSync(path.join(TMP, 'terminals', 'st.json'), JSON.stringify(sp), 'utf8');
+  fs.writeFileSync(rf2, '', 'utf8');
+  const r = tm2._makeRecord(sp, { pid: 1, status: 'idle' });
+  tm2.items.set('st', r);
+
+  // ① 空窗口：你敲了第一句 → 该认得出在干活
+  fs.appendFileSync(rf2, L('event_msg', { type: 'user_message', message: '看一下这个报错' }) + '\n');
+  tm2._codexWatch(r);
+  check(r.status === 'running',
+        '**空窗口敲第一句就认得出在干活** —— 原来一直显示「闲着」，你在里面敲半天她也不知道');
+
+  // ② 报错：留一句原文，进时间线
+  fs.appendFileSync(rf2, L('event_msg', { type: 'error', message: '连不上服务器' }) + '\n');
+  tm2._codexWatch(r);
+  check(r.lastError === '连不上服务器' &&
+        (r.timeline || []).some((e) => e.kind === 'error' && e.text === '连不上服务器'),
+        '报错留原文并进时间线（原来 codex 线只有个数字）');
+
+  // ③ 一轮干完：灯翻「闲着」，她说的话进时间线
+  fs.appendFileSync(rf2, L('event_msg', { type: 'task_complete', turn_id: 't1', last_agent_message: '查完了' }) + '\n');
+  tm2._codexWatch(r);
+  check(r.status === 'idle',
+        '**一轮干完 → 翻「闲着」** —— 原来 codex 线一路「干着呢」到关窗，干完也不熄');
+  check((r.timeline || []).some((e) => e.kind === 'her' && e.text === '查完了'),
+        '她的汇报进时间线（手机上点进任务原来只看得到自己说的话）');
+
+  // ④ 等确认时她在等什么：hook 那条路
+  tm2.onHookEvent({ waifuEvent: 'CodexAttention', waifuTermId: 'st',
+                tool_name: 'shell', tool_input: { command: ['bash', '-lc', 'rm -rf build'] } });
+  check(r.status === 'waiting' && r.waitDetail === 'rm -rf build',
+        '**说得出在等什么**（原来只有干巴巴一句「那边在等你确认」）');
+  check((r.timeline || []).some((e) => e.kind === 'wait' && e.text.includes('rm -rf build')),
+        '在等什么也进时间线');
+
+  // ⑤ 上下文满了：codex 那条走 claude 同一个出口
+  const before = r.compactions || 0;
+  tm2.onHookEvent({ waifuEvent: 'CodexCompact', waifuTermId: 'st' });
+  check((r.compactions || 0) === before + 1,
+        '**上下文满了也喊你了** —— 原来这个信号 codex 线完全没有（面板上压缩次数永远是 0）');
+
+  // ⑥ Stop hook：直接翻闲着；但不许把「等你确认」踩掉
+  r.status = 'running';
+  tm2.onHookEvent({ waifuEvent: 'CodexStop', waifuTermId: 'st' });
+  check(r.status === 'idle', 'Stop 送到了就立刻翻闲着（不用等 3 秒那一拍）');
+  r.status = 'waiting';
+  tm2.onHookEvent({ waifuEvent: 'CodexPrompt', waifuTermId: 'st', prompt: '接着改' });
+  check(r.status === 'waiting',
+        '**等你确认时不许被这些事件踩回 running** —— 那条线是真停着的');
 }
 
 console.log('\n[17] 这次给了什么权限，要说得出人话');

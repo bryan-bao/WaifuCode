@@ -121,21 +121,85 @@ function codexPermWords(mode) {
  * 系统通知。走的是终端转义序列，跟 hook 那条互不影响 —— hook 万一没被信任，
  * 至少这条还在。
  */
+/**
+ * 挂哪些 hook。**加一个就得重新问一次信任哈希**（main.js 的 want 里带了版本号）。
+ *
+ * 只挂「一轮一次或更少」的四个 —— 每触发一次就要起一个 node 进程，
+ * PreToolUse / PostToolUse 是**每次工具调用**都触发，挂上会明显拖慢 codex，
+ * 所以护栏和「命令跑挂了」那两条仍然是 claude 线独有（单独议）。
+ *
+ * 事件名在 hooks.X 里是 **PascalCase**（实测 codex 0.149 认的全名单：
+ * PreToolUse / PermissionRequest / PostToolUse / PreCompact / PostCompact /
+ * SessionStart / SessionEnd / UserPromptSubmit / SubagentStart / SubagentStop / Stop）。
+ * 第二个字段是给 notify.js 的事件名 —— 桌宠那头按它分岔（terminals.js 的 _onHook）。
+ */
+const CODEX_HOOKS = [
+  ['PermissionRequest', 'CodexAttention'], // 停下来等你确认（还带上在等什么）
+  ['UserPromptSubmit', 'CodexPrompt'],     // 你敲了一句 → 空窗口也认得出在干活
+  ['Stop', 'CodexStop'],                   // 一轮干完 → 灯翻「闲着」
+  ['PreCompact', 'CodexCompact'],          // 上下文满了在压缩 → 该收尾开新线了
+];
+
 function codexWatchArgs(notifyJs, nodeBin) {
   const js = String(notifyJs || '').replace(/\\/g, '/');
   const exe = String(nodeBin || process.execPath).replace(/\\/g, '/');
   // 单引号是 TOML 字面串的定界符，路径里真有单引号就没法转义了 —— 宁可不挂
   if (!js || js.includes("'") || exe.includes("'")) return [];
   // 路径可能带空格（装到 C:\Program Files\… 之类），命令里得自己包一层双引号
-  const cmd = '"' + exe + '" "' + js + '" CodexAttention';
-  return [
-    '-c', "hooks.PermissionRequest=[{matcher='*',hooks=[{type='command',command='" +
-          cmd + "',timeout=5}]}]",
+  const out = [];
+  for (const [ev, tag] of CODEX_HOOKS) {
+    const cmd = '"' + exe + '" "' + js + '" ' + tag;
+    out.push('-c', 'hooks.' + ev + "=[{matcher='*',hooks=[{type='command',command='" +
+             cmd + "',timeout=5}]}]");
+  }
+  return out.concat([
     // 顺带让 Windows Terminal 也弹一个系统通知：hook 那条要是没被信任，
     // 至少这条还在。这条不需要任何信任
     '-c', "tui.notifications=['approval-request']",
     '-c', "tui.notification_condition='always'",
-  ];
+  ]);
+}
+
+/**
+ * codex 停下来问「能不能干这件事」时，把它的载荷翻成一句能直接念的中文。
+ *
+ * 字段名跟 Claude Code 那套是**一样的**（tool_name / tool_input —— codex 的
+ * hook 载荷结构体里就是这两个名字，二进制里搜得到）。
+ *
+ * 【拿不到就返回空串】codex 的 hook 不保证把载荷喂到 stdin。喂不到时上游
+ * 照旧只说「那边在等你确认」—— **绝不瞎编在等什么**，那比不说更糟。
+ */
+function codexAskText(ev) {
+  const o = ev || {};
+  const inp = o.tool_input || o.toolInput || {};
+  const name = String(o.tool_name || o.toolName || '').trim();
+  let text = '';
+
+  // ① 要跑命令：codex 的 shell 调用长这样 ['bash','-lc','npm test']，
+  //    真正要跑的是最后那截 —— 前面两个是壳，念出来是噪音
+  const cmd = inp.command != null ? inp.command : inp.cmd;
+  if (Array.isArray(cmd)) {
+    const parts = cmd.filter((x) => typeof x === 'string');
+    text = (parts.length >= 3 && /^-[lc]{1,2}$/.test(parts[1])) ? parts[parts.length - 1] : parts.join(' ');
+  } else if (typeof cmd === 'string') text = cmd;
+
+  // ② 要改文件（apply_patch）：补丁原文绝不外传，只报文件名
+  if (!text && typeof inp.input === 'string') {
+    const files = {};
+    collectPatchFiles(inp.input, files);
+    const names = Object.keys(files).map((p) => p.split(/[\\/]/).pop());
+    if (names.length) {
+      text = '改文件：' + names.slice(0, 3).join('、') +
+             (names.length > 3 ? ' 等 ' + names.length + ' 个' : '');
+    }
+  }
+  // ③ 别的工具：有路径报路径，没有就报工具名
+  if (!text) {
+    const p = inp.path || inp.file_path || inp.filePath;
+    if (typeof p === 'string' && p) text = p.split(/[\\/]/).pop();
+  }
+  if (!text && name) text = name;
+  return String(text).replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
 /**
@@ -164,10 +228,26 @@ function codexWatchArgs(notifyJs, nodeBin) {
 // 拼出来的 key 就跟 codex 报的对不上，于是信任静默失效
 const CODEX_HOOK_KEY = 'C:\\<session-flags>\\config.toml:permission_request:0:0';
 
-function codexTrustArgs(hash) {
-  if (!hash || !/^sha256:[0-9a-f]{64}$/.test(String(hash))) return [];
-  return ['-c', "hooks.state={'" + CODEX_HOOK_KEY + "'={trusted_hash=" +
-                JSON.stringify(String(hash)) + '}}'];
+/**
+ * 一次把所有 hook 的信任都给齐。收 { key: hash } 这张表（老存档里是单个
+ * 字符串，当成 permission_request 那条兼容掉）。
+ *
+ * 【写法差一个引号就整段失效，而且是静默的】key **必须**是 TOML 字面串
+ * （单引号，里面有反斜杠）；hash **必须**是双引号串。多条塞进**同一个**
+ * hooks.state 里 —— 分成几个 -c 的话后一个会把前一个整表顶掉。
+ * 实测（0.149）：四条一起给，hooks/list 四条全 trusted。
+ */
+function codexTrustArgs(hashes) {
+  const map = (hashes && typeof hashes === 'object') ? hashes
+    : (typeof hashes === 'string' && hashes ? { [CODEX_HOOK_KEY]: hashes } : null);
+  if (!map) return [];
+  const parts = [];
+  for (const [k, h] of Object.entries(map)) {
+    if (!k || k.includes("'")) continue;
+    if (!/^sha256:[0-9a-f]{64}$/.test(String(h))) continue;
+    parts.push("'" + k + "'={trusted_hash=" + JSON.stringify(String(h)) + '}');
+  }
+  return parts.length ? ['-c', 'hooks.state={' + parts.join(',') + '}'] : [];
 }
 
 /**
@@ -204,9 +284,15 @@ function probeCodexHookHash({ bin, notifyFile, nodeBin, timeoutMs = 9000 }, done
       if (!line.trim()) continue;
       let j; try { j = JSON.parse(line); } catch (_) { continue; }
       if (j.id !== 2) continue;
-      const hooks = ((((j.result || {}).data || [])[0] || {}).hooks) || [];
-      const hit = hooks.find((h) => h && h.eventName === 'permissionRequest');
-      finish(hit && hit.currentHash ? String(hit.currentHash) : null);
+      // 四个 hook 可能分在几组里回来，全摊平 —— 只看 data[0] 的话会漏
+      const hooks = [].concat(...(((j.result || {}).data) || []).map((g) => (g && g.hooks) || []));
+      const map = {};
+      for (const h of hooks) {
+        if (h && h.key && /^sha256:[0-9a-f]{64}$/.test(String(h.currentHash || ''))) {
+          map[h.key] = String(h.currentHash);
+        }
+      }
+      finish(Object.keys(map).length ? map : null);
     }
   });
 
@@ -461,8 +547,10 @@ function collectPatchFiles(patch, files) {
 /**
  * 从 fromOffset 往后读一段档案：这段时间里她干了什么。
  *
- * claude 的监督靠 hook 推事件；codex 的 hook 只挂了「等你确认」那一个（见 codexWatchArgs —— 挂多了每一下都要起一个 node 进程，而 codex 是阻塞等它的），
- * 「她干到哪一步了」还是靠读档案：它的会话档案是**实时**写的，
+ * claude 的监督靠 hook 推事件；codex 那边只挂了四个「一轮一次或更少」的
+ * （见 CODEX_HOOKS —— per-tool 的挂上去每一下都要起一个 node 进程，而 codex 是
+ * 阻塞等它的），所以「她干到哪一步了、说了什么、动了几个文件」还是靠读档案：
+ * 它的会话档案是**实时**写的，
  * 每一轮都有现成的记号：
  *   · task_complete —— 一轮干完，**last_agent_message 就是她这轮最后说的话**
  *     （出错的轮可能是 null）
@@ -485,7 +573,7 @@ function collectPatchFiles(patch, files) {
  */
 function codexGlance(file, fromOffset) {
   const start = Math.max(0, Number(fromOffset) || 0);
-  const empty = (off) => ({ nextOffset: off, turns: 0, toolCount: 0, errors: 0, lastSaid: '', lastPrompt: '', files: {} });
+  const empty = (off) => ({ nextOffset: off, turns: 0, toolCount: 0, errors: 0, lastSaid: '', lastPrompt: '', lastError: '', files: {} });
   let buf = null;
   let got = 0;
   try {
@@ -548,6 +636,10 @@ function codexGlance(file, fromOffset) {
       }
     } else if (p.type === 'error') {
       out.errors++;
+      // 报错留一句原文 ——「一直连不上服务器」比「报了 3 次错」可决策得多。
+      // claude 线一直有（PostToolUse 里抠 tool_response），codex 线原来只有个数字
+      const m = String(p.message || p.error || '').replace(/\s+/g, ' ').trim();
+      if (m) out.lastError = m.slice(0, 160);
     } else if (p.type === 'user_message' && p.message) {
       out.lastPrompt = pickPrompt(p.message) || out.lastPrompt;
     } else if (p.type === 'message' && p.role === 'user' && Array.isArray(p.content)) {
@@ -754,7 +846,7 @@ function codexModelOf(file) {
 }
 
 module.exports = {
-  onPath, resolveCodexBin, codexInstalled, codexArgs, PERM, codexPermWords, codexWatchArgs, codexTrustArgs, probeCodexHookHash,
+  onPath, resolveCodexBin, codexInstalled, codexArgs, PERM, codexPermWords, codexWatchArgs, codexTrustArgs, probeCodexHookHash, codexAskText,
   codexSessionsRoot, findCodexSession, codexUsage, codexPriceFor, codexGlance, pickPrompt,
   codexChatArgs, codexGreetArgs, codexPriceUsage, findRolloutById, codexModelOf, codexTurns,
 };

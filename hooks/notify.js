@@ -92,6 +92,7 @@ process.stdin.on('error', send); // stdin 压根没接上（codex 那条可能�
 // 读到一半就发等于送残包，SessionEnd 丢了 reason 会绕过「/clear、/resume
 // 不算干完」那道闸、把窗口误翻成 done（评审实测复现过）。
 // claude 的事件等不到 end 就放弃这单 —— 宁可不发（_sweep 有兜底），不发残包
-if (EVENT === 'CodexAttention') setTimeout(send, 1200);
+// codex 那几条（CodexAttention / CodexPrompt / CodexStop / CodexCompact）全走这条
+if (EVENT.indexOf('Codex') === 0) setTimeout(send, 1200);
 // 真正的死线：send() 里那发 HTTP 自己有 800ms 超时，再留点余量
 setTimeout(bail, 2500);

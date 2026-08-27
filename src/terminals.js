@@ -643,7 +643,7 @@ class TerminalManager extends EventEmitter {
       // 让那个 hook 被信任（不信任 = 静默不跑）。main.js 启动时问过一次存在
       // config 里；还没问到就先不带，这次窗口只是没有「等你确认」的提醒
       codexHookHash: agent === 'codex'
-        ? ((this.getConfig().codex || {}).hookHash || undefined) : undefined,
+        ? ((this.getConfig().codex || {}).hookHashes || undefined) : undefined,
       codexSessionId: codexSessionId || undefined,
       codexFile: codexFile || undefined,
       // claude 线「接着聊」续写的是**同一份**会话记录，里面躺着旧窗口已经
@@ -1118,13 +1118,44 @@ class TerminalManager extends EventEmitter {
        */
       case 'CodexAttention': {
         rec.status = 'waiting';
+        // 载荷喂过来了就说清**在等什么**（claude 线一直有，codex 线原来
+        // 只有干巴巴一句「那边在等你确认」）。喂不到就留空 —— 不瞎编
+        const what = agents.codexAskText(ev);
+        if (what) {
+          rec.waitDetail = what;
+          this._timeline(rec, 'wait', '在等你确认：' + what);
+        }
         this.emit('change');
         this.emit('attention', {
           id: rec.id, name: rec.name, kind: 'confirm',
           text: '「' + rec.name + '」那边在等你确认。',
+          detail: rec.waitDetail || undefined,
         });
         break;
       }
+
+      /**
+       * 你在 codex 窗口里敲了一句。
+       *
+       * 【为什么只动状态不动计数】codex 的轮数/工具数/文件是**盯档案**数出来的
+       * （_codexWatch），这儿再数一遍就是双重计数。这条只干一件事：
+       * 让「开着没派活的空窗口」也能被认出在干活 —— 原来那种窗口永远显示
+       * 「闲着」，你在里面敲半天她都不知道。
+       */
+      case 'CodexPrompt': {
+        if (rec.status !== 'waiting') rec.status = 'running';
+        const p = String(ev.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        if (p) { rec.lastPrompt = p; this._timeline(rec, 'you', p); }
+        this.emit('change');
+        break;
+      }
+
+      // 一轮干完 → 灯翻「闲着」（claude 的 Stop 同款）。账和汇报仍归
+      // _codexWatch —— 它读了档案才知道这轮说了什么、动了几次工具
+      case 'CodexStop':
+        if (rec.status === 'running') rec.status = 'idle';
+        this.emit('change');
+        break;
 
       case 'Notification': {
         const msg = String(ev.message || '');
@@ -1150,6 +1181,7 @@ class TerminalManager extends EventEmitter {
 
       // 上下文满了在压缩 —— 这正是「她开始忘事、账单开始飙」的信号点，
       // 也是收尾开新线的最佳时机。原来这个时刻完全静默
+      case 'CodexCompact':   // codex 的 PreCompact，同一件事同一套话
       case 'PreCompact':
         rec.compactions = (rec.compactions || 0) + 1;
         this.emit('attention', {
@@ -1756,11 +1788,25 @@ class TerminalManager extends EventEmitter {
     // codex 在动了（新工具/新轮次落盘）→「在等你确认」翻回「干着呢」。
     // 不翻的话 waiting 卡死到关窗：面板一直喊「等你确认」，她的姿态也被
     // 这条僵尸 waiting 一直占着（waiting 权重最高，别的窗抢不过）——
-    // codex 只挂了 PermissionRequest 一个 hook，「批准了」没有事件，
+    // codex 挂的四个 hook 里**没有「批准了」这个事件**（PermissionRequest 只在
+    // 问你的那一刻来一次），
     // 但批准之后必然有工具动静，档案里看得见（评审抓的）
     if (rec.status === 'waiting' && (g.toolCount > 0 || g.turns > 0)) {
       rec.status = 'running';
       this.emit('change');
+    }
+    // 档案在长 = 她在干活。**hook 没送到时的兜底**（codex 的 hook 要被信任
+    // 才跑，用户手动改过 ~/.codex 的话可能不跑）：空窗口原来永远「闲着」，
+    // 你在里面敲半天她也不知道。这一批里已经有轮次收尾的不算 —— 那种下面
+    // 会直接翻「闲着」，先 running 再 idle 是白闪一下
+    if (rec.status !== 'waiting' && !g.turns &&
+        (g.lastPrompt || g.toolCount > 0 || g.errors > 0)) {
+      rec.status = 'running';
+    }
+    // 报错留一句原文（面板和手机的时间线靠它）—— 原来 codex 线只有个数字
+    if (g.lastError) {
+      rec.lastError = g.lastError;
+      this._timeline(rec, 'error', g.lastError);
     }
     // codex 线没有 hook，「卡住」的动静判据靠档案在长
     rec.lastHookAt = Date.now();
@@ -1813,6 +1859,9 @@ class TerminalManager extends EventEmitter {
       const gap = (cfg.minGapSec || 20) * 1000;
       const tooSoon = Boolean(rec.lastReportAt && Date.now() - rec.lastReportAt < gap);
       rec.lastReport = text;
+      // 进时间线 —— 跟 _report 里那句同一个位置。原来 codex 线的时间线上
+      // **只有「你说了什么」**，她汇报的一句都没有（手机上点进任务只看到自己）
+      this._timeline(rec, 'her', text);
       if (!tooSoon) rec.lastReportAt = Date.now();
 
       this.emit('report', {
@@ -1830,6 +1879,11 @@ class TerminalManager extends EventEmitter {
         speak: cfg.speak !== false,
       });
     }
+
+    // 一轮干完 → 灯翻「闲着」（claude 的 Stop 同款）。codex 的 Stop hook
+    // 要是送到了，这儿早就是 idle 了；没送到就靠这句兜底 ——
+    // 原来 codex 线**一路「干着呢」到关窗**，干完也不熄
+    if (rec.status === 'running') rec.status = 'idle';
 
     // 一轮干完把这轮的钱记进流水（有没有开口都记，跟 claude 同拍），
     // 然后把进度落盘 —— 顺序要紧：settle 先更新 costPaid，落盘才带得上
