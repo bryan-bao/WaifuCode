@@ -2122,7 +2122,19 @@ function mobileState() {
   let projects = [];
   // 按最近用过排序 + 过滤掉 registry 里的垃圾目录（Desktop/music 之类），
   // 跟桌面面板一个待遇 —— 手机上手敲目录最痛苦，chips 得端上最可能要的那几个
-  try { projects = sessions.recentProjects({ limit: 6, maxDays: 3650 }) || []; } catch (_) { /* 空着 */ }
+  // **knownProjects 给的才是真目录**（{name, path}）。recentProjects 返回的是
+  // 「WaifuCode（昨天弄的）」这种**显示串**，.name / .path 全是 undefined ——
+  // 手机上就摆出一排没字、点了还把目录框填成 undefined 的空胶囊（用户实拍）。
+  // 筛法跟 recentProjects 一样：目录里有 .git 或 package.json 才算项目，
+  // 挡掉 registry 里的 Desktop / music 这类垃圾目录
+  try {
+    projects = sessions.knownProjects()
+      .filter((p) => p.path && p.lastRun &&
+              (fs.existsSync(path.join(p.path, '.git')) ||
+               fs.existsSync(path.join(p.path, 'package.json'))))
+      .sort((a, b) => Date.parse(b.lastRun) - Date.parse(a.lastRun))
+      .slice(0, 6);
+  } catch (_) { /* 空着 */ }
   return {
     name: (cfg.persona || {}).name || '小依',
     // 翻成中文再下发（normal→平静）—— 手机页不该看到内部英文状态词

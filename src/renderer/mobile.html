@@ -314,9 +314,11 @@
     const live = $('target').value !== '';
     $('dir').parentElement.style.display = live ? 'none' : 'flex';
     $('agent').parentElement.style.display = live ? 'none' : 'flex';
-    // 模型只对 claude 有意义 —— codex CLI 不收这个参数，摆着是骗人
-    const mrow = $('model').parentElement;
-    mrow.style.display = (live || $('agent').value === 'codex') ? 'none' : 'flex';
+    // 模型只对 claude 有意义（codex CLI 不收这个参数，摆着是骗人）——
+    // 但**只能藏 model 这一个下拉，绝不能藏它那一行**：agent 和 model 是
+    // 同一个 .row2 里的两兄弟，藏整行等于把「换回 Claude」的下拉一起藏了，
+    // 选了 codex 就再也切不回来（用户实拍）
+    $('model').style.display = $('agent').value === 'codex' ? 'none' : '';
     $('projects').style.display = live ? 'none' : 'flex';
     $('task').placeholder = live ? '接着说一句（直接进那个终端）' : '要干什么活';
     $('go').textContent = live ? '发给那条线' : '派活';
@@ -345,6 +347,7 @@
     const pj = $('projects');
     pj.innerHTML = '';
     for (const p of (s.projects || []).slice(0, 6)) {
+      if (!p || !p.name || !p.path) continue;   // 空胶囊点不动，不如不摆
       const c = document.createElement('span');
       c.className = 'chip' + ($('dir').value === p.path ? ' on' : '');
       c.textContent = p.name;
@@ -453,7 +456,8 @@
   // 两家 CLI 的命令表不一样，按当前这家给（选了线就按那条线用的那家）。
   const QUICK = {
     claude: [
-      ['/cost', '花了多少'], ['!git status', '改了啥'], ['/context', '上下文'],
+      ['/rename', '给这条线改名'], ['/cost', '花了多少'], ['!git status', '改了啥'],
+      ['/context', '上下文'],
       ['/compact', '压一压'], ['!git log --oneline -15', '最近提交'],
       ['!npm test', '跑自检'], ['/status', '状态'], ['/todos', '待办'],
       ['/model', '换模型'], ['/review', '过一遍代码'], ['/clear', '清空重开'],
