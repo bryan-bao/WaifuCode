@@ -114,6 +114,8 @@
      1) 长英文/路径必须能断（overflow-wrap: anywhere），否则整行撑破屏幕
      2) 代码块自己横向滚（pre 里不换行会顶宽，换行又毁缩进 —— 给它独立滚动条）
      3) 整块 max-width:100% + box-sizing，父容器再窄也不外溢 */
+  .quick { margin: 2px 0 8px; }
+  .quick .chip { font-size: 12px; padding: 6px 11px; }
   .tl .e .seeall {
     margin-top: 5px; font-size: 11.5px; color: var(--acc); background: none;
     border: 0; padding: 2px 0; cursor: pointer; -webkit-tap-highlight-color: transparent;
@@ -184,6 +186,9 @@
       <button id="pick" style="flex:none;padding:10px 14px;border-radius:var(--r-s);border:1px solid var(--line);background:var(--card2);color:var(--fg);font:inherit">选文件夹</button>
     </div>
     <div style="height:8px"></div>
+    <!-- 手机上敲字费劲：常用的活做成一按就填。点一下填进下面的框，
+         还能接着改（不是点了就发 —— 派活是花钱的事，得让你过一眼） -->
+    <div class="chips quick" id="quick"></div>
     <textarea id="task" placeholder="要干什么活"></textarea>
     <div class="row2">
       <select id="agent">
@@ -355,9 +360,40 @@
     $('sheet').innerHTML = '';
   }
 
+  // 手机上敲长句子太痛苦。这几条是最常按的活，一按填进任务框。
+  // **只填不发**：派活要花钱，让你看一眼再点「派活」
+  const QUICK = [
+    ['上次干到哪', '先别改东西。看一下这个项目最近的 git log 和没提交的改动，' +
+      '再翻一眼项目里的进度记录，用大白话告诉我上次干到哪儿了、下一步该干什么。'],
+    ['跑自检', '把这个项目的自检跑一遍（package.json 里的 test 那些），' +
+      '没过的告诉我是哪条、为什么，先别自己改。'],
+    ['git 状态', '看看现在的 git 状态：在哪个分支、有哪些没提交的改动。' +
+      '帮我拟一条提交信息给我过目，**先别真的提交**。'],
+    ['最近报错', '翻一下这个项目最近的日志和报错，挑最要紧的一条，' +
+      '说清楚是什么问题、在哪个文件，先别动手改。'],
+    ['接着上次', '接着上次没做完的事往下做。先说你打算怎么干，我点头了再动手。'],
+  ];
+  (function fillQuick() {
+    const box = $('quick');
+    if (!box) return;
+    for (const [label, text] of QUICK) {
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.textContent = label;
+      c.title = text;
+      c.onclick = () => {
+        $('task').value = text;
+        $('task').focus();
+        msg('填好了，看一眼就能派', 'ok');
+      };
+      box.appendChild(c);
+    }
+  })();
+
   // 这条线的完整对话（按轮切开）。**一条线只拉一次**：点第二段时直接用缓存，
   // 手机流量和电脑读盘都省了；退出详情时清掉（换条线数据就不对了）
   let fullCache = null;
+  let sayDraft = '';   // 输入框里打了一半的字。存在 DOM 外面 —— 重建冲不掉
   async function loadFull() {
     if (fullCache) return fullCache;
     const r = await fetch(api('/api/full?id=' + encodeURIComponent(openId))).then((x) => x.json());
@@ -410,8 +446,24 @@
     box.dataset.done = '1';
   }
 
+  // 详情页每次刷新都是整块重建 innerHTML —— 而 SSE 0.8 秒推一次、轮询 3 秒一次。
+  // 你正在输入框里打字，DOM 被换掉 = 输入框连同焦点一起没了，手机上键盘当场收起，
+  // 打了一半的字也丢了（用户实拍：「输入的时候自己经常退出输入了，聊不下去」）。
+  // 所以：正在打字就**整个跳过这一拍**，记个欠账，等你打完（失焦）再补刷。
+  let detailDirty = false;
+  // **只认详情页自己那个输入框。**一开始写成「任何输入框有焦点就跳过」，
+  // 结果首页的目录框/任务框一被点，详情页就一次都渲染不出来（实测：整页空白）。
+  // 这道闸只为「别打断你在详情页打字」而设，管不着别处
+  function typingNow() {
+    const el = document.activeElement;
+    return Boolean(el && el.id === 'd-say');
+  }
+
   async function refreshDetail() {
     if (!openId) return;
+    // 首次渲染永不跳过 —— 跳了就是一张白纸，比被打断严重得多
+    const first = !$('sheet').querySelector('.tl');
+    if (!first && typingNow()) { detailDirty = true; return; }
     let d = null;
     try { d = await fetch(api('/api/detail?id=' + encodeURIComponent(openId))).then((x) => x.json()); } catch (_) { return; }
     if (!d || d.error) { $('sheet').innerHTML = '<div class="empty">这条线不在了</div>'; return; }
@@ -424,7 +476,11 @@
       const hm = new Date(e.at).toTimeString().slice(0, 5);
       // 时间线上每条都是截过的（内存里存 300 字）。挂个「查看全部」，
       // 点了去会话档案里把**那一轮的完整输出**捞回来
-      const more = (e.kind === 'her' || e.kind === 'you')
+      // 一眼能看完的就别摆按钮（用户提的）：
+      //   你说的话 —— 没被截断就是全的，不用「查看全部」
+      //   她说的话 —— 时间线上是**摘要**，全文永远更长，所以留着
+      const worth = e.kind === 'her' || (e.kind === 'you' && e.cut);
+      const more = worth
         ? '<button class="seeall" data-at="' + e.at + '" data-i="' + i + '">查看全部 ▾</button>' +
           '<div class="full" id="full-' + i + '" hidden></div>'
         : '';
@@ -460,6 +516,15 @@
         : '<div class="empty">这个窗口已经关了，只能看历史</div>');
 
     $('sheet').querySelector('.term, .card').classList.add(cls); // 灯的颜色跟着状态
+    // 输入框：接着上次没打完的字（草稿存在外面，重建也丢不了），
+    // 失焦时把欠下的那次刷新补上
+    const sayEl = $('d-say');
+    if (sayEl) {
+      if (sayDraft) sayEl.value = sayDraft;
+      sayEl.oninput = () => { sayDraft = sayEl.value; };
+      sayEl.onblur = () => { if (detailDirty) { detailDirty = false; refreshDetail(); } };
+    }
+
     // 「查看全部」：sheet 每次刷新都重建 DOM，事件得跟着重挂
     for (const b of document.querySelectorAll('.tl .seeall')) {
       b.onclick = () => toggleFull(b);
@@ -596,8 +661,11 @@
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ id: to, text: task }),
         }).then((x) => x.json());
-        if (r && r.ok) { msg('说出去了，进度看下面那条线', 'ok'); $('task').value = ''; }
-        else msg((r && r.error) || '没说出去', 'err');
+        if (r && r.ok) {
+          sayDraft = ''; // 发出去了，草稿作废
+          msg('说出去了，进度看下面那条线', 'ok');
+          $('task').value = '';
+        } else msg((r && r.error) || '没说出去', 'err');
       } catch (e) { msg('网络断了？' + e.message, 'err'); }
       $('go').disabled = false;
       return;

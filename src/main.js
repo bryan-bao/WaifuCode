@@ -2029,14 +2029,34 @@ function detailWithHistory(id) {
   } catch (_) { /* 流水读不到就只给内存那份 */ }
   if (!past.length) return d;
 
-  // 合起来按时间排，同一句话不重复摆（内存那份和流水那份会有重叠）
+  // 合起来按时间排，同一句话不重复摆（内存那份和流水那份会有重叠）。
+  //
+  // 【为什么原来去重会漏】两份是同一句话，但**长得不完全一样**：流水那份
+  // 进过 journal 的净化（绝对路径压成「…」、密钥被抹），内存那份是原文、
+  // 还把连续空白压成了一个空格。拿前 40 个字符当钥匙，只要差异落在前 40 个
+  // 字里，两份就都留下 —— 手机上就是「我说一句，她的回答出现两遍」（实拍）。
+  //
+  // 【比前缀是不够的】差异可能就落在第二个字上（「把 D:\WaifuCode\src 里的…」
+  // vs「把 … 里的…」），前缀一比就分家。所以**把会被净化掉的整段抹掉再比**：
+  // 路径、被替换成「…」的那截、空白、密钥占位，一律抹平，剩下的中文/字母
+  // 才是这句话的骨架。60 秒内同 kind、骨架前 16 字一样 = 同一句。
+  // 只留**中文骨架**。路径、密钥、英文标识符、省略号、标点、空白 —— 净化会动的
+  // 全在这些里头，一律抹掉；剩下的汉字和数字才是这句话真正说了什么。
+  // （两份的差异永远是「被净化的那截」，抹了它俩就一模一样）
+  const norm = (s) => String(s).replace(/[^一-龥぀-ヿ0-9]/g, '');
   const seen = new Set();
+  const recent = [];
   const all = [...past, ...(d.timeline || [])]
     .sort((a, b) => a.at - b.at)
     .filter((e) => {
-      const k = e.kind + '|' + String(e.text).slice(0, 40);
+      const n = norm(e.text);
+      if (!n) return true; // 抹完什么都不剩（纯路径那种）：留着，别误杀
+      const k = e.kind + '|' + n.slice(0, 24);
       if (seen.has(k)) return false;
+      const head = n.slice(0, 16);
+      if (recent.some((r) => r.kind === e.kind && r.head === head && Math.abs(r.at - e.at) < 60000)) return false;
       seen.add(k);
+      recent.push({ kind: e.kind, head, at: e.at });
       return true;
     });
   return { ...d, timeline: all.slice(-40) };

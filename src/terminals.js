@@ -1239,12 +1239,15 @@ class TerminalManager extends EventEmitter {
    * 全存下来占内存，而手机上你也只看最近发生了什么
    */
   _timeline(rec, kind, text) {
-    const t = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    const raw = String(text || '').replace(/\s+/g, ' ').trim();
+    const t = raw.slice(0, 300);
     if (!t) return;
     if (!rec.timeline) rec.timeline = [];
     const last = rec.timeline[rec.timeline.length - 1];
     if (last && last.kind === kind && last.text === t) return;
-    rec.timeline.push({ at: Date.now(), kind, text: t });
+    // cut = 这条被截过。手机上靠它决定要不要摆「查看全部」——
+    // 一眼能看完的还摆个按钮是噪音（用户提的）
+    rec.timeline.push({ at: Date.now(), kind, text: t, cut: raw.length > 300 || undefined });
     if (rec.timeline.length > TIMELINE_KEEP) rec.timeline.splice(0, rec.timeline.length - TIMELINE_KEEP);
   }
 
