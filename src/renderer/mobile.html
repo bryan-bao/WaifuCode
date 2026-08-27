@@ -114,7 +114,35 @@
      1) 长英文/路径必须能断（overflow-wrap: anywhere），否则整行撑破屏幕
      2) 代码块自己横向滚（pre 里不换行会顶宽，换行又毁缩进 —— 给它独立滚动条）
      3) 整块 max-width:100% + box-sizing，父容器再窄也不外溢 */
+  /* 「有线在等你确认」的横幅。醒目但不吵：呼吸式的边框，不是刺眼的闪 */
+  .waitbar {
+    background: rgba(251,191,36,.08); border: 1px solid var(--warn);
+    border-radius: var(--r-s); color: var(--warn);
+    padding: 9px 11px; margin-bottom: 10px; font-size: 12.5px; line-height: 1.5;
+    animation: waitpulse 2.2s ease-in-out infinite;
+  }
+  @keyframes waitpulse { 50% { border-color: rgba(251,191,36,.35); } }
+  /* 等确认的卡片自己也标出来（它被排到了最前面） */
+  .term.wait { border-color: rgba(251,191,36,.55); }
+
   .quick { margin: 2px 0 8px; }
+  /* 命令跑出来的结果。跟「查看全部」一套路数：自己横滚、绝不撑破屏幕 */
+  .runout {
+    margin: 0 0 10px; padding: 8px 10px; border-radius: 9px;
+    background: rgba(255,255,255,.03); border: 1px solid var(--line);
+    max-width: 100%; box-sizing: border-box;
+  }
+  .runout .cap { display: flex; align-items: center; font-size: 11.5px; color: var(--dim); margin-bottom: 5px; }
+  .runout .cap b { color: var(--acc); font-weight: 600; }
+  .runout .cap .x {
+    margin-left: auto; background: none; border: 0; color: var(--faint);
+    font-size: 14px; padding: 0 2px; cursor: pointer;
+  }
+  .runout pre {
+    margin: 0; font-family: Consolas, Menlo, monospace; font-size: 11.5px;
+    line-height: 1.6; color: #cdd3e0; white-space: pre; overflow-x: auto;
+    max-height: 46vh; overflow-y: auto; max-width: 100%;
+  }
   .quick .chip { font-size: 12px; padding: 6px 11px; }
   .tl .e .seeall {
     margin-top: 5px; font-size: 11.5px; color: var(--acc); background: none;
@@ -202,6 +230,9 @@
     <span class="sub"><span id="net" class="off">连接中…</span><br><span id="today"></span></span>
   </header>
 
+  <!-- 有线停下来等你确认时才冒出来。摆在最上面 —— 她卡着的每一分钟都是白等 -->
+  <div class="waitbar" id="waitbar" hidden></div>
+
   <div class="card">
     <h3>派个活（就在电脑上那些终端里干）</h3>
     <select id="target"><option value="">开一条新的线</option></select>
@@ -214,6 +245,8 @@
     <!-- 手机上敲字费劲：常用的活做成一按就填。点一下填进下面的框，
          还能接着改（不是点了就发 —— 派活是花钱的事，得让你过一眼） -->
     <div class="chips quick" id="quick"></div>
+    <!-- 命令跑出来的结果就摆在这儿（她自己跑的，不惊动模型、不花钱） -->
+    <div class="runout" id="runout" hidden></div>
     <textarea id="task" placeholder="要干什么活"></textarea>
     <div class="row2">
       <select id="agent">
@@ -332,8 +365,24 @@
     // 终端列表
     const box = $('terms');
     box.innerHTML = '';
-    const list = s.terminals || [];
-    if (!list.length) { box.innerHTML = '<div class="empty">还没派活。上面派一个，进度会在这儿实时走</div>'; return; }
+    const all = s.terminals || [];
+    if (!all.length) { box.innerHTML = '<div class="empty">还没派活。上面派一个，进度会在这儿实时走</div>'; return; }
+
+    // 【等你确认的排最前面。】她卡在确认框上时，整条线是停着的 —— 你晚看一分钟
+    // 就白等一分钟。混在列表中间要往下翻才看得见，那等于没提醒（用户提的）
+    const waiting = all.filter((t) => t.status === 'waiting');
+    const list = waiting.concat(all.filter((t) => t.status !== 'waiting'));
+
+    // 页头角标 + 标题：手机锁屏回来一眼就知道「有事等你」
+    const badge = $('waitbar');
+    if (badge) {
+      badge.hidden = !waiting.length;
+      if (waiting.length) {
+        badge.textContent = '⚠ ' + waiting.length + ' 条线停下来等你确认 —— 在下面点「放行」或「拒绝」';
+      }
+    }
+    document.title = (waiting.length ? '⚠(' + waiting.length + ') ' : '') + '小依 · 手机工作台';
+
     for (const t of list) {
       let [cls, word] = STATUS[t.status] || STATUS.idle;
       const crashed = (t.status === 'done' || t.status === 'closed') && t.exitCode !== null && t.exitCode !== 0;
@@ -410,14 +459,21 @@
   //
   // 选了「接着某条线说」时，cmd 直接发过去；开新线时终端还不存在，
   // 只能先把 ask 填进任务框（新线的第一句必须是给模型的 prompt）。
+  // 【第一版错在哪 —— 记一笔】原来是把 `!git status` 这种命令**打进电脑上的
+  // 终端窗口**。命令确实跑了，可输出只出现在电脑屏幕上，手机这头一个字都
+  // 看不到（用户实测：「花多少这个命令行运行我在手机上也看不到」）。
+  //
+  // 现在：run 的这几件事由**桌宠自己跑**（/api/run，白名单里的只读命令），
+  // 结果直接回显在手机上 —— 不惊动模型、一分钱不花、还看得见。
+  // ask 那几条是真要她动脑子的，照旧填进任务框去派活。
   const QUICK = [
-    { label: '改了啥', cmd: '!git status -sb', ask: '看一下现在的 git 状态和没提交的改动，说说结论。' },
-    { label: '最近提交', cmd: '!git log --oneline -12', ask: '看一下最近十几条提交，说说这阵子在干什么。' },
-    { label: '跑自检', cmd: '!npm test', ask: '把自检跑一遍，没过的告诉我是哪条、为什么，先别自己改。' },
-    { label: '花了多少', cmd: '/cost', ask: '' },
-    { label: '上次干到哪', cmd: '', ask: '先别改东西。看一下最近的 git log 和没提交的改动，' +
+    { label: '改了啥', run: 'git-status' },
+    { label: '最近提交', run: 'git-log' },
+    { label: '跑自检', run: 'test' },
+    { label: '花了多少', local: true },   // 手机首页本来就有这个数，不用跑命令
+    { label: '上次干到哪', ask: '先别改东西。看一下最近的 git log 和没提交的改动，' +
         '再翻一眼项目里的进度记录，用大白话告诉我上次干到哪儿了、下一步该干什么。' },
-    { label: '接着上次', cmd: '', ask: '接着上次没做完的事往下做。先说你打算怎么干，我点头了再动手。' },
+    { label: '接着上次', ask: '接着上次没做完的事往下做。先说你打算怎么干，我点头了再动手。' },
   ];
 
   // 模型选完记在这台手机上 —— 电脑面板是存进配置的，手机这边只记本地，
@@ -430,6 +486,20 @@
     try { localStorage.setItem('waifu.model', $('model').value); } catch (_) { /* 同上 */ }
   };
 
+  /** 命令跑出来的结果就摆在按钮下面。用的是「查看全部」那套排版
+   *  （代码块自己横滚、不撑破屏幕），加个 ✕ 随手关掉 */
+  function showRun(title, out) {
+    const box = $('runout');
+    if (!box) return;
+    box.hidden = false;
+    box.innerHTML = '<div class="cap"><b>' + esc(title) + '</b>' +
+      '<button class="x" id="run-x">✕</button></div>' +
+      '<pre>' + esc(String(out || '')) + '</pre>';
+    const x = $('run-x');
+    if (x) x.onclick = () => { box.hidden = true; box.innerHTML = ''; };
+    box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
   (function fillQuick() {
     const box = $('quick');
     if (!box) return;
@@ -437,30 +507,37 @@
       const c = document.createElement('span');
       c.className = 'chip';
       c.textContent = q.label;
-      c.dataset.cmd = q.cmd || '';
-      c.title = q.cmd ? '直接在那条终端里跑：' + q.cmd + '（不花钱）' : q.ask;
+      c.dataset.run = q.run || '';
+      c.title = q.run ? '她自己跑一下，结果就显示在下面（不花钱）'
+              : q.local ? '看看今天花了多少' : q.ask;
       c.onclick = async () => {
-        const to = $('target').value;
-        // 选了已有的线 + 这条有命令 → 直接打进终端，不惊动模型
-        if (to && q.cmd) {
-          c.classList.add('on');
-          try {
-            const r = await fetch(api('/api/send'), {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ id: to, text: q.cmd }),
-            }).then((x) => x.json());
-            msg(r && r.ok ? '「' + q.cmd + '」发过去了，点开那条线看结果（没花钱）'
-                          : ((r && r.error) || '没发出去'), r && r.ok ? 'ok' : 'err');
-          } catch (e) { msg('网络断了？' + e.message, 'err'); }
-          setTimeout(() => c.classList.remove('on'), 600);
+        // ① 本地就有的数（花了多少）：一个字节都不用出门
+        if (q.local) {
+          showRun('今天花的钱', $('today').textContent || '（还没花）');
           return;
         }
-        // 开新线（或这条本来就要动脑子）：填进任务框，你过一眼再派
-        const text = q.ask || q.cmd;
-        if (!text) { msg('这条得先在上面选一条线', 'err'); return; }
-        $('task').value = text;
+        // ② 名单里的只读命令：桌宠自己跑，输出回显在下面
+        if (q.run) {
+          const to = $('target').value;
+          const dir = $('dir').value.trim();
+          if (!to && !dir) { msg('先选个项目目录（或者上面选一条线）', 'err'); return; }
+          c.classList.add('on');
+          showRun(q.label, '跑着呢……');
+          try {
+            const r = await fetch(api('/api/run'), {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ key: q.run, dir, id: to }),
+            }).then((x) => x.json());
+            if (r && r.ok) showRun(r.title + ' · ' + r.dir, r.out);
+            else showRun(q.label, '跑不了：' + ((r && r.why) || '不知道为什么'));
+          } catch (e) { showRun(q.label, '网络断了？' + e.message); }
+          c.classList.remove('on');
+          return;
+        }
+        // ③ 真要她动脑子的：填进任务框，你过一眼再派
+        $('task').value = q.ask;
         $('task').focus();
-        msg(to ? '填好了，点「发给那条线」' : '填好了，看一眼就能派', 'ok');
+        msg($('target').value ? '填好了，点「发给那条线」' : '填好了，看一眼就能派', 'ok');
       };
       box.appendChild(c);
     }

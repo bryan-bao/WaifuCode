@@ -39,6 +39,7 @@ function readBody(req, cap = 64 * 1024) {
 /**
  * hooks 契约（全部由 main 注入，这个模块不 require 任何业务模块）：
  *   full(id)        这条线的完整对话（按轮切开，从新到旧）
+ *   run(key,dir,id) 跑一条名单里的只读命令，输出回给手机
  *   state()            -> 整包状态（页面渲染要的全部）
  *   detail(id)         -> 这条线的详情 + 时间线（手机点开看的）
  *   dispatch(opts)     -> { ok, ... } 在电脑上开一条最小化终端线
@@ -80,6 +81,16 @@ function createMobileServer({ pageFile, token, hooks, log }) {
       if (req.method === 'GET' && pathname === '/api/detail') {
         const d = await hooks.detail(String(params.get('id') || ''));
         return d ? json(200, d) : json(404, { error: '这条线不在了' });
+      }
+
+      // 手机上跑一条**名单里的**只读命令，输出直接回给手机。
+      // 关键在「名单里的」：手机传的是 key（git-status 这种），不是命令本身 ——
+      // 真正的命令行长什么样由 main 那头的白名单说了算，这个模块不认业务规则
+      if (req.method === 'POST' && pathname === '/api/run') {
+        const body = JSON.parse(await readBody(req) || '{}');
+        const r = await hooks.run(String(body.key || ''), String(body.dir || ''), String(body.id || ''));
+        if (log) log('[mobile] 跑命令 ' + body.key + ' -> ' + ((r && r.ok) ? '成功' : (r && r.why) || '失败'));
+        return json(200, r || { ok: false, why: '跑不了' });
       }
 
       // 这条线的**完整对话**（时间线上每段的「查看全部」点的就是它）。
