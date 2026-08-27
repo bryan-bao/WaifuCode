@@ -126,21 +126,46 @@
     background: rgba(255,255,255,.03); border: 1px solid var(--line);
     max-width: 100%; box-sizing: border-box; overflow: hidden;
   }
-  .full .seg { font-size: 12.5px; line-height: 1.72; color: #d7dce8;
-    white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
-  .full .seg + .seg { margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--line); }
-  .full .seg pre, .full .seg code {
+  /* 排版按 markdown 的骨架来 —— 原来整段裸着 pre-wrap，井号星号横杠全露在
+     外面，密密麻麻读不下去（用户实拍）。**不要 pre-wrap**：段落交给 <p>，
+     换行交给 <br>，只有代码块才保原样 */
+  .full .seg { font-size: 13px; line-height: 1.78; color: #d7dce8; overflow-wrap: anywhere; }
+  .full .seg + .seg { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .full .seg p { margin: 0 0 8px; }
+  .full .seg p:last-child { margin-bottom: 0; }
+  .full .seg .h {
+    font-weight: 600; color: var(--acc); font-size: 13px;
+    margin: 12px 0 6px; padding-left: 8px; border-left: 2px solid var(--acc);
+  }
+  .full .seg .h:first-child { margin-top: 0; }
+  .full .seg .li {
+    position: relative; padding-left: 15px; margin: 3px 0;   /* 悬挂缩进：第二行跟第一行对齐 */
+  }
+  .full .seg .li::before {
+    content: '•'; position: absolute; left: 2px; color: var(--acc2);
+  }
+  .full .seg .li.n::before { content: attr(data-n); left: 0; font-size: 11px; top: 1px; }
+  .full .seg b { color: #eef1f8; font-weight: 600; }
+  .full .seg code {
     font-family: Consolas, Menlo, monospace; font-size: 11.5px;
+    background: #0a0c12; border: 1px solid var(--line); border-radius: 4px;
+    padding: 1px 5px; color: var(--acc); overflow-wrap: anywhere;
   }
   .full .seg pre {
-    margin: 6px 0; padding: 7px 9px; border-radius: 7px; background: #0a0c12;
-    overflow-x: auto; white-space: pre; max-width: 100%;
+    font-family: Consolas, Menlo, monospace; font-size: 11.5px;
+    margin: 8px 0; padding: 8px 10px; border-radius: 7px; background: #0a0c12;
+    border: 1px solid var(--line); overflow-x: auto; white-space: pre; max-width: 100%;
   }
-  .full .tools {
-    margin-top: 8px; font-size: 11px; color: var(--faint);
-    overflow-wrap: anywhere;
+  .full .tools { margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--line); }
+  .full .tools .cap { font-size: 11px; color: var(--dim); margin-bottom: 5px; }
+  /* 一个工具一块。命令可以很长（几百字符），所以 max-width 卡死 + 单行省略号
+     —— nowrap 而不限宽的话，一块就把整个容器顶破（实测量出来 522>263） */
+  .full .tools .t {
+    display: block; max-width: 100%; margin: 0 0 4px;
+    background: var(--card2); border: 1px solid var(--line); border-radius: 5px;
+    font-size: 10.5px; color: var(--faint); padding: 3px 7px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .full .tools b { color: var(--dim); font-weight: 600; }
   .full .none { font-size: 12px; color: var(--faint); }
   .files { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
   .files .f { background: var(--card2); border: 1px solid var(--line); color: var(--dim); border-radius: 6px; font-size: 11px; padding: 2px 7px; }
@@ -195,6 +220,15 @@
         <option value="claude">Claude Code</option>
         <option value="codex">Codex</option>
       </select>
+      <select id="model">
+        <option value="">模型：跟电脑上的设置走</option>
+        <option value="claude-opus-5">Opus 5 · 主力</option>
+        <option value="claude-sonnet-5">Sonnet 5 · 快，省一半</option>
+        <option value="claude-haiku-4-5">Haiku 4.5 · 最快最省</option>
+        <option value="claude-fable-5">Fable 5 · 最强也最贵</option>
+      </select>
+    </div>
+    <div class="row2">
       <select id="perm">
         <option value="">权限：默认</option>
         <option value="auto">自己判断</option>
@@ -258,11 +292,16 @@
     const live = $('target').value !== '';
     $('dir').parentElement.style.display = live ? 'none' : 'flex';
     $('agent').parentElement.style.display = live ? 'none' : 'flex';
+    // 模型只对 claude 有意义 —— codex CLI 不收这个参数，摆着是骗人
+    const mrow = $('model').parentElement;
+    mrow.style.display = (live || $('agent').value === 'codex') ? 'none' : 'flex';
     $('projects').style.display = live ? 'none' : 'flex';
     $('task').placeholder = live ? '接着说一句（直接进那个终端）' : '要干什么活';
     $('go').textContent = live ? '发给那条线' : '派活';
+    if (typeof syncQuickHint === 'function') syncQuickHint();
   }
   $('target').onchange = syncTargetUI;
+  $('agent').onchange = syncTargetUI; // 切到 codex 要把模型那行藏起来
 
   function render(s) {
     if (!s) return;
@@ -360,35 +399,82 @@
     $('sheet').innerHTML = '';
   }
 
-  // 手机上敲长句子太痛苦。这几条是最常按的活，一按填进任务框。
-  // **只填不发**：派活要花钱，让你看一眼再点「派活」
+  // 手机上敲长句子太痛苦，这几条一按就走。
+  //
+  // 【分两类，这是关键】
+  //   cmd  —— **直接打进终端的命令**，跟你在电脑前敲一模一样：不问模型、
+  //           一分钱不花、瞬间出结果（`!` 是 Claude Code 的跑命令前缀，
+  //           `/` 开头是它自己的斜杠命令）。查状态、看日志这类本来就该这么干 ——
+  //           让模型转述一遍既慢又花钱（用户点出来的）。
+  //   ask  —— 真的需要她动脑子的（"上次干到哪、下一步干什么"），才走派活。
+  //
+  // 选了「接着某条线说」时，cmd 直接发过去；开新线时终端还不存在，
+  // 只能先把 ask 填进任务框（新线的第一句必须是给模型的 prompt）。
   const QUICK = [
-    ['上次干到哪', '先别改东西。看一下这个项目最近的 git log 和没提交的改动，' +
-      '再翻一眼项目里的进度记录，用大白话告诉我上次干到哪儿了、下一步该干什么。'],
-    ['跑自检', '把这个项目的自检跑一遍（package.json 里的 test 那些），' +
-      '没过的告诉我是哪条、为什么，先别自己改。'],
-    ['git 状态', '看看现在的 git 状态：在哪个分支、有哪些没提交的改动。' +
-      '帮我拟一条提交信息给我过目，**先别真的提交**。'],
-    ['最近报错', '翻一下这个项目最近的日志和报错，挑最要紧的一条，' +
-      '说清楚是什么问题、在哪个文件，先别动手改。'],
-    ['接着上次', '接着上次没做完的事往下做。先说你打算怎么干，我点头了再动手。'],
+    { label: '改了啥', cmd: '!git status -sb', ask: '看一下现在的 git 状态和没提交的改动，说说结论。' },
+    { label: '最近提交', cmd: '!git log --oneline -12', ask: '看一下最近十几条提交，说说这阵子在干什么。' },
+    { label: '跑自检', cmd: '!npm test', ask: '把自检跑一遍，没过的告诉我是哪条、为什么，先别自己改。' },
+    { label: '花了多少', cmd: '/cost', ask: '' },
+    { label: '上次干到哪', cmd: '', ask: '先别改东西。看一下最近的 git log 和没提交的改动，' +
+        '再翻一眼项目里的进度记录，用大白话告诉我上次干到哪儿了、下一步该干什么。' },
+    { label: '接着上次', cmd: '', ask: '接着上次没做完的事往下做。先说你打算怎么干，我点头了再动手。' },
   ];
+
+  // 模型选完记在这台手机上 —— 电脑面板是存进配置的，手机这边只记本地，
+  // 免得手机上随手一选把电脑的默认改了（那是两个人的习惯）
+  try {
+    const savedModel = localStorage.getItem('waifu.model');
+    if (savedModel) $('model').value = savedModel;
+  } catch (_) { /* 无痕模式之类，不记就不记 */ }
+  $('model').onchange = () => {
+    try { localStorage.setItem('waifu.model', $('model').value); } catch (_) { /* 同上 */ }
+  };
+
   (function fillQuick() {
     const box = $('quick');
     if (!box) return;
-    for (const [label, text] of QUICK) {
+    for (const q of QUICK) {
       const c = document.createElement('span');
       c.className = 'chip';
-      c.textContent = label;
-      c.title = text;
-      c.onclick = () => {
+      c.textContent = q.label;
+      c.dataset.cmd = q.cmd || '';
+      c.title = q.cmd ? '直接在那条终端里跑：' + q.cmd + '（不花钱）' : q.ask;
+      c.onclick = async () => {
+        const to = $('target').value;
+        // 选了已有的线 + 这条有命令 → 直接打进终端，不惊动模型
+        if (to && q.cmd) {
+          c.classList.add('on');
+          try {
+            const r = await fetch(api('/api/send'), {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ id: to, text: q.cmd }),
+            }).then((x) => x.json());
+            msg(r && r.ok ? '「' + q.cmd + '」发过去了，点开那条线看结果（没花钱）'
+                          : ((r && r.error) || '没发出去'), r && r.ok ? 'ok' : 'err');
+          } catch (e) { msg('网络断了？' + e.message, 'err'); }
+          setTimeout(() => c.classList.remove('on'), 600);
+          return;
+        }
+        // 开新线（或这条本来就要动脑子）：填进任务框，你过一眼再派
+        const text = q.ask || q.cmd;
+        if (!text) { msg('这条得先在上面选一条线', 'err'); return; }
         $('task').value = text;
         $('task').focus();
-        msg('填好了，看一眼就能派', 'ok');
+        msg(to ? '填好了，点「发给那条线」' : '填好了，看一眼就能派', 'ok');
       };
       box.appendChild(c);
     }
   })();
+
+  // 选了哪条线会改变这排按钮的含义（直接跑 vs 填进框），标一下
+  function syncQuickHint() {
+    const live = $('target').value !== '';
+    for (const c of document.querySelectorAll('#quick .chip')) {
+      if (!c.dataset.cmd) continue;
+      c.style.opacity = live ? '1' : '.72';
+      c.textContent = live ? '▶ ' + c.textContent.replace(/^▶ /, '') : c.textContent.replace(/^▶ /, '');
+    }
+  }
 
   // 这条线的完整对话（按轮切开）。**一条线只拉一次**：点第二段时直接用缓存，
   // 手机流量和电脑读盘都省了；退出详情时清掉（换条线数据就不对了）
@@ -403,11 +489,46 @@
 
   /** 把 markdown 里的代码块拆出来单独用 <pre>（其余按纯文本走，不做全量 md 解析
    *  —— 手机上要的是「看清楚她说了什么」，不是排版比赛） */
+  /**
+   * 她的输出是 markdown（标题、列表、粗体、行内代码）。原来整段塞进一个
+   * pre-wrap 的 div —— 井号、星号、横杠全裸着，密密麻麻一大坨，手机上根本
+   * 读不下去（用户实拍「看着不舒服，显示也很乱」）。
+   *
+   * 这儿做一层**够用就好**的排版：代码块单独滚、标题加粗成小节、列表挂个圆点
+   * 带悬挂缩进、粗体和行内代码上色、空行分段。不做完整 markdown 解析 ——
+   * 手机上要的是「看清楚她说了什么」，不是排版比赛。
+   */
+  function inline(s) {
+    return esc(s)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  }
+
   function segHtml(text) {
     const parts = String(text).split(/```/);
-    return parts.map((p, i) => (i % 2
-      ? '<pre>' + esc(p.replace(/^[\w-]*\n/, '')) + '</pre>'
-      : esc(p))).join('');
+    return parts.map((p, i) => {
+      // 奇数段 = 三个反引号中间的代码，原样保留缩进、自己横向滚
+      if (i % 2) return '<pre>' + esc(p.replace(/^[\w-]*\n/, '').replace(/\n+$/, '')) + '</pre>';
+      const out = [];
+      let para = [];
+      const flush = () => {
+        if (para.length) out.push('<p>' + para.join('<br>') + '</p>');
+        para = [];
+      };
+      for (const raw of String(p).split('\n')) {
+        const line = raw.replace(/\s+$/, '');
+        if (!line.trim()) { flush(); continue; }
+        const h = /^#{1,6}\s+(.*)$/.exec(line);
+        if (h) { flush(); out.push('<div class="h">' + inline(h[1]) + '</div>'); continue; }
+        const li = /^\s*[-*·]\s+(.*)$/.exec(line);
+        if (li) { flush(); out.push('<div class="li">' + inline(li[1]) + '</div>'); continue; }
+        const no = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
+        if (no) { flush(); out.push('<div class="li n" data-n="' + no[1] + '.">' + inline(no[2]) + '</div>'); continue; }
+        para.push(inline(line));
+      }
+      flush();
+      return out.join('');
+    }).join('');
   }
 
   /** 时间线上那一条属于哪一轮：取「开始时间 ≤ 这条」里最近的一轮 */
@@ -422,7 +543,13 @@
   async function toggleFull(btn) {
     const box = $('full-' + btn.dataset.i);
     if (!box) return;
-    if (!box.hidden) { box.hidden = true; btn.textContent = '查看全部 ▾'; return; }
+    if (!box.hidden) {
+      box.hidden = true;
+      btn.textContent = '查看全部 ▾';
+      // 看完收起来了：把读的时候欠下的那次刷新补上（进度可能已经长了好几条）
+      if (detailDirty && !readingNow()) { detailDirty = false; refreshDetail(); }
+      return;
+    }
     box.hidden = false;
     btn.textContent = '收起 ▴';
     if (box.dataset.done) return;
@@ -433,9 +560,11 @@
     const t = turnFor(r.turns || [], Number(btn.dataset.at));
     if (!t) { box.innerHTML = '<div class="none">这一段在会话记录里没找着（记录只留最近一截）</div>'; return; }
     const segs = (t.out || []).map((x) => '<div class="seg">' + segHtml(x) + '</div>').join('');
+    // 工具排成一个个小块（原来是一长串挤成一坨，手机上没法看）
     const tools = (t.tools || []).length
-      ? '<div class="tools"><b>她动的手（' + t.tools.length + ' 次）：</b>' +
-        esc(t.tools.slice(0, 30).join(' · ')) + (t.tools.length > 30 ? ' …' : '') + '</div>'
+      ? '<div class="tools"><div class="cap">她动的手 · ' + t.tools.length + ' 次</div>' +
+        t.tools.slice(0, 24).map((x) => '<span class="t" title="' + esc(x) + '">' + esc(x) + '</span>').join('') +
+        (t.tools.length > 24 ? '<span class="t">…还有 ' + (t.tools.length - 24) + ' 次</span>' : '') + '</div>'
       : '';
     // 顶上一行交代清楚：这一轮多少段、是不是只读到一截 —— 不说的话
     // 用户以为看到的就是全部，其实开头被记录长度掐掉了
@@ -459,11 +588,18 @@
     return Boolean(el && el.id === 'd-say');
   }
 
+  // **正在看展开的全文时也别刷。**同一个道理：刷新 = 整块重画，展开的那块
+  // 连同你读到哪儿一起没 —— 用户实拍「我都没点收起，碰到边缘就自动收起了，
+  // 都没看全」。收起来之后欠的那一刷会自动补上
+  function readingNow() {
+    return Boolean(document.querySelector('.full:not([hidden])'));
+  }
+
   async function refreshDetail() {
     if (!openId) return;
     // 首次渲染永不跳过 —— 跳了就是一张白纸，比被打断严重得多
     const first = !$('sheet').querySelector('.tl');
-    if (!first && typingNow()) { detailDirty = true; return; }
+    if (!first && (typingNow() || readingNow())) { detailDirty = true; return; }
     let d = null;
     try { d = await fetch(api('/api/detail?id=' + encodeURIComponent(openId))).then((x) => x.json()); } catch (_) { return; }
     if (!d || d.error) { $('sheet').innerHTML = '<div class="empty">这条线不在了</div>'; return; }
@@ -678,7 +814,12 @@
     try {
       const r = await fetch(api('/api/dispatch'), {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ dir, task, agent: $('agent').value, permissionMode: $('perm').value || undefined }),
+        body: JSON.stringify({
+          dir, task, agent: $('agent').value,
+          permissionMode: $('perm').value || undefined,
+          // codex 不认模型参数，选了也不发（发过去只会被 main 丢掉，但别让人误会）
+          model: $('agent').value === 'codex' ? '' : $('model').value,
+        }),
       }).then((x) => x.json());
       if (r && r.ok !== false) { msg('开工了！进度看下面', 'ok'); $('task').value = ''; }
       else msg((r && r.error) || '没派出去', 'err');

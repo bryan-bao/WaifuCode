@@ -139,6 +139,8 @@ function createMobileServer({ pageFile, token, hooks, log }) {
           laneName: String(body.laneName || '').trim(),
           permissionMode: body.permissionMode || undefined,
           agent: body.agent === 'codex' ? 'codex' : 'claude',
+          // 模型原样透传，白名单归一交给 main（这个模块不认业务规则）
+          model: String(body.model || ''),
         });
         return json(r && r.ok === false ? 400 : 200, r);
       }

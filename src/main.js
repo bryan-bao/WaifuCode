@@ -2161,7 +2161,12 @@ function ensureMobile() {
           const agent = resolveDispatchAgent(opts.agent);
           const noCli = guardAgent(agent);
           if (noCli) return noCli;
-          const model = agent === 'codex' ? undefined : resolveDispatchModel((loadConfig().dispatch || {}).model);
+          // 手机上选了就用手机的，没选才跟电脑上的设置走。
+          // **一定要过 resolveDispatchModel**：那是白名单，手机来的字段
+          // 是外部输入，不能直接拼进命令行
+          const model = agent === 'codex' ? undefined
+            : (opts.model ? resolveDispatchModel(opts.model)
+                          : resolveDispatchModel((loadConfig().dispatch || {}).model));
           try {
             return { ok: true, ...openLaneTerminal({ ...opts, model, agent }, { minimized: true }) };
           } catch (err) {
