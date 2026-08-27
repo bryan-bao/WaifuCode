@@ -260,6 +260,92 @@ function lastUserPrompt(sessionId) {
  * 缓存」的零头（真实会话每轮个位数），cacheRead/(input+cacheRead) 永远 ~100%。
  * 改小抄/换目录造成的失效全记在 cacheWrite 里，它必须在分母上，指针才会动。
  */
+/**
+ * 这条会话的**完整对话**，按「轮」切开（手机上点「查看全部」看的就是它）。
+ *
+ * 【为什么必须从会话档案读】内存里的 timeline 是给一眼扫的：每条截到 300 字、
+ * 只留最近 60 条、还不落盘。用户要看的「细节」压根不在那儿 —— 在 Claude Code
+ * 自己写的 jsonl 里。那份是完整的：她说的每一段、调了哪些工具，一个字不少。
+ *
+ * 【只读尾巴】一场长会话几十兆，全读进来手机端也翻不动。默认读最后 512KB，
+ * 掐掉开头那半行（半行 JSON.parse 必炸，跟算钱那边一个规矩）。
+ *
+ * 【一轮 = 你说一句 + 她干到下次你开口】按 user 消息切。工具结果、IDE 上下文、
+ * 斜杠命令这些不是「你说的话」，不切轮（判据跟 lastUserPrompt 一致）。
+ *
+ * @returns {{ok:boolean, turns:Array, why?:string}} turns 从新到旧
+ */
+function turnsOf(sessionId, { tailBytes = 512 * 1024, maxTurns = 30, textMax = 4000 } = {}) {
+  const f = findTranscript(sessionId);
+  if (!f) return { ok: false, why: '找不到这条线的会话记录（可能还没开始说话，或者记录被清过）', turns: [] };
+  let chunk = '';
+  let size = 0;
+  try {
+    size = fs.statSync(f).size;
+    const fd = fs.openSync(f, 'r');
+    try {
+      const buf = Buffer.allocUnsafe(Math.min(tailBytes, size));
+      fs.readSync(fd, buf, 0, buf.length, Math.max(0, size - buf.length));
+      chunk = buf.toString('utf8');
+    } finally { fs.closeSync(fd); }
+  } catch (err) {
+    return { ok: false, why: '会话记录读不了：' + err.message, turns: [] };
+  }
+
+  const lines = chunk.split('\n');
+  if (size > tailBytes) lines.shift(); // 掐掉可能被切断的头一行
+  const turns = [];
+  let cur = null;
+  const push = () => { if (cur && (cur.prompt || cur.out.length || cur.tools.length)) turns.push(cur); };
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let j;
+    try { j = JSON.parse(line); } catch (_) { continue; } // 半行跳过
+    const m = j.message;
+    if (!m) continue;
+    const at = Date.parse(j.timestamp) || 0;
+
+    if (j.type === 'user') {
+      const c = m.content;
+      let text = typeof c === 'string' ? c
+        : Array.isArray(c) ? c.filter((b) => b && b.type === 'text').map((b) => String(b.text || '')).join('\n')
+        : '';
+      text = text.trim();
+      // 工具结果 / IDE 上下文 / 斜杠命令：不是你开的口，不切轮
+      if (!text || text.startsWith('<') || text.startsWith('/') || text.startsWith('[')) continue;
+      push();
+      cur = { at, prompt: text.slice(0, textMax), out: [], tools: [] };
+      continue;
+    }
+
+    if (j.type === 'assistant' && Array.isArray(m.content)) {
+      if (!cur) cur = { at, prompt: '', out: [], tools: [] };
+      for (const b of m.content) {
+        if (!b) continue;
+        if (b.type === 'text' && String(b.text || '').trim()) {
+          cur.out.push(String(b.text).slice(0, textMax));
+        } else if (b.type === 'tool_use' && b.name) {
+          // 工具只记名字和一个短提要 —— 参数里常有整份文件内容，手机上没人看，
+          // 传过去还白占流量
+          const inp = b.input || {};
+          const hint = String(inp.file_path || inp.path || inp.command || inp.pattern || inp.description || '')
+            .replace(/\s+/g, ' ').trim().slice(0, 80);
+          cur.tools.push(hint ? b.name + ' · ' + hint : String(b.name));
+        }
+      }
+      if (at && !cur.at) cur.at = at;
+    }
+  }
+  push();
+
+  return {
+    ok: true,
+    truncated: size > tailBytes, // 前面还有更早的，只是没读进来
+    turns: turns.slice(-maxTurns).reverse(),
+  };
+}
+
 function cacheHit(tok) {
   if (!tok) return null;
   const denom = (tok.input || 0) + (tok.cacheRead || 0) + (tok.cacheWrite || 0);
@@ -267,4 +353,4 @@ function cacheHit(tok) {
   return Math.round((100 * (tok.cacheRead || 0)) / denom);
 }
 
-module.exports = { ofSession, usdOf, partsOf, priceOf, PRICE, lastUserPrompt, cacheHit };
+module.exports = { ofSession, usdOf, partsOf, priceOf, PRICE, lastUserPrompt, cacheHit, turnsOf };

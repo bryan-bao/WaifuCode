@@ -38,6 +38,7 @@ function readBody(req, cap = 64 * 1024) {
 
 /**
  * hooks 契约（全部由 main 注入，这个模块不 require 任何业务模块）：
+ *   full(id)        这条线的完整对话（按轮切开，从新到旧）
  *   state()            -> 整包状态（页面渲染要的全部）
  *   detail(id)         -> 这条线的详情 + 时间线（手机点开看的）
  *   dispatch(opts)     -> { ok, ... } 在电脑上开一条最小化终端线
@@ -79,6 +80,13 @@ function createMobileServer({ pageFile, token, hooks, log }) {
       if (req.method === 'GET' && pathname === '/api/detail') {
         const d = await hooks.detail(String(params.get('id') || ''));
         return d ? json(200, d) : json(404, { error: '这条线不在了' });
+      }
+
+      // 这条线的**完整对话**（时间线上每段的「查看全部」点的就是它）。
+      // 内存里的时间线是给一眼扫的（每条截 300 字），细节在会话档案里
+      if (req.method === 'GET' && pathname === '/api/full') {
+        const r = await hooks.full(String(params.get('id') || ''));
+        return json(200, r || { ok: false, why: '这条线不在了', turns: [] });
       }
 
       // 翻电脑上的文件夹（手机上没法调系统选择器，只能这么来）。

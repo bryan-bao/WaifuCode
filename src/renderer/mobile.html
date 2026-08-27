@@ -110,6 +110,36 @@
   .tl .e.her .who { color: var(--acc); }
   .tl .e.error .who { color: var(--bad); }
   .tl .e .txt { font-size: 13px; color: #cdd3e0; white-space: pre-wrap; word-break: break-word; }
+  /* 「查看全部」展开的那块。手机上排版最容易乱的就是这儿，三条底线：
+     1) 长英文/路径必须能断（overflow-wrap: anywhere），否则整行撑破屏幕
+     2) 代码块自己横向滚（pre 里不换行会顶宽，换行又毁缩进 —— 给它独立滚动条）
+     3) 整块 max-width:100% + box-sizing，父容器再窄也不外溢 */
+  .tl .e .seeall {
+    margin-top: 5px; font-size: 11.5px; color: var(--acc); background: none;
+    border: 0; padding: 2px 0; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  .tl .e .seeall:active { opacity: .6; }
+  .full {
+    margin-top: 7px; padding: 9px 10px; border-radius: 9px;
+    background: rgba(255,255,255,.03); border: 1px solid var(--line);
+    max-width: 100%; box-sizing: border-box; overflow: hidden;
+  }
+  .full .seg { font-size: 12.5px; line-height: 1.72; color: #d7dce8;
+    white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+  .full .seg + .seg { margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--line); }
+  .full .seg pre, .full .seg code {
+    font-family: Consolas, Menlo, monospace; font-size: 11.5px;
+  }
+  .full .seg pre {
+    margin: 6px 0; padding: 7px 9px; border-radius: 7px; background: #0a0c12;
+    overflow-x: auto; white-space: pre; max-width: 100%;
+  }
+  .full .tools {
+    margin-top: 8px; font-size: 11px; color: var(--faint);
+    overflow-wrap: anywhere;
+  }
+  .full .tools b { color: var(--dim); font-weight: 600; }
+  .full .none { font-size: 12px; color: var(--faint); }
   .files { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
   .files .f { background: var(--card2); border: 1px solid var(--line); color: var(--dim); border-radius: 6px; font-size: 11px; padding: 2px 7px; }
 
@@ -313,14 +343,71 @@
 
   async function openDetail(id) {
     openId = id;
+    fullCache = null; // 换了条线，上一条的完整对话作废（不清就会张冠李戴）
     $('sheet').style.display = 'block';
     $('sheet').innerHTML = '<div class="empty">加载中…</div>';
     await refreshDetail();
   }
   function closeDetail() {
     openId = null;
+    fullCache = null;
     $('sheet').style.display = 'none';
     $('sheet').innerHTML = '';
+  }
+
+  // 这条线的完整对话（按轮切开）。**一条线只拉一次**：点第二段时直接用缓存，
+  // 手机流量和电脑读盘都省了；退出详情时清掉（换条线数据就不对了）
+  let fullCache = null;
+  async function loadFull() {
+    if (fullCache) return fullCache;
+    const r = await fetch(api('/api/full?id=' + encodeURIComponent(openId))).then((x) => x.json());
+    fullCache = r;
+    return r;
+  }
+
+  /** 把 markdown 里的代码块拆出来单独用 <pre>（其余按纯文本走，不做全量 md 解析
+   *  —— 手机上要的是「看清楚她说了什么」，不是排版比赛） */
+  function segHtml(text) {
+    const parts = String(text).split(/```/);
+    return parts.map((p, i) => (i % 2
+      ? '<pre>' + esc(p.replace(/^[\w-]*\n/, '')) + '</pre>'
+      : esc(p))).join('');
+  }
+
+  /** 时间线上那一条属于哪一轮：取「开始时间 ≤ 这条」里最近的一轮 */
+  function turnFor(turns, at) {
+    let best = null;
+    for (const t of turns) {
+      if (t.at && t.at <= at + 1000 && (!best || t.at > best.at)) best = t;
+    }
+    return best || turns[0] || null;
+  }
+
+  async function toggleFull(btn) {
+    const box = $('full-' + btn.dataset.i);
+    if (!box) return;
+    if (!box.hidden) { box.hidden = true; btn.textContent = '查看全部 ▾'; return; }
+    box.hidden = false;
+    btn.textContent = '收起 ▴';
+    if (box.dataset.done) return;
+    box.innerHTML = '<div class="none">读取中……</div>';
+    let r;
+    try { r = await loadFull(); } catch (err) { r = { ok: false, why: '读不到：' + err.message }; }
+    if (!r || !r.ok) { box.innerHTML = '<div class="none">' + esc((r && r.why) || '读不出来') + '</div>'; return; }
+    const t = turnFor(r.turns || [], Number(btn.dataset.at));
+    if (!t) { box.innerHTML = '<div class="none">这一段在会话记录里没找着（记录只留最近一截）</div>'; return; }
+    const segs = (t.out || []).map((x) => '<div class="seg">' + segHtml(x) + '</div>').join('');
+    const tools = (t.tools || []).length
+      ? '<div class="tools"><b>她动的手（' + t.tools.length + ' 次）：</b>' +
+        esc(t.tools.slice(0, 30).join(' · ')) + (t.tools.length > 30 ? ' …' : '') + '</div>'
+      : '';
+    // 顶上一行交代清楚：这一轮多少段、是不是只读到一截 —— 不说的话
+    // 用户以为看到的就是全部，其实开头被记录长度掐掉了
+    const head = '<div class="none" style="margin-bottom:6px">这一轮 ' + (t.out || []).length + ' 段' +
+      (r.truncated ? ' · 更早的部分没读进来（只读最近一截记录）' : '') + '</div>';
+    box.innerHTML = head + (t.prompt ? '<div class="seg"><b>你说：</b>' + esc(t.prompt) + '</div>' : '') +
+      (segs || '<div class="none">这一轮她没说话，只动了手</div>') + tools;
+    box.dataset.done = '1';
   }
 
   async function refreshDetail() {
@@ -333,11 +420,17 @@
     const [cls, word] = STATUS[d.status] || STATUS.idle;
     const crashed = (d.status === 'done' || d.status === 'closed') && d.exitCode !== null && d.exitCode !== 0;
 
-    const tl = (d.timeline || []).map((e) => {
+    const tl = (d.timeline || []).map((e, i) => {
       const hm = new Date(e.at).toTimeString().slice(0, 5);
+      // 时间线上每条都是截过的（内存里存 300 字）。挂个「查看全部」，
+      // 点了去会话档案里把**那一轮的完整输出**捞回来
+      const more = (e.kind === 'her' || e.kind === 'you')
+        ? '<button class="seeall" data-at="' + e.at + '" data-i="' + i + '">查看全部 ▾</button>' +
+          '<div class="full" id="full-' + i + '" hidden></div>'
+        : '';
       return '<div class="e ' + e.kind + '"><div class="when"><span class="who">' +
         (KIND[e.kind] || '') + '</span>' + hm + (e.rough ? ' 左右' : '') +
-        '</div><div class="txt">' + esc(e.text) + '</div></div>';
+        '</div><div class="txt">' + esc(e.text) + '</div>' + more + '</div>';
     }).join('') || '<div class="empty">还没有进度。她开工后这里会实时长出来</div>';
 
     const files = (d.files || []).map((f) => '<span class="f">' + esc(f.name) + (f.hits > 1 ? ' ×' + f.hits : '') + '</span>').join('');
@@ -367,6 +460,10 @@
         : '<div class="empty">这个窗口已经关了，只能看历史</div>');
 
     $('sheet').querySelector('.term, .card').classList.add(cls); // 灯的颜色跟着状态
+    // 「查看全部」：sheet 每次刷新都重建 DOM，事件得跟着重挂
+    for (const b of document.querySelectorAll('.tl .seeall')) {
+      b.onclick = () => toggleFull(b);
+    }
     $('d-back').onclick = closeDetail;
     if (d.status === 'waiting') {
       $('d-yes').onclick = () => approve(d.id, true, d.project || d.name);

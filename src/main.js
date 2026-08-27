@@ -2151,6 +2151,22 @@ function ensureMobile() {
         approve: (id, allow) => (terminals ? terminals.approveRemote(id, allow) : { ok: false, error: '终端管理还没起来' }),
         detail: (id) => detailWithHistory(id),
         send: (id, text) => (terminals ? terminals.sendText(id, text) : { ok: false, error: '终端管理还没起来' }),
+        // 完整对话：从 Claude Code 自己写的会话档案里读（内存那份时间线
+        // 每条只有 300 字，用户要的细节不在那儿）
+        full: (id) => {
+          try {
+            const rec = terminals ? terminals.get(id) : null;
+            if (!rec) return { ok: false, why: '这条线不在了', turns: [] };
+            if (rec.agent === 'codex') {
+              return { ok: false, why: 'codex 线的完整记录在它自己的档案里，这版还没接进来', turns: [] };
+            }
+            if (!rec.sessionId) return { ok: false, why: '这条线还没有会话记录', turns: [] };
+            return cost.turnsOf(rec.sessionId);
+          } catch (err) {
+            log('[mobile] 完整对话读不出来: ' + err.message);
+            return { ok: false, why: '读不出来：' + err.message, turns: [] };
+          }
+        },
         browse: (dir) => browseDirs(dir),
       },
     });
