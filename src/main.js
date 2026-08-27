@@ -2157,11 +2157,13 @@ function ensureMobile() {
           try {
             const rec = terminals ? terminals.get(id) : null;
             if (!rec) return { ok: false, why: '这条线不在了', turns: [] };
-            if (rec.agent === 'codex') {
-              return { ok: false, why: 'codex 线的完整记录在它自己的档案里，这版还没接进来', turns: [] };
-            }
             if (!rec.sessionId) return { ok: false, why: '这条线还没有会话记录', turns: [] };
-            return cost.turnsOf(rec.sessionId);
+            // 两张嘴的档案格式天差地别，但**吐出来的形状必须一样** ——
+            // 手机那头不该知道这条线是谁在干（agents.codexTurns 照着
+            // cost.turnsOf 的契约写的）
+            return rec.agent === 'codex'
+              ? agents.codexTurns(rec.sessionId)
+              : cost.turnsOf(rec.sessionId);
           } catch (err) {
             log('[mobile] 完整对话读不出来: ' + err.message);
             return { ok: false, why: '读不出来：' + err.message, turns: [] };

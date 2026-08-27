@@ -562,6 +562,112 @@ function codexGlance(file, fromOffset) {
   return out;
 }
 
+/**
+ * codex 线的**完整对话**，按「轮」切开 —— 手机上「查看全部」点的就是它。
+ *
+ * 【契约跟 cost.turnsOf 一模一样】{ ok, truncated, turns:[{at,prompt,out,tools}] }。
+ * 两张嘴的档案格式天差地别（这边是 codex 的 rollout jsonl），但**前端不该知道
+ * 这件事** —— 同一个形状出去，mobile 那头一行都不用改。
+ *
+ * 【格式】（实测 codex 0.147 的 rollout，2026-08-26 拿真档案对过）：
+ *   response_item / message:user      → 你说的（content[].text，input_text）
+ *   response_item / message:assistant → 她说的（content[].text，output_text）
+ *   event_msg     / agent_message     → 同一句话的另一种记法，会跟上面重复
+ *   response_item / function_call     → 工具（name + arguments）
+ *   response_item / custom_tool_call  → 工具（name + input，apply_patch 走这条）
+ *
+ * 【只读尾巴】跟 claude 那边同一个道理：一场长会话几十兆，手机也翻不动。
+ * 掐掉可能被切断的头一行（半行 JSON.parse 必炸）。
+ */
+function codexTurns(sessionId, { tailBytes = 512 * 1024, maxTurns = 30, textMax = 4000 } = {}) {
+  const file = findRolloutById(sessionId);
+  if (!file) return { ok: false, why: '找不到这条 codex 线的会话档案（可能还没开始说话）', turns: [] };
+
+  let chunk = '';
+  let size = 0;
+  try {
+    size = fs.statSync(file).size;
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = Buffer.allocUnsafe(Math.min(tailBytes, size));
+      fs.readSync(fd, buf, 0, buf.length, Math.max(0, size - buf.length));
+      chunk = buf.toString('utf8');
+    } finally { fs.closeSync(fd); }
+  } catch (err) {
+    return { ok: false, why: '会话档案读不了：' + err.message, turns: [] };
+  }
+
+  const lines = chunk.split('\n');
+  if (size > tailBytes) lines.shift();
+  const turns = [];
+  let cur = null;
+  const push = () => { if (cur && (cur.prompt || cur.out.length || cur.tools.length)) turns.push(cur); };
+  const textOf = (content) => (Array.isArray(content)
+    ? content.filter((c) => c && typeof c.text === 'string').map((c) => c.text).join('\n')
+    : '');
+
+  for (const ln of lines) {
+    if (!ln.trim()) continue;
+    let j;
+    try { j = JSON.parse(ln); } catch (_) { continue; } // 半行/超长行跳过
+    const p = j.payload || {};
+    const at = Date.parse(j.timestamp) || 0;
+
+    if (p.type === 'message' && p.role === 'user') {
+      // 环境注入和 IDE 那坨不是人说的话，不切轮（判据跟 codexGlance 同一个 pickPrompt）
+      const t = pickPrompt(textOf(p.content));
+      if (!t) continue;
+      push();
+      cur = { at, prompt: t.slice(0, textMax), out: [], tools: [] };
+      continue;
+    }
+
+    if (p.type === 'message' && p.role === 'assistant') {
+      if (!cur) cur = { at, prompt: '', out: [], tools: [] };
+      const t = textOf(p.content).trim();
+      // agent_message 会把同一句再记一遍 —— 连着重复的不收（不然每段都双份）
+      if (t && cur.out[cur.out.length - 1] !== t.slice(0, textMax)) cur.out.push(t.slice(0, textMax));
+      if (at && !cur.at) cur.at = at;
+      continue;
+    }
+
+    if (p.type === 'agent_message' && p.message) {
+      if (!cur) cur = { at, prompt: '', out: [], tools: [] };
+      const t = String(p.message).trim().slice(0, textMax);
+      if (t && cur.out[cur.out.length - 1] !== t) cur.out.push(t);
+      continue;
+    }
+
+    if (p.type === 'function_call' || p.type === 'custom_tool_call') {
+      if (!cur) cur = { at, prompt: '', out: [], tools: [] };
+      // 工具只留名字 + 一句短提要：arguments/input 里动辄是整份补丁，
+      // 传上手机既没人看又白占流量（跟 claude 那边同一条规矩）
+      let hint = '';
+      const raw = typeof p.input === 'string' ? p.input
+        : typeof p.arguments === 'string' ? p.arguments : '';
+      if (raw) {
+        try {
+          const a = JSON.parse(raw);
+          hint = String(a.command || a.file_path || a.path || a.pattern || a.query || '');
+        } catch (_) {
+          // 不是 JSON = apply_patch 的补丁原文。**绝不能拿它当提要截 80 字**：
+          // 截出来是「*** Begin Patch *** Update File: …」这种半截补丁 ——
+          // 既没信息量，又把代码片段送上了手机（E2E 抓的）。
+          // 补丁里真正有用的只有「动了哪几个文件」，抠出来就够
+          const touched = {};
+          collectPatchFiles(raw, touched);
+          hint = Object.keys(touched).slice(0, 3).join('；');
+        }
+      }
+      hint = hint.replace(/\s+/g, ' ').trim().slice(0, 80);
+      cur.tools.push(hint ? p.name + ' · ' + hint : String(p.name || '工具'));
+    }
+  }
+  push();
+
+  return { ok: true, truncated: size > tailBytes, turns: turns.slice(-maxTurns).reverse() };
+}
+
 /** 用户输入里挑出「人说的那句」：环境注入和 IDE 前缀那坨不算 */
 function pickPrompt(t) {
   const s = String(t || '').trim();
@@ -650,5 +756,5 @@ function codexModelOf(file) {
 module.exports = {
   onPath, resolveCodexBin, codexInstalled, codexArgs, PERM, codexPermWords, codexWatchArgs, codexTrustArgs, probeCodexHookHash,
   codexSessionsRoot, findCodexSession, codexUsage, codexPriceFor, codexGlance, pickPrompt,
-  codexChatArgs, codexGreetArgs, codexPriceUsage, findRolloutById, codexModelOf,
+  codexChatArgs, codexGreetArgs, codexPriceUsage, findRolloutById, codexModelOf, codexTurns,
 };

@@ -769,7 +769,27 @@ console.log('\n[18] 「帮我装」装的必须是官方那两个包，一个字
     console.log('\x1b[31m✗ ' + failed + ' 条没过\x1b[0m');
     process.exitCode = 1;
   } else {
-    console.log('\x1b[32m✓ 全过\x1b[0m');
+    console.log('[完整对话] codex 线的 turnsOf 同款契约');
+{
+  const r = agents.codexTurns('根本没有这条线');
+  check(r.ok === false && r.why && Array.isArray(r.turns),
+        '找不到档案时说得清、turns 仍是数组（前端不用防空）');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'agents.js'), 'utf8');
+  const body = src.slice(src.indexOf('function codexTurns'), src.indexOf('function pickPrompt'));
+  check(body.includes('pickPrompt'),
+        '切轮用同一个 pickPrompt（环境注入/IDE 那坨不算人说的话）');
+  check(body.includes('cur.out[cur.out.length - 1] !== t'),
+        'agent_message 和 message:assistant 是同一句的两种记法 —— 连着重复的不许收两遍');
+  check(body.includes('slice(0, 80)') && !/arguments[^]{0,200}push(raw)/.test(body),
+        '工具只留名字+短提要（arguments 里动辄整份补丁，不许上手机）');
+  check(body.includes('lines.shift()'), '只读尾巴时掐掉可能被切断的头一行');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  check(main.includes('agents.codexTurns(rec.sessionId)') && main.includes('cost.turnsOf(rec.sessionId)'),
+        'main 按 agent 分岔，两张嘴吐同一个形状（手机那头零改动）');
+  check(!main.includes('这版还没接进来'), 'codex 那句「还没接进来」该拿掉了');
+}
+
+console.log('\x1b[32m✓ 全过\x1b[0m');
   }
 
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) { /* 临时目录留着也无妨 */ }
