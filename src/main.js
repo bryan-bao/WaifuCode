@@ -2176,62 +2176,6 @@ function ensureMobile() {
         approve: (id, allow) => (terminals ? terminals.approveRemote(id, allow) : { ok: false, error: '终端管理还没起来' }),
         detail: (id) => detailWithHistory(id),
         send: (id, text) => (terminals ? terminals.sendText(id, text) : { ok: false, error: '终端管理还没起来' }),
-        // 手机上「看一眼」那几件事：**桌宠自己跑，结果直接回手机**。
-        //
-        // 【为什么不能打进终端】把 !git status 发进那个终端窗口，输出只会出现
-        // 在电脑屏幕上 —— 手机这头一个字都看不到（用户实测：「花多少这个
-        // 命令行运行我在手机上也看不到」）。所以改成我们自己跑、自己回显。
-        //
-        // 【安全】手机传的是 key 不是命令：命令行长什么样只由下面这张表说了算，
-        // 参数写死、不拼接、不过 shell（execFile 不是 exec）。目录必须是
-        // 我们自己认得的项目（要么是那条线的 dir，要么在登记簿里）
-        run: (key, dir, id) => {
-          const TASKS = {
-            'git-status': { title: '改了啥', argv: ['git', ['status', '-sb']], then: ['git', ['diff', '--stat']] },
-            'git-log': { title: '最近提交', argv: ['git', ['log', '--oneline', '-15']] },
-            'test': { title: '自检', argv: ['npm', ['test']], ms: 180000 },
-          };
-          const t = TASKS[key];
-          if (!t) return { ok: false, why: '不认识这个命令' };
-          let cwd = String(dir || '').trim();
-          try {
-            if (id && terminals) {
-              const rec = terminals.get(id);
-              if (rec && rec.dir) cwd = rec.dir;          // 选了线就用那条线的目录
-            }
-            if (!cwd) return { ok: false, why: '先选个项目目录' };
-            // 目录白名单：只认登记簿里有的项目（手机传来的路径不能直接当 cwd）
-            const known = sessions ? sessions.knownProjects().map((p) => String(p.path).toLowerCase()) : [];
-            const live = terminals ? terminals.list().map((x) => String(x.dir || '').toLowerCase()) : [];
-            const lower = path.resolve(cwd).toLowerCase();
-            if (!known.includes(lower) && !live.includes(lower)) {
-              return { ok: false, why: '这个目录不在她认得的项目里' };
-            }
-            cwd = path.resolve(cwd);
-          } catch (err) { return { ok: false, why: err.message }; }
-
-          const runOne = ([bin, args], ms) => new Promise((resolve) => {
-            execFile(bin, args, {
-              cwd, timeout: ms || 30000, windowsHide: true,
-              maxBuffer: 2 * 1024 * 1024,
-              // npm 在 Windows 上是 .cmd，非 shell 起不来
-              shell: /^(npm|npx|yarn|pnpm)$/.test(bin),
-            }, (err, out, errOut) => {
-              const text = String(out || '') + (errOut ? String(errOut) : '');
-              resolve(text.trim() || (err ? '（没有输出）' + err.message : '（没有输出）'));
-            });
-          });
-
-          return (async () => {
-            const parts = [await runOne(t.argv, t.ms)];
-            if (t.then) parts.push(await runOne(t.then, t.ms));
-            let out = parts.filter(Boolean).join('\n\n');
-            // 手机上没人翻十万行；掐到 12KB，留**尾巴**（报错都在后面）
-            if (out.length > 12000) out = '…（前面略）\n' + out.slice(-12000);
-            log('[mobile] 跑了 ' + key + ' @ ' + path.basename(cwd) + '（' + out.length + ' 字）');
-            return { ok: true, title: t.title, dir: path.basename(cwd), out };
-          })();
-        },
         // 完整对话：从 Claude Code 自己写的会话档案里读（内存那份时间线
         // 每条只有 300 字，用户要的细节不在那儿）
         full: (id) => {

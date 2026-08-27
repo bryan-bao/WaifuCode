@@ -125,25 +125,16 @@
   /* 等确认的卡片自己也标出来（它被排到了最前面） */
   .term.wait { border-color: rgba(251,191,36,.55); }
 
-  .quick { margin: 2px 0 8px; }
-  /* 命令跑出来的结果。跟「查看全部」一套路数：自己横滚、绝不撑破屏幕 */
-  .runout {
-    margin: 0 0 10px; padding: 8px 10px; border-radius: 9px;
-    background: rgba(255,255,255,.03); border: 1px solid var(--line);
-    max-width: 100%; box-sizing: border-box;
+  /* 常用命令那一排：**一行横着滑**，绝不换行 —— 十来条堆成三行会把下面的
+     输入框顶出屏幕，而手机上第一屏就该看见输入框和派活键 */
+  .quick {
+    margin: 2px 0 8px; flex-wrap: nowrap; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none; padding-bottom: 2px;
   }
-  .runout .cap { display: flex; align-items: center; font-size: 11.5px; color: var(--dim); margin-bottom: 5px; }
-  .runout .cap b { color: var(--acc); font-weight: 600; }
-  .runout .cap .x {
-    margin-left: auto; background: none; border: 0; color: var(--faint);
-    font-size: 14px; padding: 0 2px; cursor: pointer;
-  }
-  .runout pre {
-    margin: 0; font-family: Consolas, Menlo, monospace; font-size: 11.5px;
-    line-height: 1.6; color: #cdd3e0; white-space: pre; overflow-x: auto;
-    max-height: 46vh; overflow-y: auto; max-width: 100%;
-  }
-  .quick .chip { font-size: 12px; padding: 6px 11px; }
+  .quick::-webkit-scrollbar { display: none; }
+  .quick .chip { flex: none; font-size: 12px; padding: 6px 10px; white-space: nowrap; }
+  .quick .chip b { font-family: Consolas, Menlo, monospace; font-weight: 600; color: var(--acc); }
+  .quick .chip i { font-style: normal; color: var(--dim); margin-left: 5px; }
   .tl .e .seeall {
     margin-top: 5px; font-size: 11.5px; color: var(--acc); background: none;
     border: 0; padding: 2px 0; cursor: pointer; -webkit-tap-highlight-color: transparent;
@@ -242,11 +233,9 @@
       <button id="pick" style="flex:none;padding:10px 14px;border-radius:var(--r-s);border:1px solid var(--line);background:var(--card2);color:var(--fg);font:inherit">选文件夹</button>
     </div>
     <div style="height:8px"></div>
-    <!-- 手机上敲字费劲：常用的活做成一按就填。点一下填进下面的框，
-         还能接着改（不是点了就发 —— 派活是花钱的事，得让你过一眼） -->
+    <!-- 终端自己的命令（Claude 的 / 命令、codex 的 / 命令、! 开头的 shell）。
+         手机上敲这些要命，点一下填进下面的框 —— 发不发你自己点 -->
     <div class="chips quick" id="quick"></div>
-    <!-- 命令跑出来的结果就摆在这儿（她自己跑的，不惊动模型、不花钱） -->
-    <div class="runout" id="runout" hidden></div>
     <textarea id="task" placeholder="要干什么活"></textarea>
     <div class="row2">
       <select id="agent">
@@ -331,7 +320,7 @@
     $('projects').style.display = live ? 'none' : 'flex';
     $('task').placeholder = live ? '接着说一句（直接进那个终端）' : '要干什么活';
     $('go').textContent = live ? '发给那条线' : '派活';
-    if (typeof syncQuickHint === 'function') syncQuickHint();
+    fillQuick();   // 换了线/换了 CLI，这排命令跟着换
   }
   $('target').onchange = syncTargetUI;
   $('agent').onchange = syncTargetUI; // 切到 codex 要把模型那行藏起来
@@ -346,7 +335,8 @@
     const keep = sel.value;
     const live = (s.terminals || []).filter((t) => t.status !== 'closed');
     sel.innerHTML = '<option value="">开一条新的线</option>' +
-      live.map((t) => '<option value="' + esc(t.id) + '">接着「' +
+      live.map((t) => '<option value="' + esc(t.id) + '" data-agent="' +
+        esc(t.agent || 'claude') + '">接着「' +
         esc((t.project || t.name) + (t.laneName ? ' · ' + t.laneName : '')) + '」说</option>').join('');
     sel.value = live.some((t) => t.id === keep) ? keep : '';
     syncTargetUI();
@@ -448,33 +438,81 @@
     $('sheet').innerHTML = '';
   }
 
-  // 手机上敲长句子太痛苦，这几条一按就走。
+  // 常用命令那一排。**这些是终端自己的命令**，不是给模型派的活：
+  // Claude Code 的 / 命令、codex 的 / 命令、! 开头的 shell 命令。
   //
-  // 【分两类，这是关键】
-  //   cmd  —— **直接打进终端的命令**，跟你在电脑前敲一模一样：不问模型、
-  //           一分钱不花、瞬间出结果（`!` 是 Claude Code 的跑命令前缀，
-  //           `/` 开头是它自己的斜杠命令）。查状态、看日志这类本来就该这么干 ——
-  //           让模型转述一遍既慢又花钱（用户点出来的）。
-  //   ask  —— 真的需要她动脑子的（"上次干到哪、下一步干什么"），才走派活。
+  // 点一下**只填进下面的输入框**，发不发你自己点（派活 / 发给那条线）。
   //
-  // 选了「接着某条线说」时，cmd 直接发过去；开新线时终端还不存在，
-  // 只能先把 ask 填进任务框（新线的第一句必须是给模型的 prompt）。
-  // 【第一版错在哪 —— 记一笔】原来是把 `!git status` 这种命令**打进电脑上的
-  // 终端窗口**。命令确实跑了，可输出只出现在电脑屏幕上，手机这头一个字都
-  // 看不到（用户实测：「花多少这个命令行运行我在手机上也看不到」）。
+  // 【前两版都错了，记一笔】
+  //   一版：把命令直接打进电脑上的终端 —— 跑是跑了，输出只出现在电脑屏幕上，
+  //         手机这头一个字看不到。
+  //   二版：改成桌宠自己跑、在派活卡片上另开一个框回显结果 —— 用户否了：
+  //         命令本来就该进那条线，输出跟着那条线的对话记录走，
+  //         不该在这儿多长一个框（原话：「我不需要你上面显示花了多少这种提示」）。
   //
-  // 现在：run 的这几件事由**桌宠自己跑**（/api/run，白名单里的只读命令），
-  // 结果直接回显在手机上 —— 不惊动模型、一分钱不花、还看得见。
-  // ask 那几条是真要她动脑子的，照旧填进任务框去派活。
-  const QUICK = [
-    { label: '改了啥', run: 'git-status' },
-    { label: '最近提交', run: 'git-log' },
-    { label: '跑自检', run: 'test' },
-    { label: '花了多少', local: true },   // 手机首页本来就有这个数，不用跑命令
-    { label: '上次干到哪', ask: '先别改东西。看一下最近的 git log 和没提交的改动，' +
-        '再翻一眼项目里的进度记录，用大白话告诉我上次干到哪儿了、下一步该干什么。' },
-    { label: '接着上次', ask: '接着上次没做完的事往下做。先说你打算怎么干，我点头了再动手。' },
-  ];
+  // 两家 CLI 的命令表不一样，按当前这家给（选了线就按那条线用的那家）。
+  const QUICK = {
+    claude: [
+      ['/cost', '花了多少'], ['!git status', '改了啥'], ['/context', '上下文'],
+      ['/compact', '压一压'], ['!git log --oneline -15', '最近提交'],
+      ['!npm test', '跑自检'], ['/status', '状态'], ['/todos', '待办'],
+      ['/model', '换模型'], ['/review', '过一遍代码'], ['/clear', '清空重开'],
+    ],
+    codex: [
+      ['/status', '状态'], ['/diff', '改了啥'], ['/compact', '压一压'],
+      ['/usage', '用量'], ['/model', '换模型'], ['/approvals', '权限'],
+      ['/review', '过一遍代码'], ['/init', '写 AGENTS.md'], ['/new', '清空重开'],
+    ],
+  };
+
+  // 用得多的排前面。次数记在这台手机上 —— 每个人的常用不一样。
+  // 排序只在重画那一下算：点的时候按钮不动（在手指底下跳位是最烦的）
+  const quickUse = () => {
+    try { return JSON.parse(localStorage.getItem('waifu.quickuse') || '{}'); } catch (_) { return {}; }
+  };
+
+  /** 这排命令该按哪家 CLI 给：选了线就按那条线用的，没选就看上面的下拉 */
+  function agentNow() {
+    const sel = $('target');
+    if (sel.value) {
+      const o = sel.selectedOptions[0];
+      return (o && o.dataset.agent === 'codex') ? 'codex' : 'claude';
+    }
+    return $('agent').value === 'codex' ? 'codex' : 'claude';
+  }
+
+  // 内容没变就不重画 —— 页面 3 秒刷一次，重画会把你横滑到的位置弹回开头
+  let quickSig = '';
+  function fillQuick() {
+    const box = $('quick');
+    if (!box) return;
+    const used = quickUse();
+    const who = agentNow();
+    const sorted = (QUICK[who] || QUICK.claude).map((x, i) => [x[0], x[1], i])
+      .sort((a, b) => ((used[b[0]] || 0) - (used[a[0]] || 0)) || (a[2] - b[2]));
+    const sig = who + '|' + sorted.map((x) => x[0]).join(',');
+    if (sig === quickSig) return;
+    quickSig = sig;
+    box.innerHTML = '';
+    for (const item of sorted) {
+      const cmd = item[0];
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.innerHTML = '<b>' + esc(cmd) + '</b><i>' + esc(item[1]) + '</i>';
+      c.onclick = () => {
+        const t = $('task');
+        t.value = cmd;      // 只填。发不发你点
+        t.focus();
+        try {
+          const u = quickUse();
+          u[cmd] = (u[cmd] || 0) + 1;
+          localStorage.setItem('waifu.quickuse', JSON.stringify(u));
+        } catch (_) { /* 无痕模式之类，不记就不记 */ }
+      };
+      box.appendChild(c);
+    }
+  }
+  fillQuick();   // 第一状态回来之前先摆上，别空着
 
   // 模型选完记在这台手机上 —— 电脑面板是存进配置的，手机这边只记本地，
   // 免得手机上随手一选把电脑的默认改了（那是两个人的习惯）
@@ -485,73 +523,6 @@
   $('model').onchange = () => {
     try { localStorage.setItem('waifu.model', $('model').value); } catch (_) { /* 同上 */ }
   };
-
-  /** 命令跑出来的结果就摆在按钮下面。用的是「查看全部」那套排版
-   *  （代码块自己横滚、不撑破屏幕），加个 ✕ 随手关掉 */
-  function showRun(title, out) {
-    const box = $('runout');
-    if (!box) return;
-    box.hidden = false;
-    box.innerHTML = '<div class="cap"><b>' + esc(title) + '</b>' +
-      '<button class="x" id="run-x">✕</button></div>' +
-      '<pre>' + esc(String(out || '')) + '</pre>';
-    const x = $('run-x');
-    if (x) x.onclick = () => { box.hidden = true; box.innerHTML = ''; };
-    box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }
-
-  (function fillQuick() {
-    const box = $('quick');
-    if (!box) return;
-    for (const q of QUICK) {
-      const c = document.createElement('span');
-      c.className = 'chip';
-      c.textContent = q.label;
-      c.dataset.run = q.run || '';
-      c.title = q.run ? '她自己跑一下，结果就显示在下面（不花钱）'
-              : q.local ? '看看今天花了多少' : q.ask;
-      c.onclick = async () => {
-        // ① 本地就有的数（花了多少）：一个字节都不用出门
-        if (q.local) {
-          showRun('今天花的钱', $('today').textContent || '（还没花）');
-          return;
-        }
-        // ② 名单里的只读命令：桌宠自己跑，输出回显在下面
-        if (q.run) {
-          const to = $('target').value;
-          const dir = $('dir').value.trim();
-          if (!to && !dir) { msg('先选个项目目录（或者上面选一条线）', 'err'); return; }
-          c.classList.add('on');
-          showRun(q.label, '跑着呢……');
-          try {
-            const r = await fetch(api('/api/run'), {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ key: q.run, dir, id: to }),
-            }).then((x) => x.json());
-            if (r && r.ok) showRun(r.title + ' · ' + r.dir, r.out);
-            else showRun(q.label, '跑不了：' + ((r && r.why) || '不知道为什么'));
-          } catch (e) { showRun(q.label, '网络断了？' + e.message); }
-          c.classList.remove('on');
-          return;
-        }
-        // ③ 真要她动脑子的：填进任务框，你过一眼再派
-        $('task').value = q.ask;
-        $('task').focus();
-        msg($('target').value ? '填好了，点「发给那条线」' : '填好了，看一眼就能派', 'ok');
-      };
-      box.appendChild(c);
-    }
-  })();
-
-  // 选了哪条线会改变这排按钮的含义（直接跑 vs 填进框），标一下
-  function syncQuickHint() {
-    const live = $('target').value !== '';
-    for (const c of document.querySelectorAll('#quick .chip')) {
-      if (!c.dataset.cmd) continue;
-      c.style.opacity = live ? '1' : '.72';
-      c.textContent = live ? '▶ ' + c.textContent.replace(/^▶ /, '') : c.textContent.replace(/^▶ /, '');
-    }
-  }
 
   // 这条线的完整对话（按轮切开）。**一条线只拉一次**：点第二段时直接用缓存，
   // 手机流量和电脑读盘都省了；退出详情时清掉（换条线数据就不对了）
