@@ -779,6 +779,60 @@ $('chat').onclick = () => window.waifu.openChat();
 $('go').onclick = doDispatch;
 $('term').onclick = doTerminal;
 
+/**
+ * 拖文件进面板。
+ *
+ * 【必须自己 preventDefault】不拦的话 Electron 会**直接把窗口导航到那个文件**
+ * —— 面板当场变成一个文件预览页，回不来。dragover 和 drop 两处都要拦。
+ *
+ * 分流跟拖到她身上是**同一套判据**（desk.kindOf）：
+ *   文件夹 → 填进「项目目录」（拖项目过来就是要在那儿干活）
+ *   文件   → 路径填进「要她做什么」，你自己补一句要她拿它干嘛
+ * 图和日志都只给**路径**，不读内容 —— 读不读是那条线自己的事（也是省钱）
+ */
+(function dropZone() {
+  const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+  let depth = 0;
+  const off = () => { depth = 0; document.body.classList.remove('dropping'); };
+  window.addEventListener('dragover', (e) => { stop(e); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; });
+  window.addEventListener('dragenter', (e) => { stop(e); depth++; document.body.classList.add('dropping'); });
+  window.addEventListener('dragleave', (e) => { stop(e); if (--depth <= 0) off(); });
+  window.addEventListener('drop', async (e) => {
+    stop(e); off();
+    const files = (e.dataTransfer && e.dataTransfer.files) || [];
+    if (!files.length) return;
+    let list = [];
+    // **必须摊成数组**：FileList 过了 contextBridge 就不可迭代了
+    //（报的是「files is not iterable」，preload 里那句 for…of 当场炸，实测）
+    try { list = await window.waifu.classifyDrop([...files]); } catch (_) { /* 认不出来就当没拖 */ }
+    if (!list || !list.length) return;
+
+    const dirs = list.filter((x) => x.kind === 'dir');
+    const rest = list.filter((x) => x.kind !== 'dir' && x.kind !== 'gone');
+    const gone = list.filter((x) => x.kind === 'gone');
+
+    if (dirs.length) { $('dir').value = dirs[0].path; refreshGit(); }
+    if (rest.length) {
+      // 带空格的路径要包引号，不然那条线拿到的是两段
+      const quoted = rest.map((x) => (/\s/.test(x.path) ? '"' + x.path + '"' : x.path));
+      const cur = $('task').value;
+      $('task').value = (cur ? cur.replace(/\s+$/, '') + '\n' : '') + quoted.join('\n');
+      // **别派 input 事件**：线名是跟着任务描述自动取的，而这会儿框里只有
+      // 一串路径，取出来就是「"D:/shots/图 1.」这种鬼东西（实测）。
+      // 你接着敲那句话的时候它自己会跟上
+      $('task').focus();
+    }
+    const bits = [];
+    if (dirs.length) bits.push('目录填成了「' + dirs[0].name + '」' + (dirs.length > 1 ? '（另外 ' + (dirs.length - 1) + ' 个文件夹没管）' : ''));
+    if (rest.length) {
+      const pic = rest.filter((x) => x.kind === 'image').length;
+      bits.push(rest.length + ' 个文件的路径填进任务了' + (pic ? '（' + pic + ' 张图，她能直接打开看）' : ''));
+    }
+    if (gone.length) bits.push(gone.length + ' 个读不到，跳过了');
+    msg(bits.join('；') || '这个我认不出来', gone.length && !dirs.length && !rest.length ? 'err' : 'ok');
+  });
+})();
+
 $('browse').onclick = async () => {
   const d = await window.waifu.pickFolder();
   if (d) { $('dir').value = d; msg(''); refreshGit(); }

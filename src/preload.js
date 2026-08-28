@@ -34,6 +34,19 @@ contextBridge.exposeInMainWorld('waifu', {
   getConfig: () => ipcRenderer.invoke('pet:get-config'),
 
   // --- 派活面板 ---
+  // 拖到面板上的文件：**路径只能在这儿取**（Electron 32 起 File.path 没了），
+  // 取完交给主进程认类型，回来的是 [{path,name,kind}]
+  classifyDrop: (files) => {
+    const paths = [];
+    // 按下标走，**别用 for…of**：FileList 过了 contextBridge 就不可迭代了，
+    // 当场炸「files is not iterable」—— 而拖拽是没人会去看控制台的场景（实测栽过）
+    const list = files || [];
+    for (let i = 0; i < (list.length || 0); i++) {
+      const f = list[i];
+      try { paths.push(webUtils.getPathForFile(f)); } catch (_) { /* 取不到的跳过 */ }
+    }
+    return ipcRenderer.invoke('panel:drop', paths.filter(Boolean));
+  },
   openPanel: () => ipcRenderer.send('panel:open'),
   closePanel: () => ipcRenderer.send('panel:close'),
   // 收起来，不是关掉 —— 填好的目录和没派完的活都留着

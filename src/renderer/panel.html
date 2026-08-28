@@ -263,6 +263,9 @@
   }
   input:focus, textarea:focus, select:focus { border-color: var(--acc2); }
   textarea { resize: none; line-height: 1.7; }
+  /* 拖着文件晃过来时整块亮一下 —— 不给反馈的话没人知道这儿能放 */
+  body.dropping .col-form { outline: 2px dashed var(--acc2); outline-offset: 4px; border-radius: 10px; }
+  body.dropping #task { border-color: var(--acc2); }
   select { cursor: pointer; }
 
   /* 分支状态。干净是灰的，有没提交的改动就转成警告色 —— 那一眼是这条的全部价值 */

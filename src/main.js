@@ -2081,13 +2081,13 @@ function browseDirs(dir) {
       const root = String.fromCharCode(i) + ':\\';
       try { if (fs.existsSync(root)) drives.push({ name: String.fromCharCode(i) + ':', path: root }); } catch (_) { /* 探不了就跳 */ }
     }
-    return { cwd: '', parent: null, dirs: drives };
+    return { cwd: '', parent: null, dirs: drives, files: [] };
   }
   let cwd;
   try { cwd = path.resolve(d); } catch (_) { return { cwd: '', parent: null, dirs: [], error: '这个路径不认识' }; }
   let names = [];
   try { names = fs.readdirSync(cwd, { withFileTypes: true }); } catch (err) {
-    return { cwd, parent: path.dirname(cwd) === cwd ? '' : path.dirname(cwd), dirs: [], error: '打不开这个文件夹' };
+    return { cwd, parent: path.dirname(cwd) === cwd ? '' : path.dirname(cwd), dirs: [], files: [], error: '打不开这个文件夹' };
   }
   const dirs = names
     .filter((e) => {
@@ -2103,8 +2103,44 @@ function browseDirs(dir) {
     })
     // 像项目的排前面 —— 你要找的多半就是它们
     .sort((a, b) => (Number(b.project) - Number(a.project)) || a.name.localeCompare(b.name, 'zh'));
+  // 文件也列出来 —— 手机上要把「电脑上的这张图 / 这个日志」交给她，
+  // 只能在这儿挑（手机没有电脑的系统选择器）。**只给名字、路径、类型和大小，
+  // 绝不给内容** —— 内容要不要读是那条线自己的事
+  const files = names
+    .filter((e) => e.isFile() && !e.name.startsWith('.'))
+    .slice(0, 300)
+    .map((e) => {
+      const full = path.join(cwd, e.name);
+      let st = null;
+      try { st = fs.statSync(full); } catch (_) { return null; }
+      return { name: e.name, path: full, kind: desk.kindOf(full, st), size: st.size };
+    })
+    .filter(Boolean)
+    // 图和文本排前面 —— 要交给她看的多半是这两类
+    .sort((a, b) => (RANK[b.kind] || 0) - (RANK[a.kind] || 0) || a.name.localeCompare(b.name, 'zh'));
   const up = path.dirname(cwd);
-  return { cwd, parent: up === cwd ? '' : up, dirs };
+  return { cwd, parent: up === cwd ? '' : up, dirs, files };
+}
+
+// 挑文件时谁该排前面（图和日志是最常要交给她的）
+const RANK = { image: 3, text: 2, music: 1, nope: 0 };
+
+/**
+ * 拖进面板的那几个东西**分别是什么**。渲染层碰不到 fs，只能问这儿。
+ *
+ * 跟拖到她身上（routeDrop）用的是**同一个** desk.kindOf —— 一套判据，
+ * 两处用。这儿只认类型不做事：怎么用（填目录还是填进任务）由面板自己定。
+ */
+function classifyDrop(paths) {
+  const out = [];
+  for (const raw of (Array.isArray(paths) ? paths : []).slice(0, 20)) {
+    const p = String(raw || '');
+    if (!p) continue;
+    let st = null;
+    try { st = fs.statSync(p); } catch (_) { out.push({ path: p, name: path.basename(p), kind: 'gone' }); continue; }
+    out.push({ path: p, name: path.basename(p), kind: desk.kindOf(p, st), size: st.isFile() ? st.size : 0 });
+  }
+  return out;
 }
 
 // 心情英文状态词 → 中文（跟 panel.js 的 STATE_TEXT 保持一致）
@@ -3381,6 +3417,11 @@ function wireIpc() {
   });
 
   // 拖到她身上的文件（路径在 preload 里换好了）
+  // 面板上拖进来的：只回「这几个分别是什么」，怎么用面板自己定
+  ipcMain.handle('panel:drop', (_e, paths) => {
+    try { return classifyDrop(paths); } catch (err) { log('[drop] 认不出来: ' + err.message); return []; }
+  });
+
   ipcMain.on('drop:files', (_e, paths) => {
     try { routeDrop(Array.isArray(paths) ? paths.map(String) : []); }
     catch (err) { log('[drop] 分流出错: ' + err.message); }

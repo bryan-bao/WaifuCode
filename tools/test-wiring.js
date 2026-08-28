@@ -197,6 +197,36 @@ console.log('\n[9] 留着的线那排 chip：不许裂、不许没头没脑');
   check(js.includes('raw.slice(0, 8)') && js.includes('c.title = raw'),
         '线名截短显示、全文进 title（chip 不是拿来读任务的）');
 }
+console.log('\n[10] 拖文件进面板');
+{
+  const js = read('src/renderer/panel.js');
+  const pre = read('src/preload.js');
+  const main = read('src/main.js');
+  const drop = js.slice(js.indexOf('function dropZone'), js.indexOf('function dropZone') + 2600);
+
+  check(/addEventListener\('dragover'/.test(drop) && /addEventListener\('drop'/.test(drop),
+        '两个事件都接了（dragover 不接的话浏览器根本不让你放）');
+  check((drop.match(/stop\(e\)/g) || []).length >= 4,
+        '**每一个都 preventDefault** —— 不拦的话 Electron 会直接把面板窗口导航到那个文件，回不来');
+  check(drop.includes('[...files]'),
+        'FileList 要摊成数组 —— 过了 contextBridge 就不可迭代了（实测炸过）');
+  check(drop.includes("kind === 'dir'") && drop.includes("$('dir').value = dirs[0].path"),
+        '文件夹 → 填进项目目录');
+  check(drop.includes("$('task').value") && /\/\\s\/\.test\(x\.path\)/.test(drop),
+        '别的文件 → 路径填进任务框，带空格的包引号（不包的话那条线拿到的是两段）');
+  check(!drop.includes("dispatchEvent(new Event('input'))"),
+        '**别派 input** —— 线名跟着任务描述走，这会儿框里只有路径，取出来是「"D:/shots/图 1.」这种鬼东西');
+
+  check(pre.includes('classifyDrop') && pre.includes('webUtils.getPathForFile'),
+        '真路径只能在 preload 里取（Electron 32 起 File.path 没了）');
+  check(!/classifyDrop[^]{0,300}for \(const/.test(pre),
+        'preload 里按下标遍历，不用 for…of（FileList 过桥后不可迭代）');
+  check(main.includes("ipcMain.handle('panel:drop'") && main.includes('desk.kindOf'),
+        '认类型走 desk.kindOf —— 跟拖到她身上是**同一套判据**，别另造一份');
+  check(!/function classifyDrop[^]{0,700}readFileSync/.test(main),
+        '只认类型，**不读内容** —— 读不读是那条线自己的事（也是省钱）');
+}
+
 console.log('');
 console.log(bad === 0 ? '\x1b[32m全过了\x1b[0m' : '\x1b[31m' + bad + ' 项没过\x1b[0m');
 process.exit(bad === 0 ? 0 : 1);

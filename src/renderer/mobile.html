@@ -209,6 +209,14 @@
     border-bottom: 1px solid var(--line2, #1b2130); font-size: 14px;
   }
   .picker .item .tag { margin-left: auto; font-size: 11px; color: var(--acc); }
+  .picker .item .sz { margin-left: auto; font-size: 11px; color: var(--faint); }
+  .picker .item.file { color: #d7dce8; }
+  .picker .hd { font-size: 11px; color: var(--faint); margin: 12px 2px 4px; }
+  /* 说话框旁边那个回形针（详情页里挑电脑上的文件） */
+  .say .clip {
+    flex: none; padding: 0 12px; border-radius: var(--r-s); border: 1px solid var(--line);
+    background: var(--card2); color: var(--fg); font-size: 16px;
+  }
   .picker .bar { display: flex; gap: 8px; position: sticky; bottom: 0; background: var(--bg); padding: 10px 0; }
   .picker .bar button { flex: 1; padding: 12px; border-radius: var(--r-s); font: inherit; font-weight: 600; border: 1px solid var(--line); background: var(--card2); color: var(--fg); }
   .picker .bar .use { border-color: var(--btn-line); background: linear-gradient(180deg, var(--btn1), var(--btn2)); color: var(--btn-fg); }
@@ -230,7 +238,7 @@
     <div class="chips" id="projects"></div>
     <div class="row2" style="align-items:center">
       <input id="dir" placeholder="项目目录" spellcheck="false" style="margin-bottom:0" />
-      <button id="pick" style="flex:none;padding:10px 14px;border-radius:var(--r-s);border:1px solid var(--line);background:var(--card2);color:var(--fg);font:inherit">选文件夹</button>
+      <button id="pick" style="flex:none;padding:10px 14px;border-radius:var(--r-s);border:1px solid var(--line);background:var(--card2);color:var(--fg);font:inherit">选电脑上的</button>
     </div>
     <div style="height:8px"></div>
     <!-- 终端自己的命令（Claude 的 / 命令、codex 的 / 命令、! 开头的 shell）。
@@ -767,6 +775,7 @@
         ? '<div class="say"><div style="font-size:11px;color:var(--faint);padding:0 2px 6px">说的话会直接打进电脑上那个终端窗口，跟你走过去敲一模一样</div>' +
           '<div class="chips quick" id="d-quick"></div>' +
           '<div class="row"><textarea id="d-say" placeholder="接着说……"></textarea>' +
+          '<button class="clip" id="d-clip" title="挑电脑上的文件">📎</button>' +
           '<button id="d-send">发送</button></div><div id="d-msg" style="font-size:12px;min-height:18px;padding:4px 2px"></div></div>'
         : '<div class="empty">这个窗口已经关了，只能看历史</div>');
 
@@ -793,6 +802,11 @@
       $('d-yes').onclick = () => approve(d.id, true, d.project || d.name);
       $('d-no').onclick = () => approve(d.id, false, d.project || d.name);
     }
+    if (d.canSend && $('d-clip')) {
+      // 挑电脑上的文件，路径填进说话框（这条线的目录是定死的，所以这儿
+      // 挑文件夹也是**填路径**，不是换目录）
+      $('d-clip').onclick = () => openPicker(d.dir || '', 'd-say');
+    }
     if (d.canSend) {
       $('d-send').onclick = async () => {
         const text = $('d-say').value.trim();
@@ -813,8 +827,49 @@
     }
   }
 
-  // ── 文件夹选择器：翻电脑上的目录（手机上没系统选择器）──────────────
-  async function openPicker(start) {
+  // ── 挑电脑上的东西：文件夹**和文件**都能挑（手机上没有电脑的系统选择器）──
+  //
+  // 挑中什么就干什么，按类型认：
+  //   文件夹 —— 派活卡片上是「就用这个目录」；任务窗口里那条线目录定死了，
+  //             所以变成把路径填进去
+  //   文件   —— 路径填进输入框（图、日志、别的格式一视同仁：**只给路径**，
+  //             读不读、怎么读是那条线自己的事，也省得白花钱把整个文件塞进去）
+  const KIND_ICON = { image: '🖼', text: '📄', music: '🎵', nope: '📦' };
+  let pickTarget = 'task';   // 挑完了填进哪个框
+
+  function fmtSize(n) {
+    if (!n) return '';
+    return n < 1024 ? n + ' B'
+         : n < 1048576 ? (n / 1024).toFixed(0) + ' KB'
+         : (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  /** 一句提示：在任务窗口里就说给任务窗口那行看，别喊到首页去 */
+  function note(text, kind) {
+    if (pickTarget === 'd-say' && $('d-msg')) {
+      $('d-msg').textContent = text;
+      $('d-msg').style.color = kind === 'err' ? 'var(--bad)' : 'var(--acc)';
+      return;
+    }
+    msg(text, kind || 'ok');
+  }
+
+  function putPath(p, kind) {
+    const el = $(pickTarget);
+    if (!el) return;
+    // 带空格的路径要包引号，不然那条线拿到的是两段
+    const one = /\s/.test(p) ? '"' + p + '"' : p;
+    el.value = (el.value ? el.value.replace(/\s+$/, '') + '\n' : '') + one;
+    if (pickTarget === 'd-say') sayDraft = el.value;   // 草稿存 DOM 外面，重建冲不掉
+    $('picker').style.display = 'none';
+    el.focus();
+    note(kind === 'image' ? '图的路径填进去了 —— 她能直接打开看，你补一句要她看什么'
+       : kind === 'dir' ? '文件夹路径填进去了'
+       : '路径填进去了，补一句要她拿它干嘛');
+  }
+
+  async function openPicker(start, target) {
+    pickTarget = target || 'task';
     $('picker').style.display = 'block';
     $('picker').innerHTML = '<div class="empty">加载中…</div>';
     await loadPicker(start || $('dir').value.trim() || '');
@@ -822,27 +877,42 @@
   async function loadPicker(dir) {
     let d = null;
     try { d = await fetch(api('/api/browse?dir=' + encodeURIComponent(dir))).then((x) => x.json()); } catch (_) { return; }
-    const rows = (d.dirs || []).map((x, i) =>
+    const dirs = (d.dirs || []).map((x, i) =>
       '<div class="item" data-i="' + i + '">📁 ' + esc(x.name) +
-      (x.project ? '<span class="tag">项目</span>' : '') + '</div>').join('') ||
-      '<div class="empty">' + esc(d.error || '这个文件夹里没有子目录') + '</div>';
+      (x.project ? '<span class="tag">项目</span>' : '') + '</div>').join('');
+    const files = (d.files || []).map((x, i) =>
+      '<div class="item file" data-f="' + i + '">' + (KIND_ICON[x.kind] || '📦') + ' ' + esc(x.name) +
+      '<span class="sz">' + fmtSize(x.size) + '</span></div>').join('');
+    const empty = (!dirs && !files)
+      ? '<div class="empty">' + esc(d.error || '这个文件夹是空的') + '</div>' : '';
     $('picker').innerHTML =
       '<div class="cwd">' + (d.cwd ? esc(d.cwd) : '选一个盘') + '</div>' +
       (d.parent !== null && d.cwd ? '<div class="item" id="p-up">⬆ 上一层</div>' : '') +
-      rows +
+      dirs + (files ? '<div class="hd">这个文件夹里的文件（点一下把路径填进去）</div>' + files : '') +
+      empty +
       '<div class="bar"><button id="p-cancel">取消</button>' +
-      (d.cwd ? '<button class="use" id="p-use">就用这个文件夹</button>' : '') + '</div>';
+      (d.cwd ? '<button class="use" id="p-use">' +
+        (pickTarget === 'd-say' ? '就用这个文件夹的路径' : '就用这个文件夹') + '</button>' : '') + '</div>';
     if ($('p-up')) $('p-up').onclick = () => loadPicker(d.parent || '');
     $('picker').querySelectorAll('.item[data-i]').forEach((el) => {
       el.onclick = () => loadPicker(d.dirs[Number(el.dataset.i)].path);
     });
+    // 文件：点一下就是「把这个交给她」—— 只填路径，不读内容
+    $('picker').querySelectorAll('.item[data-f]').forEach((el) => {
+      el.onclick = () => {
+        const f = (d.files || [])[Number(el.dataset.f)];
+        if (f) putPath(f.path, f.kind);
+      };
+    });
     $('p-cancel').onclick = () => { $('picker').style.display = 'none'; };
     if ($('p-use')) $('p-use').onclick = () => {
+      // 派活卡片上＝选项目目录；任务窗口里那条线的目录是定死的，只能填路径
+      if (pickTarget === 'd-say') { putPath(d.cwd, 'dir'); return; }
       $('dir').value = d.cwd;
       $('picker').style.display = 'none';
     };
   }
-  $('pick').onclick = () => openPicker();
+  $('pick').onclick = () => openPicker('', 'task');
 
   // 长连接：SSE 断了指数退避重连。iOS Safari 把页面冻结后会掐连接，
   // 恢复时**不保证**触发 error —— 光靠 onerror 会一直亮「实时」看旧账。
