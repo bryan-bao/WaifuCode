@@ -237,30 +237,24 @@
   #recent { margin-top: 6px; }
   /* 这两排一行到底，别换行把高度顶起来（多的横着滚） */
   /**
-   * 这两排：一行到底，多的横着滚。
+   * 这两排：**装不下就往下排**，一个都不藏（用户要的就是这个：
+   * 「别滚动了，往下自适应排一下」）。
    *
-   * 【为什么不换行】左栏永远是 350px 宽（grid 写死的），6 个项目换行就是
-   * 两三行、57~90px —— 那点高度直接从任务框身上出，默认尺寸下任务框会被压到
-   * 下限（实测换行版在 764×635 下任务框只剩 104px，再多一排「接着聊」就溢出了）。
+   * 【两条缺一不可】chip 得 flex:none（不然会被压扁）+ 里面的字 nowrap
+   * （不然一个 chip 就是一列竖着的字，整排炸成一百多像素高 —— 实拍
+   * 「MR / 金 融 知 识 …」）。换行是**排与排之间**的事，跟这两条不冲突。
    *
-   * 【那怎么知道右边还有】两条：右边缘**淡出**一块（.more 那个遮罩），
-   * 加上**滚轮直接横着滚**（panel.js 的 hscroll）—— 不给这两样的话，
-   * 右边那几个就是「被吃了」（用户实拍反馈）。
+   * 【代价说清楚】左栏永远 350px 宽，10 个项目排下来是三四行、100~130px，
+   * 这点高度是从任务框身上出的（任务框是 flex:1 那个）。默认尺寸下任务框
+   * 还剩 180px 上下，比改版前的 151px 还宽裕；只有「窗口压得很矮 + 设置
+   * 展开着 + 项目特别多」三样凑齐时才需要滚一下。
    */
-  #lanes, #recent { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  #lanes::-webkit-scrollbar, #recent::-webkit-scrollbar { display: none; }
-  /* **这两条缺一不可**：这排改成不换行之后，chip 默认还是可以被压扁的
-     （flex-shrink 是 1、里面的字照样能换行）—— 面板一窄，每个 chip 就被压成
-     一列竖着的字，整排炸成一百多像素高（用户实拍：「MR / 金 融 知 识 …」）。
-     flex:none 让它不被压，nowrap 让里面的字不折行，多出来的横着滚 */
+  #lanes, #recent { flex-wrap: wrap; }
   #lanes .chip, #recent .chip { flex: none; white-space: nowrap; }
+  /* 项目名长的省略号截断：一个 chip 占半栏宽的话，一行就只放得下一个 */
   #recent .chip { max-width: 132px; overflow: hidden; text-overflow: ellipsis; }
-  /* 右边还有没滚到的东西时，边缘淡出一块 —— 这是「还有」唯一的视觉信号。
-     遮罩加在元素自己身上（不是内容上），所以它不会跟着滚走 */
-  #lanes.more, #recent.more {
-    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent);
-    mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent);
-  }
+  /* 十个挤在 350px 里，紧一点能多放一个 —— 高度是从任务框身上出的 */
+  #recent .chip { padding: 2px 9px; font-size: 10.5px; }
 
   /* 主角：吃掉所有剩下的高度 */
   #task { flex: 1 1 auto; min-height: 104px; }
@@ -270,6 +264,13 @@
      :has 是上一层选中「里面有展开的 details」—— CSS 没有「前一个兄弟」选择器，
      而 Electron 33 = Chromium 130，:has 稳的 */
   .col-form:has(#setup[open]) #task { min-height: 60px; }
+  /* 窗口压得矮的时候（拉到接近最小的 640×520），任务框的下限也得让一让 ——
+     不让的话整栏又要开始滚。宁可任务框矮一点：它是唯一能长回去的那个 */
+  @media (max-height: 640px) { #task { min-height: 56px; } }
+  /* 展开设置时把「最近项目」那排先收起来（10 个项目排下来是 109px）——
+     你这会儿是在拨旋钮，不是在挑项目，而且目录早填好了。不收的话
+     640×560 那档溢出 110px，两个按钮又被顶出屏幕（实测）。收起设置它就回来 */
+  .col-form:has(#setup[open]) #recent { display: none; }
 
   /* ---- 收起来的那条设置 ----
      「用谁来干 / 模型 / 放她多开 / 线名」是选一次就不动的东西。收起时这条
@@ -321,7 +322,7 @@
   .setup-body .f { min-width: 0; }
   .setup-body select, .setup-body input { padding: 6px 8px; font-size: 12px; }
   .btns { margin-top: 10px; }
-  #msg { margin-top: 6px; min-height: 16px; }
+  #msg { margin-top: 6px; min-height: 12px; }
 
   /* ---- 右栏：她的状态 + 现场 ---- */
   .col-live {

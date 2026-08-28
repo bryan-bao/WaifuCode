@@ -242,18 +242,16 @@ console.log('\n[10] 派活那一栏：一屏装得下');
           '顶栏也不许折行（不然标题变成「给她派 / 个活」、按钮变成「说 / 明 / 书」）'); }
   check(html.includes('header button, header select#skin { flex: none; }'),
         '顶栏那几个按钮也要 flex:none —— nowrap 只管字，不管它自己被压扁');
-  // 「剩下被吃了」：一行到底就必须给出「右边还有」的信号
-  { const hs = js.slice(js.indexOf('function hscroll'), js.indexOf('function hscroll') + 900);
-    check(hs.includes("addEventListener('wheel'") && hs.includes('{ passive: false }') && hs.includes('preventDefault'),
-          '**滚轮直接横着滚** —— 鼠标滚轮默认只滚竖向，不接的话右边那几个项目等于不存在（用户实拍「剩下被吃了啊」）');
-    check(hs.includes('Math.abs(e.deltaX) > Math.abs(e.deltaY)'),
-          '触摸板横扫走 deltaX，别抢它的');
-    check(hs.includes("classList.toggle('more'"),
-          '右边还有东西时挂 .more（边缘淡出），滚到底就摘掉'); }
-  check(html.includes('#lanes.more, #recent.more'),
-        '淡出是加在元素自己身上的遮罩 —— 加在内容上会跟着滚走');
-  check(js.includes('hscroll(box);') && js.includes('hscroll(lb);'),
-        '两排都要挂（最近项目 + 接着聊）');
+  // 「别滚动了，往下自适应排一下」—— 十个项目换行排下去，一个都不藏
+  check(html.includes('#lanes, #recent { flex-wrap: wrap; }'),
+        '那两排装不下就**往下排**（横着滚那版被否了：右边那几个既看不见也够不着）');
+  check(!html.includes("classList.toggle('more'") && !js.includes('function hscroll'),
+        '横滚那套（滚轮劫持 + 边缘淡出）已经拆干净，别留着两套并存');
+  check(js.includes('.slice(0, 10)'), '最近项目留 10 个');
+  check(html.includes('.col-form:has(#setup[open]) #recent { display: none; }'),
+        '**设置展开时把那排先收起来** —— 10 个项目是 109px，不收的话 640×560 那档溢出 110px、按钮又被顶出屏幕（实测）');
+  check(html.includes('@media (max-height: 640px) { #task { min-height: 56px; } }'),
+        '窗口压矮时任务框的下限也让一让 —— 它是唯一能长回去的那个');
 
   check(html.includes('.col-form:has(#setup[open]) #task'),
         '设置展开时任务框下限放宽 —— 不放的话 640×560 那档会溢出 43px，按钮又被顶出屏幕（实测）');
