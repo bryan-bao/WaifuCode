@@ -250,6 +250,19 @@ console.log('\n[10] 派活那一栏：一屏装得下');
   check(js.includes('.slice(0, 10)'), '最近项目留 10 个');
   check(html.includes('.col-form:has(#setup[open]) #recent { display: none; }'),
         '**设置展开时把那排先收起来** —— 10 个项目是 109px，不收的话 640×560 那档溢出 110px、按钮又被顶出屏幕（实测）');
+  check(html.includes('#lanes:empty, #recent:empty { display: none; margin: 0; }'),
+        '一个项目都没有时那排连边距都不占（空 div 的 margin 照样占地方）');
+  { const body = html.slice(html.indexOf('<div class="setup-body">'), html.indexOf('</details>'));
+    check(!body.includes('class="sub"'),
+          '**展开那四格的标签一律一行** —— 标签后面挂小字的话，格子只有 ~150px 宽，' +
+          '左边那个挤成两行、右边那个一行，左右两列的控件就错开一截（用户实拍）');
+    check((body.match(/title="/g) || []).length >= 4,
+          '说明文字全挪进了控件的 title，一个字没少'); }
+  { const lab = html.slice(html.indexOf('.setup-body label {'), html.indexOf('.setup-body label {') + 160);
+    check(lab.includes('white-space: nowrap'), '标签写死不折行（双保险：以后再塞小字也不会错开）'); }
+  check(html.includes('.setup-body { align-items: start; }'),
+        '四个格子从顶上对齐 —— 行高再有差别控件也在同一条线上');
+
   check(html.includes('@media (max-height: 640px) { #task { min-height: 56px; } }'),
         '窗口压矮时任务框的下限也让一让 —— 它是唯一能长回去的那个');
 

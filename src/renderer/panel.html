@@ -250,6 +250,8 @@
    * 展开着 + 项目特别多」三样凑齐时才需要滚一下。
    */
   #lanes, #recent { flex-wrap: wrap; }
+  /* 一个都没有的时候连边距也别留 —— 空 div 的 margin 照样占地方 */
+  #lanes:empty, #recent:empty { display: none; margin: 0; }
   #lanes .chip, #recent .chip { flex: none; white-space: nowrap; }
   /* 项目名长的省略号截断：一个 chip 占半栏宽的话，一行就只放得下一个 */
   #recent .chip { max-width: 132px; overflow: hidden; text-overflow: ellipsis; }
@@ -318,7 +320,14 @@
     border: 1px solid var(--acc2); border-top: 0;
     border-radius: 0 0 var(--r-s) var(--r-s);
   }
-  .setup-body label { margin: 0 0 4px; }
+  /* **一行到底**：格子只有 ~150px 宽，标签一折行左右两列的控件就错开一截
+     （用户实拍）。说明文字全挪进控件的 title 了 */
+  .setup-body label {
+    margin: 0 0 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* 每个格子都从顶上对齐，行高再有差别控件也在同一条线上 */
+  .setup-body { align-items: start; }
   .setup-body .f { min-width: 0; }
   .setup-body select, .setup-body input { padding: 6px 8px; font-size: 12px; }
   .btns { margin-top: 10px; }
@@ -636,15 +645,15 @@
         </summary>
         <div class="setup-body">
           <div class="f">
-            <label>用谁来干<span class="sub">没装 Claude 选 Codex</span></label>
-            <select id="agent" title="Claude Code —— 全套：她盯着、汇报、算钱&#10;Codex —— 只开窗干活，她不盯细节">
+            <label>用谁来干</label>
+            <select id="agent" title="没装 Claude 的机器选 Codex 也能派活&#10;&#10;Claude Code —— 全套：她盯着、汇报、算钱&#10;Codex —— 只开窗干活，她不盯细节">
               <option value="claude" data-short="Claude Code">Claude Code · 全套</option>
               <option value="codex" data-short="Codex">Codex · 只干活</option>
             </select>
           </div>
           <div class="f">
-            <label>用哪个模型<span class="sub">选一次就记住</span></label>
-            <select id="model" title="Opus 5 —— 主力，复杂的活交给它&#10;Sonnet 5 —— 快，便宜差不多一半&#10;Haiku 4.5 —— 最快最省，简单活&#10;Fable 5 —— 最强也最贵（Opus 两倍价）">
+            <label>用哪个模型</label>
+            <select id="model" title="选一次就记住，两种派法都用它&#10;&#10;Opus 5 —— 主力，复杂的活交给它&#10;Sonnet 5 —— 快，便宜差不多一半&#10;Haiku 4.5 —— 最快最省，简单活&#10;Fable 5 —— 最强也最贵（Opus 两倍价）">
               <option value="" data-short="跟设置走">跟设置走</option>
               <option value="claude-opus-5" data-short="Opus 5">Opus 5 · 主力</option>
               <option value="claude-sonnet-5" data-short="Sonnet 5">Sonnet 5 · 省一半</option>
@@ -653,8 +662,8 @@
             </select>
           </div>
           <div class="f">
-            <label>这次放她多开<span class="sub">只管这一次</span></label>
-            <select id="perm" title="自己判断 —— 安全的放行，危险的拦下&#10;改文件不问 —— 但跑命令还是要问你&#10;先出方案 —— 一个字都不改&#10;全都别问 —— 她自己拿主意">
+            <label>这次放她多开</label>
+            <select id="perm" title="只管这一次，不改你设置里的默认&#10;&#10;自己判断 —— 安全的放行，危险的拦下&#10;改文件不问 —— 但跑命令还是要问你&#10;先出方案 —— 一个字都不改&#10;全都别问 —— 她自己拿主意">
               <option value="" data-short="按默认">按设置里的默认</option>
               <option value="auto" data-short="自己判断">自己判断</option>
               <option value="acceptEdits" data-short="改文件不问">改文件不问</option>
@@ -663,8 +672,9 @@
             </select>
           </div>
           <div class="f">
-            <label>这条线叫什么<span class="sub">自动从上面取</span></label>
-            <input id="lane" spellcheck="false" placeholder="（自动）" />
+            <label>这条线叫什么</label>
+            <input id="lane" spellcheck="false" placeholder="（自动）"
+                   title="自动从任务描述里取，可以改。同一个目录开多条线时靠它区分" />
           </div>
         </div>
       </details>

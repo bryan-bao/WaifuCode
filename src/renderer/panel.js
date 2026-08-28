@@ -673,7 +673,7 @@ function syncAgentUi() {
   perm.title = codex
     ? '这一档会盖过你 ~/.codex/config.toml 里的设置，只管这一次。\n' +
       '开出来的窗口里会印一行告诉你具体给了什么。\n\n' + PERM_CODEX_FULL
-    : PERM_CLAUDE_FULL;
+    : '只管这一次，不改你设置里的默认。\n\n' + PERM_CLAUDE_FULL;
   syncSetupSummary();   // 选项文字被上面改过了，摘要得跟着重算
 }
 /**
