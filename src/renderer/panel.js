@@ -504,6 +504,32 @@ async function toggleDaily() {
   box.innerHTML = rows.length ? rows.join('<br>') : '今天还没什么可报的。';
 }
 
+/**
+ * 一排横着滚的 chip：滚轮直接翻它，右边还有东西时边缘淡出。
+ *
+ * 【为什么要接滚轮】这排是 overflow-x，而**鼠标滚轮默认只滚竖向** ——
+ * 不接的话右边那几个项目等于不存在（用户实拍：「剩下被吃了啊」）。
+ * 触摸板横扫本来就能滚，那种走 deltaX，别抢它。
+ */
+function hscroll(el) {
+  if (!el) return;
+  const mark = () => {
+    el.classList.toggle('more', el.scrollWidth - el.clientWidth - el.scrollLeft > 4);
+  };
+  if (!el.dataset.hs) {
+    el.dataset.hs = '1';
+    el.addEventListener('wheel', (e) => {
+      if (el.scrollWidth <= el.clientWidth) return;      // 没得滚就让给页面
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // 触摸板横扫，别插手
+      el.scrollLeft += e.deltaY;
+      e.preventDefault();
+    }, { passive: false });
+    el.addEventListener('scroll', mark);
+    window.addEventListener('resize', mark);
+  }
+  mark();
+}
+
 async function refreshRecent() {
   const projects = await window.waifu.listProjects();
   const box = $('recent');
@@ -529,6 +555,9 @@ async function refreshRecent() {
 
       box.appendChild(c);
     });
+  // 装完了才知道够不够宽 —— 淡出和滚轮都在这儿挂
+  hscroll(box);
+  box.title = '最近用过的项目，点一下填进上面的目录框。装不下的横着滚（滚轮就行）';
 }
 
 // --- 派活 -------------------------------------------------------------------
@@ -760,6 +789,7 @@ async function renderLanes(dir, mine) {
           };
           lb.appendChild(c);
         }
+        hscroll(lb);   // 同上：线多了要能横着滚，边缘淡出告诉你还有
       }
     } catch (_) { /* 列不出来就空着 */ }
 }

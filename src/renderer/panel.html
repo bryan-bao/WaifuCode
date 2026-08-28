@@ -236,6 +236,17 @@
   .gitinfo { margin-top: 5px; }
   #recent { margin-top: 6px; }
   /* 这两排一行到底，别换行把高度顶起来（多的横着滚） */
+  /**
+   * 这两排：一行到底，多的横着滚。
+   *
+   * 【为什么不换行】左栏永远是 350px 宽（grid 写死的），6 个项目换行就是
+   * 两三行、57~90px —— 那点高度直接从任务框身上出，默认尺寸下任务框会被压到
+   * 下限（实测换行版在 764×635 下任务框只剩 104px，再多一排「接着聊」就溢出了）。
+   *
+   * 【那怎么知道右边还有】两条：右边缘**淡出**一块（.more 那个遮罩），
+   * 加上**滚轮直接横着滚**（panel.js 的 hscroll）—— 不给这两样的话，
+   * 右边那几个就是「被吃了」（用户实拍反馈）。
+   */
   #lanes, #recent { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   #lanes::-webkit-scrollbar, #recent::-webkit-scrollbar { display: none; }
   /* **这两条缺一不可**：这排改成不换行之后，chip 默认还是可以被压扁的
@@ -244,6 +255,12 @@
      flex:none 让它不被压，nowrap 让里面的字不折行，多出来的横着滚 */
   #lanes .chip, #recent .chip { flex: none; white-space: nowrap; }
   #recent .chip { max-width: 132px; overflow: hidden; text-overflow: ellipsis; }
+  /* 右边还有没滚到的东西时，边缘淡出一块 —— 这是「还有」唯一的视觉信号。
+     遮罩加在元素自己身上（不是内容上），所以它不会跟着滚走 */
+  #lanes.more, #recent.more {
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 26px), transparent);
+  }
 
   /* 主角：吃掉所有剩下的高度 */
   #task { flex: 1 1 auto; min-height: 104px; }
