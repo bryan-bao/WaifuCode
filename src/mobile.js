@@ -44,9 +44,11 @@ function readBody(req, cap = 64 * 1024) {
  *   dispatch(opts)     -> { ok, ... } 在电脑上开一条最小化终端线
  *   send(id, text)     -> { ok, error? } 往那条线的终端里追问一句
  *   approve(id, allow) -> { ok, error? } 把确认键送进那个终端窗口
- *   browse(dir)        -> { cwd, parent, dirs[] } 让手机能翻电脑上的文件夹
+ *   browse(dir)        -> { cwd, parent, dirs[], files[] } 让手机能翻电脑上的东西
+ *   lanes(dir)         -> [{laneId,name,lastRun,alive,turns,hint}] 这个项目留着的线
+ *   interrupt(id)      -> { ok, error? } 把 Esc 送进那个终端窗口（叫停）
  */
-function createMobileServer({ pageFile, token, hooks, log }) {
+function createMobileServer({ pageFile, token, hooks, log, iconFile }) {
   const clients = new Set(); // SSE 连接
   let pushTimer = null;
 
@@ -63,6 +65,25 @@ function createMobileServer({ pageFile, token, hooks, log }) {
     };
 
     try {
+      // 【这两件不看口令】装成 App 时浏览器自己去取 manifest 和图标，
+      // **不会带上我们这个 ?t=** —— 要口令的话「加到主屏」出来的就是白图标。
+      // 里面没有任何私货：一个名字、一个图标，跟 401 页面暴露的信息量一样
+      if (req.method === 'GET' && pathname === '/manifest.webmanifest') {
+        res.writeHead(200, { 'content-type': 'application/manifest+json; charset=utf-8' });
+        return res.end(JSON.stringify({
+          name: '小依 · 手机工作台', short_name: '小依', start_url: '.', scope: '.',
+          display: 'standalone', background_color: '#0d0f16', theme_color: '#0d0f16',
+          icons: [{ src: 'icon.png', sizes: '512x512', type: 'image/png', purpose: 'any' }],
+        }));
+      }
+      if (req.method === 'GET' && pathname === '/icon.png' && iconFile) {
+        try {
+          const buf = fs.readFileSync(iconFile);
+          res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'max-age=86400' });
+          return res.end(buf);
+        } catch (_) { res.writeHead(404); return res.end(); }
+      }
+
       if (!tokenOk(got, token)) return deny();
 
       if (req.method === 'GET' && pathname === '/') {
@@ -91,6 +112,20 @@ function createMobileServer({ pageFile, token, hooks, log }) {
 
       // 翻电脑上的文件夹（手机上没法调系统选择器，只能这么来）。
       // **只列目录名，绝不读文件内容** —— 这个口只为选项目服务
+      // 这个项目留着的线（关掉的窗口也能接回去）—— 手机原来只能接**还开着**的
+      if (req.method === 'GET' && pathname === '/api/lanes') {
+        return json(200, { lanes: (await hooks.lanes(params.get('dir') || '')) || [] });
+      }
+
+      // 叫停：把 Esc 送进那个终端窗口。**只是送键**，跟放行同一条路子 ——
+      // 她正在跑的那一步能不能被打断，是那个 CLI 自己的事
+      if (req.method === 'POST' && pathname === '/api/interrupt') {
+        const body = JSON.parse(await readBody(req) || '{}');
+        const r = await hooks.interrupt(String(body.id || ''));
+        if (log) log('[mobile] 叫停 ' + body.id + ' -> ' + ((r && r.ok) ? '送到了' : (r && r.error) || '没送到'));
+        return json(200, r || { ok: false, error: '停不了' });
+      }
+
       if (req.method === 'GET' && pathname === '/api/browse') {
         return json(200, await hooks.browse(params.get('dir') || ''));
       }
@@ -136,6 +171,10 @@ function createMobileServer({ pageFile, token, hooks, log }) {
         const r = await hooks.dispatch({
           projectPath: dir,
           task,
+          // 接回这个项目留着的某条线（手机上那排「接着聊」）。
+          // 空串要归成 undefined —— 传空串下去会被当成「指定了一条线」，
+          // 而那条线永远找不到，于是每次都静默开新窗口
+          laneId: String(body.laneId || '').trim() || undefined,
           laneName: String(body.laneName || '').trim(),
           permissionMode: body.permissionMode || undefined,
           agent: body.agent === 'codex' ? 'codex' : 'claude',

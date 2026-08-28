@@ -2203,6 +2203,13 @@ function ensureMobile() {
   return new Promise((resolve) => {
     const srv = mobile.createMobileServer({
       pageFile: path.join(ROOT, 'src', 'renderer', 'mobile.html'),
+      // 「加到主屏」要的图标。取不到就只是图标是白的，不影响用
+      iconFile: (() => {
+        for (const p of [path.join(ROOT, 'build', 'icon.png'), path.join(ROOT, 'assets', 'icon.png')]) {
+          try { if (fs.existsSync(p)) return p; } catch (_) { /* 探不了就试下一个 */ }
+        }
+        return null;
+      })(),
       token,
       log,
       hooks: {
@@ -2246,6 +2253,10 @@ function ensureMobile() {
           }
         },
         browse: (dir) => browseDirs(dir),
+        lanes: (dir) => lanesFor(dir),
+        // 叫停：只把 Esc 送进窗口。**不做关窗** —— 那不可逆，手机上误触
+        // 的代价太大（要关就走到电脑前，或者在面板上关）
+        interrupt: (id) => (terminals ? terminals.interruptRemote(id) : { ok: false, error: '终端管理还没起来' }),
       },
     });
     srv.on('error', (err) => {
@@ -2440,6 +2451,30 @@ const DISPATCH_AGENTS = new Set(['claude', 'codex']);
 function resolveDispatchAgent(raw) {
   const a = String(raw == null ? '' : raw).trim();
   return DISPATCH_AGENTS.has(a) ? a : 'claude';
+}
+
+/**
+ * 这个项目留着的线（面板那排 chip 和手机上那排，用的是**同一份**）。
+ *
+ * 空数组 = 「这个项目没留着线」，跟「读挂了」在协议上分不开 ——
+ * 所以出错一定要记一行，不然连查都没得查（排查抓的）。
+ */
+function lanesFor(dir) {
+  try {
+    const d = String(dir || '').trim();
+    if (!d || !fs.existsSync(d)) return [];
+    return sessions.lanes(d).slice(0, 5).map((l) => ({
+      laneId: l.id,
+      name: l.name || '',
+      lastRun: l.lastRun || '',
+      alive: Boolean(l.alive),
+      turns: l.turns || 0,
+      hint: l.name ? '' : cost.lastUserPrompt(l.sessionId),
+    }));
+  } catch (err) {
+    log('[session] 这个项目的线读不出来: ' + err.message);
+    return [];
+  }
 }
 
 function openLaneTerminal(opts, { minimized }) {
@@ -3079,25 +3114,7 @@ function wireIpc() {
 
   // 「这个项目留着的线」：后端 lanes() 早就在了，只差这条 IPC。
   // 没名字的线拿「上次聊到什么」当名 —— 光靠时间戳认不出哪条是哪条
-  ipcMain.handle('session:lanes', (_e, dir) => {
-    try {
-      const d = String(dir || '').trim();
-      if (!d || !fs.existsSync(d)) return [];
-      return sessions.lanes(d).slice(0, 5).map((l) => ({
-        laneId: l.id,
-        name: l.name || '',
-        lastRun: l.lastRun || '',
-        alive: Boolean(l.alive),
-        turns: l.turns || 0,
-        hint: l.name ? '' : cost.lastUserPrompt(l.sessionId),
-      }));
-    } catch (err) {
-      // 空数组 = 「这个项目没留着线」，跟「读挂了」在协议上分不开 ——
-      // 不记一行的话，出了问题连查都没得查（排查抓的）
-      log('[session] 这个项目的线读不出来: ' + err.message);
-      return [];
-    }
-  });
+  ipcMain.handle('session:lanes', (_e, dir) => lanesFor(dir));
 
   // --- 开着的终端 ---
 

@@ -2120,6 +2120,44 @@ class TerminalManager extends EventEmitter {
     return { ok: false, error: '窗口调不到前台，按键没敢发（标题可能被改了）' };
   }
 
+  /**
+   * 叫停：把 Esc 送进那个终端窗口（手机上「打断」用的）。
+   *
+   * 【说实话的边界】跟放行同一条路子：我们够不到那个 CLI 的进程，唯一的路是
+   * 把窗口调到前台再送键。**送到 ≠ 一定停得下来** —— claude 和 codex 都用
+   * Esc 打断当前这步，但它正卡在别的界面上时按了也白按。所以话术只承诺
+   * 「送到了」。
+   *
+   * **只送 Esc，不关窗**：关窗不可逆，手机上误触的代价太大。
+   *
+   * -Exact 那道闸照旧（禁用「标题包含」兜底）—— 宁可这次没停下来，
+   * 也绝不把 Esc 敲进别的线（跟 approveRemote 同一条铁律）。
+   */
+  async interruptRemote(id) {
+    const rec = this.items.get(id);
+    if (!rec) return { ok: false, error: '没这个终端' };
+    if (rec.status === 'closed') return { ok: false, error: '这个窗口已经关了' };
+    let out = '';
+    try {
+      out = await run('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', FOCUS_PS1, '-Title', rec.title, '-SendKeys', '{ESC}', '-Exact',
+        '-WaitMs', '4000',
+      ], 12000);
+    } catch (err) {
+      return { ok: false, error: '按键没送出去：' + err.message };
+    }
+    const m = sentTitle(out);
+    if (m !== null && m === rec.title) {
+      this.log('[term] ' + rec.id + ' 远程叫停，Esc 已送进窗口');
+      this._timeline(rec, 'you', '（在手机上按了打断）');
+      this.emit('change');
+      return { ok: true };
+    }
+    if (m !== null) return { ok: false, error: '聚焦到的窗口跟这条线对不上，没敢发键' };
+    return { ok: false, error: '窗口调不到前台，按键没敢发' };
+  }
+
   // 同一条线被新窗口接走了：把它已经 closed 的旧行收掉（历史都在新窗口里续写）
   _retireLane(laneId, keepId) {
     let removed = false;

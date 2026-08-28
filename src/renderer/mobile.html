@@ -4,6 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>小依 · 手机工作台</title>
+<!-- 「加到主屏」之后没有地址栏，全屏跑，看着就是个 app。
+     清单和图标是**免口令**取的（浏览器取它们不会带上我们的 ?t=） -->
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon.png" />
+<meta name="theme-color" content="#0d0f16" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <style>
   /* 跟桌面面板同一套「深空」配色 —— 换皮肤是第二批的事，先把结构立住 */
   :root {
@@ -127,6 +134,17 @@
 
   /* 常用命令那一排：**一行横着滑**，绝不换行 —— 十来条堆成三行会把下面的
      输入框顶出屏幕，而手机上第一屏就该看见输入框和派活键 */
+  /* 「接着聊：」那排 —— 不写小标题的话就是几个没头没脑的圆块（面板上栽过） */
+  .lanes-label { font-size: 11.5px; color: var(--faint); align-self: center; margin-right: 2px; }
+  #lanes { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  #lanes::-webkit-scrollbar { display: none; }
+  #lanes .chip { flex: none; white-space: nowrap; }
+  /* 打断：危险动作，做成描边红，别跟「放行」抢眼 */
+  .stopbtn {
+    width: 100%; padding: 11px; margin-bottom: 10px; border-radius: var(--r-s);
+    border: 1px solid rgba(248,113,113,.45); background: rgba(248,113,113,.08);
+    color: var(--bad); font: inherit; font-weight: 600;
+  }
   .quick {
     margin: 2px 0 8px; flex-wrap: nowrap; overflow-x: auto;
     -webkit-overflow-scrolling: touch; scrollbar-width: none; padding-bottom: 2px;
@@ -243,6 +261,8 @@
     <div style="height:8px"></div>
     <!-- 终端自己的命令（Claude 的 / 命令、codex 的 / 命令、! 开头的 shell）。
          手机上敲这些要命，点一下填进下面的框 —— 发不发你自己点 -->
+    <!-- 这个项目留着的线：关掉的窗口也能接回去（她记得聊到哪儿） -->
+    <div class="chips" id="lanes"></div>
     <div class="chips quick" id="quick"></div>
     <textarea id="task" placeholder="要干什么活"></textarea>
     <div class="row2">
@@ -279,7 +299,21 @@
 
 <script>
   const $ = (id) => document.getElementById(id);
-  const token = new URLSearchParams(location.search).get('t') || '';
+  /**
+   * 口令。网址里带过来一次，就**存在这台手机上，并把它从地址栏抹掉**。
+   *
+   * 留在网址里的后果：进浏览器历史、进「最近标签」、你把链接转发给谁
+   * 就等于把口令一起给了谁 —— 而这把钥匙能开你电脑上所有的线。
+   */
+  const token = (() => {
+    const q = new URLSearchParams(location.search).get('t') || '';
+    if (q) {
+      try { localStorage.setItem('waifu.token', q); } catch (_) { /* 无痕模式：这次有效 */ }
+      try { history.replaceState(null, '', location.pathname); } catch (_) { /* 抹不掉也照用 */ }
+      return q;
+    }
+    try { return localStorage.getItem('waifu.token') || ''; } catch (_) { return ''; }
+  })();
   const api = (p) => p + (p.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(token);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -302,6 +336,30 @@
   };
   const money = (usd) => (usd > 0.004 ? '¥' + (usd * 7.2).toFixed(2) : '');
 
+  // 已经响过的那几条（只对**新**停下来的线出声）
+  let waitedIds = new Set();
+
+  /** 震一下 + 响一声。两样都是「有就用，没有就算了」—— iOS 上没有震动 API，
+   *  声音也可能被浏览器的自动播放策略挡着，挡了就当没有，绝不报错打扰你 */
+  function buzz() {
+    try { if (navigator.vibrate) navigator.vibrate([180, 90, 180]); } catch (_) { /* 没有就算了 */ }
+    try {
+      const A = window.AudioContext || window.webkitAudioContext;
+      if (!A) return;
+      const ac = buzz.ac || (buzz.ac = new A());
+      if (ac.state === 'suspended') ac.resume();
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(880, ac.currentTime);
+      o.frequency.setValueAtTime(660, ac.currentTime + 0.16);
+      g.gain.setValueAtTime(0.0001, ac.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.22, ac.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.42);
+      o.connect(g); g.connect(ac.destination);
+      o.start(); o.stop(ac.currentTime + 0.45);
+    } catch (_) { /* 响不了就算了 */ }
+  }
+
   // 放行是把确认键送进电脑上的终端窗口 —— 手机上必须二次确认，误触不可逆
   async function approve(id, allow, name) {
     const word = allow ? '放行' : '拒绝';
@@ -320,6 +378,7 @@
   // 不会另开窗口（这正是手机远程办公的关键：接着干，不是重新开一摊）
   function syncTargetUI() {
     const live = $('target').value !== '';
+    if (live) pickedLane = null;   // 选了开着的线，旧线那排就不作数了
     $('dir').parentElement.style.display = live ? 'none' : 'flex';
     $('agent').parentElement.style.display = live ? 'none' : 'flex';
     // 模型只对 claude 有意义（codex CLI 不收这个参数，摆着是骗人）——
@@ -328,9 +387,15 @@
     // 选了 codex 就再也切不回来（用户实拍）
     $('model').style.display = $('agent').value === 'codex' ? 'none' : '';
     $('projects').style.display = live ? 'none' : 'flex';
-    $('task').placeholder = live ? '接着说一句（直接进那个终端）' : '要干什么活';
-    $('go').textContent = live ? '发给那条线' : '派活';
+    $('task').placeholder = live ? '接着说一句（直接进那个终端）'
+      : pickedLane ? '接着「' + pickedLane.name + '」说一句' : '要干什么活';
+    $('go').textContent = live ? '发给那条线' : pickedLane ? '接回那条线' : '派活';
+    // 接回去的线都是 claude 那边留下的（codex 的会话档案不在 ~/.claude，
+    // 天然被 alive 过滤掉了）—— 所以这时候「用谁来干」不该给选，
+    // 选了也没用，还会让人以为能拿 codex 接回 claude 的线
+    if (pickedLane) $('agent').parentElement.style.display = 'none';
     syncQuick();   // 换了线/换了 CLI，这排命令跟着换
+    refreshLanes(); // 「接着聊」那排也跟着目录/选择变
   }
   $('target').onchange = syncTargetUI;
   $('agent').onchange = syncTargetUI; // 切到 codex 要把模型那行藏起来
@@ -373,6 +438,15 @@
     // 就白等一分钟。混在列表中间要往下翻才看得见，那等于没提醒（用户提的）
     const waiting = all.filter((t) => t.status === 'waiting');
     const list = waiting.concat(all.filter((t) => t.status !== 'waiting'));
+
+    // **新冒出来的「等你确认」要惊动你一下。** 横幅和角标是给眼睛的，
+    // 手机搁在桌上根本看不见。只在**新增**的时候响 —— 每 3 秒响一次是灾难
+    {
+      const ids = waiting.map((t) => t.id);
+      const fresh = ids.filter((id) => !waitedIds.has(id));
+      waitedIds = new Set(ids);
+      if (fresh.length) { buzz(); }
+    }
 
     // 页头角标 + 标题：手机锁屏回来一眼就知道「有事等你」
     const badge = $('waitbar');
@@ -770,6 +844,9 @@
       (d.errorCount ? ' · 报错 ' + d.errorCount + ' 次' : '') + '</div>' +
       (files ? '<div class="files">' + files + '</div>' : '') +
       '</div>' + approveBox +
+      // 叫停：跑偏了、在烧钱，手机上原来只能干看着
+      ((d.status === 'running' || d.status === 'waiting')
+        ? '<button class="stopbtn" id="d-stop">⏹ 打断（把 Esc 送过去）</button>' : '') +
       '<div class="card"><h3>进度</h3><div class="tl">' + tl + '</div></div>' +
       (d.canSend
         ? '<div class="say"><div style="font-size:11px;color:var(--faint);padding:0 2px 6px">说的话会直接打进电脑上那个终端窗口，跟你走过去敲一模一样</div>' +
@@ -798,6 +875,28 @@
       b.onclick = () => toggleFull(b);
     }
     $('d-back').onclick = closeDetail;
+    if ($('d-stop')) {
+      $('d-stop').onclick = async () => {
+        // 二次确认：这一下会打断她手上正在干的那步
+        if (!confirm('打断「' + (d.project || d.name) + '」正在干的这一步？')) return;
+        $('d-stop').disabled = true;
+        try {
+          const r = await fetch(api('/api/interrupt'), {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: d.id }),
+          }).then((x) => x.json());
+          const dm = $('d-msg');
+          if (dm) {
+            // 话只说到「送到了」—— 停不停得下来是那个 CLI 自己的事，
+            // 我们够不到它的进程（跟放行同一条边界）
+            dm.textContent = r && r.ok ? 'Esc 送过去了，看下面这条线几秒后的状态'
+                                       : (r && r.error) || '没送到';
+            dm.style.color = r && r.ok ? 'var(--acc)' : 'var(--bad)';
+          }
+        } catch (e) { const dm = $('d-msg'); if (dm) { dm.textContent = '网络断了？' + e.message; dm.style.color = 'var(--bad)'; } }
+        $('d-stop').disabled = false;
+      };
+    }
     if (d.status === 'waiting') {
       $('d-yes').onclick = () => approve(d.id, true, d.project || d.name);
       $('d-no').onclick = () => approve(d.id, false, d.project || d.name);
@@ -914,6 +1013,54 @@
   }
   $('pick').onclick = () => openPicker('', 'task');
 
+  // ── 这个项目留着的线 ──────────────────────────────────────────────
+  //
+  // 原来手机上只能「接着**还开着**的线说」—— 昨天关掉的窗口回不去，
+  // 出门想接着昨晚那条聊只能新开一条、上下文从头来。而电脑面板上那排
+  // 「接着聊」早就能接（后端认 laneId），这儿差的只是一个入口。
+  let pickedLane = null;     // {laneId, name} 选中了要接哪条
+  let lanesFor = '';         // 这排是按哪个目录列的（目录没变就不重列）
+
+  async function refreshLanes() {
+    const box = $('lanes');
+    if (!box) return;
+    const dir = $('dir').value.trim();
+    // 选了「接着某条开着的线说」时这排没意义（那条线就在上面选着）
+    if (!dir || $('target').value) { box.innerHTML = ''; lanesFor = ''; pickedLane = null; return; }
+    if (dir === lanesFor) return;
+    lanesFor = dir;
+    pickedLane = null;
+    let lanes = [];
+    try {
+      lanes = (await fetch(api('/api/lanes?dir=' + encodeURIComponent(dir))).then((x) => x.json())).lanes || [];
+    } catch (_) { /* 列不出来就空着 */ }
+    if (dir !== $('dir').value.trim()) return;   // 期间目录又改了，这份作废
+    const usable = lanes.filter((l) => l.alive);
+    box.innerHTML = '';
+    if (!usable.length) return;
+    const tag = document.createElement('span');
+    tag.className = 'lanes-label';
+    tag.textContent = '接着聊：';
+    box.appendChild(tag);
+    for (const l of usable) {
+      const raw = String(l.name || l.hint || '一条旧线').replace(/\s+/g, ' ').trim();
+      const c = document.createElement('span');
+      c.className = 'chip';
+      c.textContent = '↻ ' + (raw.length > 8 ? raw.slice(0, 8) + '…' : raw);
+      c.title = raw;
+      c.onclick = () => {
+        // 再点一下＝不接了（手机上没有右键，只能靠再点一次取消）
+        const same = pickedLane && pickedLane.laneId === l.laneId;
+        pickedLane = same ? null : { laneId: l.laneId, name: raw };
+        for (const x of box.querySelectorAll('.chip')) x.classList.remove('on');
+        if (!same) c.classList.add('on');
+        syncTargetUI();
+      };
+      box.appendChild(c);
+    }
+  }
+  $('dir').addEventListener('input', () => { lanesFor = ''; refreshLanes(); });
+
   // 长连接：SSE 断了指数退避重连。iOS Safari 把页面冻结后会掐连接，
   // 恢复时**不保证**触发 error —— 光靠 onerror 会一直亮「实时」看旧账。
   // 所以切回前台时主动重连一次，双保险
@@ -953,7 +1100,16 @@
   let lastData = 0;
   async function pull() {
     try {
-      const s = await fetch(api('/api/state'), { cache: 'no-store' }).then((x) => x.json());
+      const res = await fetch(api('/api/state'), { cache: 'no-store' });
+      // 存着的口令过期了（电脑上重新生成过）：清掉再说一声，不然就是
+      // 一个永远转圈的空页面，谁也不知道该干嘛
+      if (res.status === 401) {
+        try { localStorage.removeItem('waifu.token'); } catch (_) { /* 清不掉也没事 */ }
+        $('net').textContent = '口令不对'; $('net').className = 'off';
+        msg('这台手机上存的口令用不了了 —— 去电脑面板上重新扫一次码', 'err');
+        return;
+      }
+      const s = await res.json();
       render(s);
       lastData = Date.now();
       if ($('net').className !== 'on') { $('net').textContent = '在线'; $('net').className = 'on'; }
@@ -1008,13 +1164,19 @@
       const r = await fetch(api('/api/dispatch'), {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          dir, task, agent: $('agent').value,
+          dir, task,
+          // 接回旧线：agent 必须写死 claude（见 syncTargetUI 里那段）
+          laneId: pickedLane ? pickedLane.laneId : undefined,
+          agent: pickedLane ? 'claude' : $('agent').value,
           permissionMode: $('perm').value || undefined,
           // codex 不认模型参数，选了也不发（发过去只会被 main 丢掉，但别让人误会）
           model: $('agent').value === 'codex' ? '' : $('model').value,
         }),
       }).then((x) => x.json());
-      if (r && r.ok !== false) { msg('开工了！进度看下面', 'ok'); $('task').value = ''; }
+      if (r && r.ok !== false) {
+        msg(pickedLane ? '接上「' + pickedLane.name + '」了，进度看下面' : '开工了！进度看下面', 'ok');
+        $('task').value = '';
+      }
       else msg((r && r.error) || '没派出去', 'err');
     } catch (e) { msg('网络断了？' + e.message, 'err'); }
     $('go').disabled = false;
