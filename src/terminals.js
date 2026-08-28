@@ -2121,6 +2121,74 @@ class TerminalManager extends EventEmitter {
   }
 
   /**
+   * 手机上「看看那个窗口现在长什么样」。
+   *
+   * 【为什么非要有这个】CLI 会弹一些我们**根本不知道**的界面 —— codex 的
+   * 「Hooks need review」、/model 的选择面板、各种一次性提示。那些界面里
+   * 没有 hook、没有档案，桌宠完全是瞎的，手机上的表现就是「这条线彻底没回应」。
+   * 人在外面又不可能专门跑回电脑前点一下（用户原话）。
+   *
+   * 做法：把窗口捞到前台、报出它在屏幕上的矩形，截图那步交给上层
+   * （main 那边有现成的 shot.grab）。**会真的把窗口调到前台** —— 你人在
+   * 电脑前的话会看见它跳出来，这是没法绕的（截的是屏幕）。
+   */
+  async peekRect(id) {
+    const rec = this.items.get(id);
+    if (!rec) return { ok: false, error: '没这个终端' };
+    if (rec.status === 'closed') return { ok: false, error: '这个窗口已经关了' };
+    let out = '';
+    try {
+      out = await run('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', FOCUS_PS1, '-Title', rec.title, '-Exact', '-WaitMs', '4000',
+      ], 12000);
+    } catch (err) {
+      return { ok: false, error: '窗口调不出来：' + err.message };
+    }
+    const m = /^RECT (-?\d+) (-?\d+) (\d+) (\d+)$/m.exec(String(out));
+    if (!m) return { ok: false, error: '窗口调不到前台（标题可能被改了）' };
+    const rect = { x: Number(m[1]), y: Number(m[2]), w: Number(m[3]), h: Number(m[4]) };
+    if (!(rect.w > 8 && rect.h > 8)) return { ok: false, error: '窗口尺寸不对劲，没截' };
+    return { ok: true, rect };
+  }
+
+  /**
+   * 手机上按一个键（配合上面那张截图用）。
+   *
+   * **只认名单里这几个**：数字 1-4、y/n、回车、Esc、上下。绝不收任意文本 ——
+   * 那是 sendText 的事（走剪贴板，有它自己的一套闸）。名单之外一律拒。
+   */
+  async keyRemote(id, name) {
+    const KEYS = {
+      '1': '1', '2': '2', '3': '3', '4': '4', y: 'y', n: 'n',
+      enter: '{ENTER}', esc: '{ESC}', up: '{UP}', down: '{DOWN}',
+      tab: '{TAB}', space: ' ',
+    };
+    const keys = KEYS[String(name || '').toLowerCase()];
+    if (!keys) return { ok: false, error: '这个键不在名单里' };
+    const rec = this.items.get(id);
+    if (!rec) return { ok: false, error: '没这个终端' };
+    if (rec.status === 'closed') return { ok: false, error: '这个窗口已经关了' };
+    let out = '';
+    try {
+      out = await run('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', FOCUS_PS1, '-Title', rec.title, '-SendKeys', keys, '-Exact', '-WaitMs', '4000',
+      ], 12000);
+    } catch (err) {
+      return { ok: false, error: '按键没送出去：' + err.message };
+    }
+    const m = sentTitle(out);
+    if (m !== null && m === rec.title) {
+      this.log('[term] ' + rec.id + ' 手机上按了 ' + name);
+      rec.lastHookAt = Date.now();
+      return { ok: true };
+    }
+    if (m !== null) return { ok: false, error: '聚焦到的窗口跟这条线对不上，没敢发键' };
+    return { ok: false, error: '窗口调不到前台，按键没敢发' };
+  }
+
+  /**
    * 叫停：把 Esc 送进那个终端窗口（手机上「打断」用的）。
    *
    * 【说实话的边界】跟放行同一条路子：我们够不到那个 CLI 的进程，唯一的路是

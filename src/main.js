@@ -1826,9 +1826,9 @@ function guardClaude() {
  * 摸着头做：拿不到就算了，那次窗口只是没有「等你确认」的提醒，照样能干活；
  * 同一时刻只许有一个在飞，别每点一次 codex 就起一个 app-server。
  */
-let codexHashProbing = false;
+let codexHashProbing = null;   // 正在飞的那一趟（Promise），别重复起
 function ensureCodexHookHash() {
-  if (codexHashProbing) return;
+  if (codexHashProbing) return codexHashProbing;
   const notifyFile = path.join(__dirname, '..', 'hooks', 'notify.js');
   const nodeBin = terminals ? terminals.node.bin : process.execPath;
   // 尾巴上那个 v2 是**挂的 hook 变了**的标记：加了 UserPromptSubmit / Stop /
@@ -1836,23 +1836,29 @@ function ensureCodexHookHash() {
   const want = nodeBin + '|' + notifyFile + '|v2';
 
   const cur = loadConfig().codex || {};
-  if (cur.hookHashes && cur.hookFor === want) return; // 存过了，路径也没变
+  if (cur.hookHashes && cur.hookFor === want) return Promise.resolve(); // 存过了，路径也没变
 
-  codexHashProbing = true;
-  try {
-    agents.probeCodexHookHash(
-      { bin: agents.resolveCodexBin(), notifyFile, nodeBin },
-      (hashes) => {
-        codexHashProbing = false;
-        const n = hashes ? Object.keys(hashes).length : 0;
-        if (!n) { log('[codex] 没问到 hook 的信任哈希，这次先不带（不影响干活）'); return; }
-        try {
-          config.patch({ codex: { hookHashes: hashes, hookHash: undefined, hookFor: want } });
-          log('[codex] hook 信任哈希存好了 ' + n + ' 条，下次开窗她就能喊你了');
-        } catch (_) { /* 存不上就下次再问 */ }
-      }
-    );
-  } catch (_) { codexHashProbing = false; }
+  codexHashProbing = new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; codexHashProbing = null; resolve(); };
+    try {
+      agents.probeCodexHookHash(
+        { bin: agents.resolveCodexBin(), notifyFile, nodeBin },
+        (hashes) => {
+          const n = hashes ? Object.keys(hashes).length : 0;
+          if (!n) { log('[codex] 没问到 hook 的信任哈希，这次先不带（不影响干活）'); return finish(); }
+          try {
+            config.patch({ codex: { hookHashes: hashes, hookHash: undefined, hookFor: want } });
+            log('[codex] hook 信任哈希存好了 ' + n + ' 条，下次开窗她就能喊你了');
+          } catch (_) { /* 存不上就下次再问 */ }
+          finish();
+        }
+      );
+    } catch (_) { finish(); }
+    // 死线：探针自己有 9 秒超时，这儿再兜一层 —— 绝不能让开窗卡在这儿
+    setTimeout(finish, 12000);
+  });
+  return codexHashProbing;
 }
 
 function guardAgent(agent) {
@@ -2215,10 +2221,13 @@ function ensureMobile() {
       hooks: {
         state: () => mobileState(),
         // 手机派的活永远最小化开（人都不在电脑前，弹脸给谁看）
-        dispatch: (opts) => {
+        dispatch: async (opts) => {
           const agent = resolveDispatchAgent(opts.agent);
           const noCli = guardAgent(agent);
           if (noCli) return noCli;
+          // 手机上派 codex 更要等 —— 这条路上人根本不在电脑前，
+          // 「Hooks need review」冒出来就是彻底卡死（用户实拍）
+          if (agent === 'codex') await ensureCodexHookHash();
           // 手机上选了就用手机的，没选才跟电脑上的设置走。
           // **一定要过 resolveDispatchModel**：那是白名单，手机来的字段
           // 是外部输入，不能直接拼进命令行
@@ -2254,6 +2263,28 @@ function ensureMobile() {
         },
         browse: (dir) => browseDirs(dir),
         lanes: (dir) => lanesFor(dir),
+        /**
+         * 手机上「看看那个窗口」：把它捞到前台，照着它的矩形截一张。
+         * 截的是**屏幕**（跟框选截图同一条路），所以窗口必须真的在前面 ——
+         * 人在电脑前会看见它跳出来，这点没法绕。
+         */
+        peek: async (id) => {
+          if (!terminals) return { ok: false, error: '终端管理还没起来' };
+          const r = await terminals.peekRect(id);
+          if (!r.ok) return r;
+          try {
+            // DIP → 物理像素：缩放不是 100% 的机器上不换算就截歪（跟 doShot 同款）
+            const phys = screen.dipToScreenRect(null, {
+              x: r.rect.x, y: r.rect.y, width: r.rect.w, height: r.rect.h,
+            });
+            const file = await shot.grab({
+              x: phys.x, y: phys.y, w: phys.width, h: phys.height,
+              dir: path.join(DATA_ROOT, 'shots'), log,
+            });
+            return { ok: true, file };
+          } catch (err) { return { ok: false, error: '截不下来：' + err.message }; }
+        },
+        key: (id, name) => (terminals ? terminals.keyRemote(id, name) : { ok: false, error: '终端管理还没起来' }),
         /**
          * 手机上传过来的东西，落到电脑上（`<数据目录>/inbox/`），回一个路径。
          *
@@ -3084,12 +3115,16 @@ function wireIpc() {
   // 「帮我装」：起了就返回，装没装好她开口告诉你（面板关了也听得见）
   ipcMain.handle('agent:install', (_e, agent) => installAgent(String(agent || '')));
 
-  ipcMain.handle('session:dispatch', (_e, opts) => {
+  ipcMain.handle('session:dispatch', async (_e, opts) => {
     const cfg = loadConfig().dispatch || {};
     // 面板传了 agent 就用它；没这个字段的老入口用记住的默认（记住这件事在面板侧做）
     const agent = resolveDispatchAgent('agent' in (opts || {}) ? opts.agent : cfg.agent);
     const noCli = guardAgent(agent);
     if (noCli) return noCli;
+    // **信任哈希没到手就先等它**（一般启动时就问完了，这儿是兜底）——
+    // 不等的话第一个 codex 窗口开出来就是那张「Hooks need review」，
+    // 而那张卡在窗口里的时候，手机上是彻底哑的（用户实拍）
+    if (agent === 'codex') await ensureCodexHookHash();
 
     // codex 的线不带模型（它不认 claude 的模型名），也**不动**记住的那个 ——
     // 你切回 claude 时上次选的模型还在
@@ -3116,11 +3151,12 @@ function wireIpc() {
     }
   });
 
-  ipcMain.handle('session:open-terminal', (_e, opts) => {
+  ipcMain.handle('session:open-terminal', async (_e, opts) => {
     const dcfg = loadConfig().dispatch || {};
     const agent = resolveDispatchAgent('agent' in (opts || {}) ? opts.agent : dcfg.agent);
     const noCli = guardAgent(agent);
     if (noCli) return noCli;
+    if (agent === 'codex') await ensureCodexHookHash();   // 同上：别让「Hooks need review」冒出来
 
     const model = agent === 'codex' ? undefined
       : ('model' in (opts || {}) ? resolveDispatchModel(opts.model)
@@ -3644,6 +3680,12 @@ if (!app.requestSingleInstanceLock()) {
       claudeBin: resolveClaudeBin(),
       getConfig: loadConfig,
     });
+    // 装了 codex 就**开机先把 hook 的信任哈希问了**（本地 app-server，
+    // 不调模型不花钱，约 2 秒）。原来是等到第一次派 codex 才问，而那一趟是
+    // 异步的 —— 窗口早开出去了，于是升级完第一个 codex 窗口必然撞上
+    // 「Hooks need review」，人在外面用手机根本没法点（用户实拍）
+    try { if (agents.codexInstalled()) ensureCodexHookHash(); } catch (_) { /* 问不到不影响开机 */ }
+
     about = aboutStore(path.join(STORE, 'about-you.md'));
     chat = new Chat({
       storeDir: STORE,

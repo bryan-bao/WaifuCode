@@ -241,6 +241,15 @@ if ([Waifu.Win]::GetWindowRect($h, [ref]$r)) {
   }
 }
 
+# 窗口现在在屏幕的哪一块（手机上「看看那个窗口」要照着这个坐标截图）。
+# 多报一行不影响老调用方：它们认的是 OK / SENT / MINIMIZED / NOTFOUND 这些前缀
+function Write-Rect($hwnd) {
+  $rr = New-Object Waifu.Win+RECT
+  if ([Waifu.Win]::GetWindowRect($hwnd, [ref]$rr)) {
+    Write-Output ('RECT ' + $rr.Left + ' ' + $rr.Top + ' ' + ($rr.Right - $rr.Left) + ' ' + ($rr.Bottom - $rr.Top))
+  }
+}
+
 # 借当前前台窗口的线程资格来抢前台，绕过系统的前台锁
 $fgWin = [Waifu.Win]::GetForegroundWindow()
 $fgPid = 0
@@ -261,6 +270,7 @@ if ($attached) {
 
 if ($ok) {
   Send-KeysIfAsked $h
+  Write-Rect $h
   Write-Output ('OK ' + $script:foundTitle)
   exit 0
 }
@@ -270,6 +280,7 @@ if ($ok) {
 Start-Sleep -Milliseconds 120
 if ([Waifu.Win]::GetForegroundWindow() -eq $h) {
   Send-KeysIfAsked $h
+  Write-Rect $h
   Write-Output ('OK ' + $script:foundTitle)
   exit 0
 }

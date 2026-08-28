@@ -142,6 +142,32 @@
   #lanes { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   #lanes::-webkit-scrollbar { display: none; }
   #lanes .chip { flex: none; white-space: nowrap; }
+  /* 「看那个窗口」：截图 + 一排能按的键 */
+  /* 「她在想……」：你刚说完、她还没回话的那段空白里，必须有个活的东西 */
+  .think { display: flex; align-items: center; gap: 8px; padding: 8px 2px 2px; color: var(--acc); font-size: 13px; }
+  .think .dots span {
+    display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+    background: var(--acc); margin-right: 3px; animation: think 1.2s infinite;
+  }
+  .think .dots span:nth-child(2) { animation-delay: .2s; }
+  .think .dots span:nth-child(3) { animation-delay: .4s; }
+  @keyframes think { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
+  .think .how { color: var(--faint); font-size: 11.5px; }
+  .peekbox { margin-bottom: 10px; }
+  .peekbox img {
+    width: 100%; display: block; border-radius: 8px; border: 1px solid var(--line);
+    background: #000;
+  }
+  .peekbox .tip { font-size: 11px; color: var(--faint); padding: 5px 2px; }
+  .keys { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .keys button {
+    flex: 1 1 auto; min-width: 52px; padding: 12px 8px; border-radius: var(--r-s);
+    border: 1px solid var(--line); background: var(--card2); color: var(--fg);
+    font: inherit; font-weight: 600;
+  }
+  .keys button:active { background: var(--card); }
+  .keys .wide { flex: 2 1 120px; }
+  .row2.peekrow { gap: 8px; margin-bottom: 10px; }
   /* 打断：危险动作，做成描边红，别跟「放行」抢眼 */
   .stopbtn {
     width: 100%; padding: 11px; margin-bottom: 10px; border-radius: var(--r-s);
@@ -688,6 +714,77 @@
     try { localStorage.setItem('waifu.model', $('model').value); } catch (_) { /* 同上 */ }
   };
 
+  /**
+   * 「看看那个窗口现在长什么样」+ 一排能按的键。
+   *
+   * 【为什么要有】CLI 会弹一些桌宠**根本不知道**的界面 —— codex 的
+   * 「Hooks need review」、/model 的选择面板、各种一次性提示。那些界面里
+   * 没有 hook、没有档案，手机上的表现就是「这条线彻底没回应」，
+   * 而人在外面不可能专门跑回电脑前点一下（用户原话）。
+   *
+   * 【说清楚代价】看一眼＝**把那个窗口调到前台再截屏**。你人要是正在
+   * 电脑前，会看见它跳出来。这点绕不过去（截的是屏幕）。
+   */
+  const PEEK_KEYS = [
+    ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4'],
+    ['y', 'y'], ['n', 'n'], ['up', '↑'], ['down', '↓'],
+    ['enter', '回车'], ['esc', 'Esc'],
+  ];
+  function peekWindow(id) {
+    const box = $('d-peek');
+    if (!box) return;
+    box.hidden = false;
+    const shoot = (why) => {
+      box.innerHTML = '<div class="tip">' + esc(why || '正在把窗口调到前台截一张……') + '</div>';
+      const img = new Image();
+      img.onload = () => {
+        box.innerHTML = '';
+        box.appendChild(img);
+        const tip = document.createElement('div');
+        tip.className = 'tip';
+        tip.textContent = '双指放大能看清；按了键会自动再截一张';
+        box.appendChild(tip);
+        const keys = document.createElement('div');
+        keys.className = 'keys';
+        for (const [k, label] of PEEK_KEYS) {
+          const b = document.createElement('button');
+          b.textContent = label;
+          if (k === 'enter') b.className = 'wide';
+          b.onclick = async () => {
+            b.disabled = true;
+            try {
+              const r = await fetch(api('/api/key'), {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ id, key: k }),
+              }).then((x) => x.json());
+              if (!r || !r.ok) { note((r && r.error) || '没按上', 'err'); b.disabled = false; return; }
+            } catch (e) { note('网络断了？' + e.message, 'err'); b.disabled = false; return; }
+            // 按完再截一张 —— 「按了看不见结果」等于没按
+            setTimeout(() => shoot('按了「' + label + '」，再看一眼……'), 700);
+          };
+          keys.appendChild(b);
+        }
+        const again = document.createElement('button');
+        again.textContent = '↻ 再看一眼';
+        again.className = 'wide';
+        again.onclick = () => shoot();
+        keys.appendChild(again);
+        const close = document.createElement('button');
+        close.textContent = '收起';
+        close.onclick = () => { box.hidden = true; box.innerHTML = ''; };
+        keys.appendChild(close);
+        box.appendChild(keys);
+      };
+      img.onerror = () => {
+        box.innerHTML = '<div class="tip">没截下来 —— 那个窗口可能已经关了，' +
+          '或者标题被改过（这时候只能去电脑上看）</div>';
+      };
+      // 加个随机尾巴：不加的话浏览器会拿缓存里那张旧的
+      img.src = api('/api/peek?id=' + encodeURIComponent(id)) + '&r=' + String(Math.random()).slice(2);
+    };
+    shoot();
+  }
+
   // 这条线的完整对话（按轮切开）。**一条线只拉一次**：点第二段时直接用缓存，
   // 手机流量和电脑读盘都省了；退出详情时清掉（换条线数据就不对了）
   let fullCache = null;
@@ -797,7 +894,10 @@
   // 这道闸只为「别打断你在详情页打字」而设，管不着别处
   function typingNow() {
     const el = document.activeElement;
-    return Boolean(el && el.id === 'd-say');
+    // **框里有字才算「正在打字」。** 空框也拦的话，你点一下输入框、
+    // 或者刚发完消息还停在框里，整页就永远不刷了 —— 她回话了你也看不见
+    // （「她在想」那行会一直挂着不消失，实测撞过）
+    return Boolean(el && el.id === 'd-say' && el.value.trim());
   }
 
   // **正在看展开的全文时也别刷。**同一个道理：刷新 = 整块重画，展开的那块
@@ -805,7 +905,10 @@
   // 都没看全」。收起来之后欠的那一刷会自动补上
   function readingNow() {
     return Boolean(document.querySelector('.full:not([hidden])') ||
-                   document.querySelector('.quick[data-mode="opts"]'));
+                   document.querySelector('.quick[data-mode="opts"]') ||
+                   // 「看那个窗口」摊开着的时候也别刷 —— 详情页每次刷新都是整块
+                   // 重建 innerHTML，图和那排键当场就没了（实测：点开一秒后自己消失）
+                   document.querySelector('.peekbox:not([hidden])'));
   }
 
   async function refreshDetail() {
@@ -838,6 +941,28 @@
         '</div><div class="txt">' + esc(e.text) + '</div>' + more + '</div>';
     }).join('') || '<div class="empty">还没有进度。她开工后这里会实时长出来</div>';
 
+    /**
+   * 你刚说完、她还没回话 → 摆一行会动的「她在想……」。
+   *
+   * 【为什么非要有】手机上发出去之后，页面**一动不动** —— 她那边其实在跑，
+   * 但你这头看不到任何变化，只能怀疑是不是没送出去（用户原话：
+   * 「得让她显示一个在思考回答，这样我才知道她有响应」）。
+   *
+   * 判据不用猜：时间线**最后一条是「你说」**且这条线还在跑 = 她正在想。
+   * 秒数跟着每次刷新走，不另起定时器。
+   */
+    const lastE = (d.timeline || [])[(d.timeline || []).length - 1];
+    const thinking = lastE && lastE.kind === 'you' &&
+                     (d.status === 'running' || d.status === 'waiting');
+    const waitedMs = thinking ? Math.max(0, Date.now() - (lastE.at || Date.now())) : 0;
+    const thinkRow = thinking
+      ? '<div class="think"><span class="dots"><span></span><span></span><span></span></span>' +
+        (d.status === 'waiting' ? '她停下来等你确认了' : '她在想……') +
+        '<span class="how">' + (waitedMs < 60000
+          ? Math.max(1, Math.round(waitedMs / 1000)) + ' 秒'
+          : Math.round(waitedMs / 60000) + ' 分钟') + '</span></div>'
+      : '';
+
     const files = (d.files || []).map((f) => '<span class="f">' + esc(f.name) + (f.hits > 1 ? ' ×' + f.hits : '') + '</span>').join('');
 
     // 等确认时，放行按钮摆在最上面 —— 那是你点进来最想干的事
@@ -856,10 +981,17 @@
       (d.turns ? ' · ' + d.turns + ' 轮' : '') + (d.toolCount ? ' · ' + d.toolCount + ' 次工具' : '') +
       (d.errorCount ? ' · 报错 ' + d.errorCount + ' 次' : '') + '</div>' +
       (files ? '<div class="files">' + files + '</div>' : '') +
-      '</div>' + approveBox +
+      '</div>' + thinkRow + approveBox +
       // 叫停：跑偏了、在烧钱，手机上原来只能干看着
-      ((d.status === 'running' || d.status === 'waiting')
-        ? '<button class="stopbtn" id="d-stop">⏹ 打断（把 Esc 送过去）</button>' : '') +
+      // 看窗口 / 打断：CLI 弹出我们不认识的界面时（codex 的「Hooks need
+      // review」、/model 的面板…），手机上原来是彻底哑的
+      (d.status !== 'closed'
+        ? '<div class="row2 peekrow">' +
+          '<button class="stopbtn" id="d-peekbtn" style="margin:0;border-color:var(--line);color:var(--fg);background:var(--card2)">🖥 看那个窗口</button>' +
+          ((d.status === 'running' || d.status === 'waiting')
+            ? '<button class="stopbtn" id="d-stop" style="margin:0">⏹ 打断</button>' : '') +
+          '</div><div class="peekbox" id="d-peek" hidden></div>'
+        : '') +
       '<div class="card"><h3>进度</h3><div class="tl">' + tl + '</div></div>' +
       (d.canSend
         ? '<div class="say"><div style="font-size:11px;color:var(--faint);padding:0 2px 6px">说的话会直接打进电脑上那个终端窗口，跟你走过去敲一模一样</div>' +
@@ -889,6 +1021,7 @@
       b.onclick = () => toggleFull(b);
     }
     $('d-back').onclick = closeDetail;
+    if ($('d-peekbtn')) $('d-peekbtn').onclick = () => peekWindow(d.id);
     if ($('d-stop')) {
       $('d-stop').onclick = async () => {
         // 二次确认：这一下会打断她手上正在干的那步
@@ -933,7 +1066,19 @@
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ id: d.id, text }),
           }).then((x) => x.json());
-          if (r.ok) { $('d-say').value = ''; dm.textContent = '说出去了'; dm.style.color = 'var(--acc)'; }
+          if (r.ok) {
+            $('d-say').value = '';
+            sayDraft = '';                 // 发出去了，草稿作废
+            dm.textContent = '说出去了';
+            dm.style.color = 'var(--acc)';
+            // **立刻再拉一拍**：服务端在返回之前就把这句记进时间线了，
+            // 马上拉就能看到自己那句话和「她在想」。等下一拍的话有 1~3 秒
+            // 完全没反应，你会以为没送出去
+            // 发完把焦点松开：不松的话上面那道「正在打字就不刷」的闸会一直
+            // 拦着，她回话了这页也不动
+            $('d-say').blur();
+            refreshDetail();
+          }
           else { dm.textContent = r.error || '没说出去'; dm.style.color = 'var(--bad)'; }
         } catch (e) { dm.textContent = '网络断了？' + e.message; dm.style.color = 'var(--bad)'; }
         $('d-send').disabled = false;
@@ -1193,7 +1338,7 @@
         }).then((x) => x.json());
         if (r && r.ok) {
           sayDraft = ''; // 发出去了，草稿作废
-          msg('说出去了，进度看下面那条线', 'ok');
+          msg('说出去了 —— 她在想了，点开那条线能看到', 'ok');
           $('task').value = '';
         } else msg((r && r.error) || '没说出去', 'err');
       } catch (e) { msg('网络断了？' + e.message, 'err'); }

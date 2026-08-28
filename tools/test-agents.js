@@ -834,6 +834,20 @@ console.log('\n[16b] codex 也该有的那几样：信任给齐、说得出在�
         '**等你确认时不许被这些事件踩回 running** —— 那条线是真停着的');
 }
 
+console.log('\n[16c] 「Hooks need review」那张卡不许再冒出来');
+{
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  check(main.includes('if (agents.codexInstalled()) ensureCodexHookHash();'),
+        '**开机就问信任哈希** —— 等到第一次派 codex 才问的话，那一趟是异步的，窗口早开出去了');
+  check(/session:dispatch[^]{0,800}await ensureCodexHookHash\(\)/.test(main) &&
+        /session:open-terminal[^]{0,800}await ensureCodexHookHash\(\)/.test(main),
+        '面板两条开窗路都**等**信任到手再开');
+  check(/dispatch: async \(opts\)[^]{0,600}await ensureCodexHookHash\(\)/.test(main),
+        '手机那条更要等 —— 人根本不在电脑前，那张卡冒出来就是彻底卡死（用户实拍）');
+  check(main.includes('setTimeout(finish, 12000)'),
+        '等也有死线：探针挂了也不能把开窗卡在这儿');
+}
+
 console.log('\n[17] 这次给了什么权限，要说得出人话');
 {
   for (const m of ['auto', 'acceptEdits', 'plan', 'dontAsk']) {

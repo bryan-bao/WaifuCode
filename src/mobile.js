@@ -64,6 +64,8 @@ function readBody(req, cap = 64 * 1024) {
  *   lanes(dir)         -> [{laneId,name,lastRun,alive,turns,hint}] 这个项目留着的线
  *   interrupt(id)      -> { ok, error? } 把 Esc 送进那个终端窗口（叫停）
  *   upload(name, buf)  -> { ok, path?, name?, error? } 手机上的图/文件落到电脑上
+ *   peek(id)           -> { ok, file? } 那个终端窗口现在长什么样（截一张）
+ *   key(id, name)      -> { ok, error? } 往那个窗口按一个**名单里**的键
  */
 function createMobileServer({ pageFile, token, hooks, log, iconFile }) {
   const clients = new Set(); // SSE 连接
@@ -144,6 +146,32 @@ function createMobileServer({ pageFile, token, hooks, log, iconFile }) {
         const r = await hooks.upload(String(params.get('name') || ''), buf);
         if (log) log('[mobile] 收文件 ' + params.get('name') + ' -> ' + ((r && r.ok) ? r.path : (r && r.error) || '没收下'));
         return json(r && r.ok ? 200 : 400, r || { ok: false, error: '没收下' });
+      }
+
+      /**
+       * 那个终端窗口现在长什么样。**直接把 PNG 吐回去**（不是路径）——
+       * 手机够不到电脑的文件系统。
+       *
+       * 【为什么要有】CLI 会弹一些我们不知道的界面（codex 的「Hooks need
+       * review」、/model 的选择面板…），那时候 hook 和档案里什么都没有，
+       * 手机上就是「这条线彻底没回应」。人在外面不可能专门跑回电脑前点。
+       */
+      if (req.method === 'GET' && pathname === '/api/peek') {
+        const r = await hooks.peek(String(params.get('id') || ''));
+        if (!r || !r.ok || !r.file) return json(400, r || { ok: false, error: '截不下来' });
+        try {
+          const buf = fs.readFileSync(r.file);
+          res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
+          return res.end(buf);
+        } catch (err) { return json(400, { ok: false, error: '图读不出来' }); }
+      }
+
+      // 往那个窗口按一个键（配合上面那张截图）。**键名由 main 那头的名单说了算**
+      if (req.method === 'POST' && pathname === '/api/key') {
+        const body = JSON.parse(await readBody(req) || '{}');
+        const r = await hooks.key(String(body.id || ''), String(body.key || ''));
+        if (log) log('[mobile] 按键 ' + body.key + ' -> ' + ((r && r.ok) ? '送到了' : (r && r.error) || '没送到'));
+        return json(200, r || { ok: false, error: '没送到' });
       }
 
       // 这个项目留着的线（关掉的窗口也能接回去）—— 手机原来只能接**还开着**的
