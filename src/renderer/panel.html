@@ -155,6 +155,10 @@
     user-select: none;
   }
 
+  /* 顶栏。**每一项都不许折行**：窗口被拉窄时 flex 会把它们一个个压扁，
+     里面的字就竖着排成一列 —— 标题变成「给她派 / 个活」、按钮变成
+     「说 / 明 / 书」，整条顶栏鼓成三行高（用户实拍）。
+     宁可挤到看不全（横向被裁），也不要炸成竖排 */
   header {
     -webkit-app-region: drag;
     display: flex;
@@ -162,6 +166,7 @@
     gap: 8px;
     height: 46px;
     padding: 0 14px;
+    white-space: nowrap;
     background: var(--header);
     border-bottom: 1px solid var(--line);
   }
@@ -173,7 +178,9 @@
     flex: none;
   }
 
-  header strong { font-size: 13.5px; font-weight: 600; letter-spacing: .4px; }
+  header strong { font-size: 13.5px; font-weight: 600; letter-spacing: .4px; flex: none; }
+  /* 按钮和皮肤下拉也不许被压扁（压扁＝里面的字竖排） */
+  header button, header select#skin { flex: none; }
   header .spacer { flex: 1; }
 
   header button {
@@ -231,9 +238,21 @@
   /* 这两排一行到底，别换行把高度顶起来（多的横着滚） */
   #lanes, #recent { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   #lanes::-webkit-scrollbar, #recent::-webkit-scrollbar { display: none; }
+  /* **这两条缺一不可**：这排改成不换行之后，chip 默认还是可以被压扁的
+     （flex-shrink 是 1、里面的字照样能换行）—— 面板一窄，每个 chip 就被压成
+     一列竖着的字，整排炸成一百多像素高（用户实拍：「MR / 金 融 知 识 …」）。
+     flex:none 让它不被压，nowrap 让里面的字不折行，多出来的横着滚 */
+  #lanes .chip, #recent .chip { flex: none; white-space: nowrap; }
+  #recent .chip { max-width: 132px; overflow: hidden; text-overflow: ellipsis; }
 
   /* 主角：吃掉所有剩下的高度 */
   #task { flex: 1 1 auto; min-height: 104px; }
+  /* 设置展开的时候多出 ~150px，窄窗口（640×560 那档）会把按钮又顶出屏幕 ——
+     实测溢出 43px。展开期间把任务框的下限放到 60：你这会儿是在拨旋钮，
+     不是在写需求，收起来它自己就长回去。
+     :has 是上一层选中「里面有展开的 details」—— CSS 没有「前一个兄弟」选择器，
+     而 Electron 33 = Chromium 130，:has 稳的 */
+  .col-form:has(#setup[open]) #task { min-height: 60px; }
 
   /* ---- 收起来的那条设置 ----
      「用谁来干 / 模型 / 放她多开 / 线名」是选一次就不动的东西。收起时这条

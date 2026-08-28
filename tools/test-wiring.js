@@ -234,6 +234,16 @@ console.log('\n[10] 派活那一栏：一屏装得下');
           'syncAgentUi 末尾也要刷 —— 它会改写选项文字，摘要得跟着重算'); }
   check(html.includes('data-short="Sonnet 5"') && html.includes('Sonnet 5 · 省一半'),
         '选项文字要短：格子只有 ~150px 宽，长句子会被浏览器生切在半截（实拍「Claude Code ——」）');
+  // 窄面板下的两桩「压扁就竖排」（用户实拍）
+  check(html.includes('#lanes .chip, #recent .chip { flex: none; white-space: nowrap; }'),
+        '那两排 chip 不许被压扁 —— 面板一窄，每个 chip 会被压成一列竖着的字，整排炸成一百多像素高');
+  { const hd = html.slice(html.indexOf('  header {'), html.indexOf('  header {') + 400);
+    check(hd.includes('white-space: nowrap'),
+          '顶栏也不许折行（不然标题变成「给她派 / 个活」、按钮变成「说 / 明 / 书」）'); }
+  check(html.includes('header button, header select#skin { flex: none; }'),
+        '顶栏那几个按钮也要 flex:none —— nowrap 只管字，不管它自己被压扁');
+  check(html.includes('.col-form:has(#setup[open]) #task'),
+        '设置展开时任务框下限放宽 —— 不放的话 640×560 那档会溢出 43px，按钮又被顶出屏幕（实测）');
   check(js.includes('PERM_CLAUDE_FULL') && js.includes('PERM_CODEX_FULL'),
         '完整说法挪进 title，一个字都没少');
 }
