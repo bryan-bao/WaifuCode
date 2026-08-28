@@ -203,11 +203,89 @@
   }
 
   /* ---- 左栏：派活表单 ---- */
+  /**
+   * 左栏：一屏装得下。
+   *
+   * 【为什么改成 flex 列】原来是「从上到下一列 + overflow-y:auto」，实测在
+   * 780×700 的默认尺寸下**内容 732px、可视 589px，溢出 143px** —— 底下那两个
+   * 按钮永远在屏幕外，得滚一下才看得见（用户提的）。
+   * 现在：除任务框外全是固定高，任务框 flex:1 吃掉剩下的 —— 窗口拉多高它就
+   * 多高，永远不用滚。overflow-y 留着只是防「窗口被拉到极小」时切掉内容。
+   *
+   * 省下来的高度主要来自两处：标签不再独占一行的那几处，以及
+   * 「用谁来干 / 模型 / 放她多开 / 线名」收进了下面那条 .setup 横条。
+   */
   .col-form {
-    padding: 12px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 14px 12px;
     overflow-y: auto;
     border-right: 1px solid var(--line2);
   }
+  .col-form > * { flex: none; }
+  /* 输入框统一矮 2px —— 一栏下来省出十几像素，肉眼看不出来 */
+  .col-form input, .col-form select { padding: 7px 10px; }
+  .col-form button.btn { padding: 8px 14px; }
+  .gitinfo { margin-top: 5px; }
+  #recent { margin-top: 6px; }
+  /* 这两排一行到底，别换行把高度顶起来（多的横着滚） */
+  #lanes, #recent { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  #lanes::-webkit-scrollbar, #recent::-webkit-scrollbar { display: none; }
+
+  /* 主角：吃掉所有剩下的高度 */
+  #task { flex: 1 1 auto; min-height: 104px; }
+
+  /* ---- 收起来的那条设置 ----
+     「用谁来干 / 模型 / 放她多开 / 线名」是选一次就不动的东西。收起时这条
+     横条上**写着当前值**，不点开也知道自己在用什么（写死一句「设置」的话，
+     用户就得点开才敢派活）。 */
+  .setup { margin-top: 10px; }
+  .setup > summary {
+    list-style: none;
+    display: flex; align-items: center; gap: 7px;
+    height: 34px; padding: 0 10px;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--r-s);
+    color: var(--dim); font-size: 11px;
+    cursor: pointer; user-select: none;
+  }
+  .setup > summary::-webkit-details-marker { display: none; }
+  .setup > summary::marker { content: ""; }
+  .setup > summary:hover { border-color: var(--acc2); color: var(--fg); }
+  .setup .gear { color: var(--acc2); font-size: 12px; flex: none; }
+  .setup .sum {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--dim2);
+  }
+  .setup .sum b { color: var(--fg); font-weight: 600; }
+  .setup .sum i { color: var(--faint); font-style: normal; margin: 0 5px; }
+  /* 线名沿用列表里那个紫色小块 —— 同一个东西在哪儿都是同一个颜色 */
+  .setup .lane {
+    flex: none; max-width: 92px;
+    padding: 1px 6px; border-radius: 4px;
+    background: var(--lane-bg); color: var(--lane-fg);
+    font-size: 10px; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .setup .caret { flex: none; color: var(--faint); font-size: 10px; transition: transform .16s ease; }
+  .setup[open] .caret { transform: rotate(180deg); }
+  .setup[open] > summary {
+    border-color: var(--acc2); color: var(--fg);
+    border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+  }
+  .setup-body {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    padding: 10px;
+    background: var(--card2);
+    border: 1px solid var(--acc2); border-top: 0;
+    border-radius: 0 0 var(--r-s) var(--r-s);
+  }
+  .setup-body label { margin: 0 0 4px; }
+  .setup-body .f { min-width: 0; }
+  .setup-body select, .setup-body input { padding: 6px 8px; font-size: 12px; }
+  .btns { margin-top: 10px; }
+  #msg { margin-top: 6px; min-height: 16px; }
 
   /* ---- 右栏：她的状态 + 现场 ---- */
   .col-live {
@@ -505,36 +583,54 @@
       <div id="lanes"></div>
       <div class="chips" id="recent"></div>
 
-      <label>要她做什么</label>
-      <textarea id="task" rows="6"
-        placeholder="说人话就行，比如：&#10;把登录页的表单校验补上，手机号和验证码都要校验&#10;&#10;（Ctrl+Enter 直接派活）"></textarea>
+      <label>要她做什么<span class="sub">Ctrl+Enter 直接派活</span></label>
+      <textarea id="task" rows="4"
+        placeholder="说人话就行，比如：&#10;把登录页的表单校验补上，手机号和验证码都要校验"></textarea>
 
-      <label>这条线叫什么<span class="sub">自动从上面取，可以改</span></label>
-      <input id="lane" spellcheck="false" placeholder="（自动）" />
-
-      <label>用谁来干<span class="sub">没装 Claude 的机器选 Codex 也能派活</span></label>
-      <select id="agent">
-        <option value="claude">Claude Code —— 全套：她盯着、汇报、算钱</option>
-        <option value="codex">Codex —— 只开窗干活，她不盯细节</option>
-      </select>
-
-      <label>用哪个模型<span class="sub">选一次就记住，两种派法都用它</span></label>
-      <select id="model">
-        <option value="">跟 Claude Code 自己的设置走</option>
-        <option value="claude-opus-5">Opus 5 —— 主力，复杂的活交给它</option>
-        <option value="claude-sonnet-5">Sonnet 5 —— 快，便宜差不多一半</option>
-        <option value="claude-haiku-4-5">Haiku 4.5 —— 最快最省，简单活</option>
-        <option value="claude-fable-5">Fable 5 —— 最强也最贵（Opus 两倍价）</option>
-      </select>
-
-      <label>这次放她多开<span class="sub">只管这一次</span></label>
-      <select id="perm">
-        <option value="">按设置里的默认</option>
-        <option value="auto">自己判断 · 安全的放行，危险的拦下</option>
-        <option value="acceptEdits">改文件不问 · 但跑命令还是要问你</option>
-        <option value="plan">先出方案 · 一个字都不改</option>
-        <option value="dontAsk">全都别问 · 她自己拿主意</option>
-      </select>
+      <!-- 收起时这一条就是「当前是怎么派的」；点一下才展开去改。
+           data-short 是给横条上那句摘要用的短名（选项本身要写清楚，
+           摘要要短，两个诉求不一样）。 -->
+      <details class="setup" id="setup">
+        <summary title="用谁来干 / 用哪个模型 / 这次放她多开 / 这条线叫什么">
+          <span class="gear">⚙</span>
+          <span class="sum" id="setup-sum">—</span>
+          <span class="lane" id="setup-lane" hidden></span>
+          <span class="caret">▾</span>
+        </summary>
+        <div class="setup-body">
+          <div class="f">
+            <label>用谁来干<span class="sub">没装 Claude 选 Codex</span></label>
+            <select id="agent" title="Claude Code —— 全套：她盯着、汇报、算钱&#10;Codex —— 只开窗干活，她不盯细节">
+              <option value="claude" data-short="Claude Code">Claude Code · 全套</option>
+              <option value="codex" data-short="Codex">Codex · 只干活</option>
+            </select>
+          </div>
+          <div class="f">
+            <label>用哪个模型<span class="sub">选一次就记住</span></label>
+            <select id="model" title="Opus 5 —— 主力，复杂的活交给它&#10;Sonnet 5 —— 快，便宜差不多一半&#10;Haiku 4.5 —— 最快最省，简单活&#10;Fable 5 —— 最强也最贵（Opus 两倍价）">
+              <option value="" data-short="跟设置走">跟设置走</option>
+              <option value="claude-opus-5" data-short="Opus 5">Opus 5 · 主力</option>
+              <option value="claude-sonnet-5" data-short="Sonnet 5">Sonnet 5 · 省一半</option>
+              <option value="claude-haiku-4-5" data-short="Haiku 4.5">Haiku 4.5 · 最省</option>
+              <option value="claude-fable-5" data-short="Fable 5">Fable 5 · 最贵</option>
+            </select>
+          </div>
+          <div class="f">
+            <label>这次放她多开<span class="sub">只管这一次</span></label>
+            <select id="perm" title="自己判断 —— 安全的放行，危险的拦下&#10;改文件不问 —— 但跑命令还是要问你&#10;先出方案 —— 一个字都不改&#10;全都别问 —— 她自己拿主意">
+              <option value="" data-short="按默认">按设置里的默认</option>
+              <option value="auto" data-short="自己判断">自己判断</option>
+              <option value="acceptEdits" data-short="改文件不问">改文件不问</option>
+              <option value="plan" data-short="先出方案">先出方案</option>
+              <option value="dontAsk" data-short="全都别问">全都别问</option>
+            </select>
+          </div>
+          <div class="f">
+            <label>这条线叫什么<span class="sub">自动从上面取</span></label>
+            <input id="lane" spellcheck="false" placeholder="（自动）" />
+          </div>
+        </div>
+      </details>
 
       <div class="row btns">
         <button class="btn primary" id="go">让她后台干</button>

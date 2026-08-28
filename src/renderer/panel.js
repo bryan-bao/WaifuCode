@@ -555,6 +555,7 @@ let laneTouched = false;
 function syncLaneName() {
   if (laneTouched) return;
   $('lane').value = deriveLaneName($('task').value);
+  syncSetupSummary();   // 线名是横条上那个小紫块，别让它停在上一条活的名字上
 }
 
 function readForm() {
@@ -589,13 +590,69 @@ function readForm() {
  *   · 「先出方案」在 codex 上是「什么都问你 + 一个字不许写」，codex 没有
  *     plan 模式。歪的不止一条，所以四条一起换。
  */
+/**
+ * 【为什么都这么短】这几行是直接盖到 option.text 上的，而设置收进折叠横条
+ * 之后那个格子只有 ~150px 宽 —— 长句子会被浏览器生切在半截（实拍
+ * 「先出方案 · 一个字都」）。完整那句挪进了 perm.title（下面 syncAgentUi
+ * 里设的）和标签的小字，一个字都没少。
+ */
 const PERM_CODEX = {
   '': '按设置里的默认',
-  auto: '自己判断 · 拿不准的才问你，只能改这个项目目录',
-  acceptEdits: '跟「自己判断」完全一样 · Codex 拆不出这一档',
-  plan: '只读 · 一个字都不许改，而且干什么都先问你',
-  dontAsk: '全都别问 · 但仍然只能改这个项目目录',
+  auto: '自己判断',
+  acceptEdits: '同「自己判断」',
+  plan: '只读 · 都问你',
+  dontAsk: '全都别问',
 };
+/** 上面那几档的完整说法，进 title（鼠标停一下就能看全） */
+const PERM_CODEX_FULL = [
+  '自己判断 —— 拿不准的才问你，只能改这个项目目录',
+  '改文件不问 —— 跟「自己判断」完全一样，Codex 拆不出这一档',
+  '先出方案 —— 只读：一个字都不许改，而且干什么都先问你',
+  '全都别问 —— 但仍然只能改这个项目目录',
+].join('\n');
+/**
+ * 收起来那条设置横条上的摘要。
+ *
+ * 【为什么非有不可】这条横条把四个旋钮藏起来了 —— 要是上面只写「设置」两个字，
+ * 你每次派活前都得点开确认一遍「我现在用的是哪个模型、放她多开到哪一档」，
+ * 那还不如不折叠。写着当前值，才敢收起来。
+ *
+ * 短名走 option 的 data-short：选项本身要写清楚（「Sonnet 5 —— 快，便宜
+ * 差不多一半」），摘要要短（「Sonnet 5」），两个诉求不是一回事。
+ * **必须在 syncAgentUi 之后调**：codex 那档会改写选项文字。
+ */
+function syncSetupSummary() {
+  const sum = $('setup-sum');
+  if (!sum) return;
+  const short = (sel) => {
+    const o = sel.options[sel.selectedIndex];
+    return o ? (o.dataset.short || o.text) : '';
+  };
+  const codex = $('agent').value === 'codex';
+  const parts = [
+    '<b>' + esc(short($('agent'))) + '</b>',
+    // codex 的模型在它自己的配置里选，这儿管不着 —— 报一个假模型名是骗人
+    '<b>' + esc(codex ? '模型跟它自己的设置' : short($('model'))) + '</b>',
+    esc(short($('perm'))),
+  ];
+  sum.innerHTML = parts.join('<i>·</i>');
+  const lane = $('lane').value.trim();
+  const chip = $('setup-lane');
+  if (chip) {
+    chip.textContent = lane;
+    chip.hidden = !lane;
+    chip.title = lane ? '这条线叫「' + lane + '」' : '';
+  }
+}
+
+/** claude 那几档的完整说法（同样是给 title 用的） */
+const PERM_CLAUDE_FULL = [
+  '自己判断 —— 安全的放行，危险的拦下',
+  '改文件不问 —— 但跑命令还是要问你',
+  '先出方案 —— 一个字都不改',
+  '全都别问 —— 她自己拿主意',
+].join('\n');
+
 let modelBeforeCodex = '';
 function syncAgentUi() {
   const codex = $('agent').value === 'codex';
@@ -603,9 +660,7 @@ function syncAgentUi() {
   if (codex && !model.disabled) { modelBeforeCodex = model.value; model.value = ''; }
   if (!codex && model.disabled) model.value = modelBeforeCodex;
   model.disabled = codex;
-  model.options[0].text = codex
-    ? '跟 Codex 自己的设置走（config.toml 里选）'
-    : '跟 Claude Code 自己的设置走';
+  model.options[0].text = codex ? '跟 Codex 的设置走' : '跟设置走';
   model.title = codex ? 'Codex 用哪个模型在它自己的配置里选，这儿管不着' : '';
 
   const perm = $('perm');
@@ -614,8 +669,10 @@ function syncAgentUi() {
     o.text = codex ? (PERM_CODEX[o.value] || o.dataset.claude) : o.dataset.claude;
   }
   perm.title = codex
-    ? '这一档会盖过你 ~/.codex/config.toml 里的设置，只管这一次。\n开出来的窗口里会印一行告诉你具体给了什么'
-    : '';
+    ? '这一档会盖过你 ~/.codex/config.toml 里的设置，只管这一次。\n' +
+      '开出来的窗口里会印一行告诉你具体给了什么。\n\n' + PERM_CODEX_FULL
+    : PERM_CLAUDE_FULL;
+  syncSetupSummary();   // 选项文字被上面改过了，摘要得跟着重算
 }
 /**
  * 这个目录现在在哪个分支、有几个文件没提交。
@@ -848,7 +905,24 @@ window.waifu.on('panel:prefill', (e) => {
 
 // 名字框跟着任务描述走，直到你自己动它
 $('task').addEventListener('input', syncLaneName);
-$('lane').addEventListener('input', () => { laneTouched = true; });
+$('lane').addEventListener('input', () => { laneTouched = true; syncSetupSummary(); });
+
+// 设置横条：四个旋钮任意一个动了，横条上那句摘要就得跟着改 ——
+// 不跟的话它会**一直说着上一次的配置**，而这是静默的（你看不出它在说谎）
+for (const id of ['agent', 'model', 'perm']) {
+  const el = $(id);
+  if (el) el.addEventListener('change', syncSetupSummary);
+}
+// 展开还是收着，记在这台机器上（换台电脑重新习惯一次，不值得写进配置文件）
+try {
+  const setup = $('setup');
+  if (setup) {
+    if (localStorage.getItem('waifu.setupOpen') === '1') setup.open = true;
+    setup.addEventListener('toggle', () => {
+      try { localStorage.setItem('waifu.setupOpen', setup.open ? '1' : '0'); } catch (_) { /* 无痕就算了 */ }
+    });
+  }
+} catch (_) { /* localStorage 用不了就每次都收着，不影响功能 */ }
 
 // Ctrl+Enter 直接派活，省得每次都去够按钮
 $('task').addEventListener('keydown', (e) => {
@@ -1032,6 +1106,7 @@ window.waifu.on('term:report', (e) => {
   refreshRecent();
   refreshRunning();
   refreshTerms();
+  syncSetupSummary();   // 页面刚起来时横条上不能是个「—」
   refreshToday();
   // 在跑的时候刷新耗时显示。「今天」那栏跟着一起刷 —— 它是本地读文件，
   // 不新开定时器也不新开 IPC 广播频道（少一条频道就少一个「忘了加白名单」的雷）

@@ -197,7 +197,48 @@ console.log('\n[9] 留着的线那排 chip：不许裂、不许没头没脑');
   check(js.includes('raw.slice(0, 8)') && js.includes('c.title = raw'),
         '线名截短显示、全文进 title（chip 不是拿来读任务的）');
 }
-console.log('\n[10] 拖文件进面板');
+console.log('\n[10] 派活那一栏：一屏装得下');
+{
+  const html = read('src/renderer/panel.html');
+  const js = read('src/renderer/panel.js');
+  const css = html.slice(html.indexOf('.col-form {'), html.indexOf('.col-form {') + 700);
+
+  check(css.includes('flex-direction: column'),
+        '左栏是 flex 列 —— 原来是「一列 + overflow-y」，实测 780×700 下溢出 143px，两个按钮永远在屏幕外');
+  { const t = html.slice(html.indexOf('#task { flex'), html.indexOf('#task { flex') + 80);
+    check(t.includes('flex: 1 1 auto') && t.includes('min-height'),
+          '任务框吃掉剩下的高度（窗口拉多高它就多高），但有下限兜着'); }
+
+  check(html.includes('<details class="setup" id="setup">') &&
+        html.includes('id="setup-sum"') && html.includes('id="setup-lane"'),
+        '四个旋钮收进折叠横条（用谁来干 / 模型 / 放她多开 / 线名）');
+  // 四个 id 一个都不能丢：panel.js 到处按 id 取它们
+  for (const id of ['agent', 'model', 'perm', 'lane']) {
+    check(html.includes('id="' + id + '"'), '收起来之后 #' + id + ' 还在（panel.js 按 id 取它）');
+  }
+  check(js.includes('function syncSetupSummary'),
+        '**横条上要写着当前值** —— 只写「设置」两个字的话，每次派活前都得点开确认一遍，那还不如不折叠');
+  { const fn = js.slice(js.indexOf('function syncSetupSummary'), js.indexOf('function syncSetupSummary') + 1200);
+    check(fn.includes('dataset.short'),
+          '摘要走 data-short：选项本身要写清楚，摘要要短，两个诉求不是一回事');
+    check(fn.includes('模型跟它自己的设置'),
+          'codex 的模型在它自己的配置里选 —— 摘要里报一个模型名是骗人'); }
+  check(js.includes("for (const id of ['agent', 'model', 'perm'])") && js.includes("addEventListener('change', syncSetupSummary)"),
+        '三个下拉任意一个动了摘要就跟着改（不跟的话它会一直说着上一次的配置，而且是静默的）');
+  check(js.includes('syncSetupSummary();   // 线名是横条上那个小紫块'),
+        '线名自动取的那条路也要刷摘要');
+  check(js.includes("localStorage.getItem('waifu.setupOpen')"),
+        '展开还是收着记在这台机器上');
+  { const ag = js.slice(js.indexOf('function syncAgentUi'), js.indexOf('function syncAgentUi') + 1400);
+    check(ag.includes('syncSetupSummary();'),
+          'syncAgentUi 末尾也要刷 —— 它会改写选项文字，摘要得跟着重算'); }
+  check(html.includes('data-short="Sonnet 5"') && html.includes('Sonnet 5 · 省一半'),
+        '选项文字要短：格子只有 ~150px 宽，长句子会被浏览器生切在半截（实拍「Claude Code ——」）');
+  check(js.includes('PERM_CLAUDE_FULL') && js.includes('PERM_CODEX_FULL'),
+        '完整说法挪进 title，一个字都没少');
+}
+
+console.log('\n[11] 拖文件进面板');
 {
   const js = read('src/renderer/panel.js');
   const pre = read('src/preload.js');
