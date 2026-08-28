@@ -2254,6 +2254,47 @@ function ensureMobile() {
         },
         browse: (dir) => browseDirs(dir),
         lanes: (dir) => lanesFor(dir),
+        /**
+         * 手机上传过来的东西，落到电脑上（`<数据目录>/inbox/`），回一个路径。
+         *
+         * 【三道闸，一道都不能少 —— 这是唯一一条「外面往这台电脑写文件」的路】
+         *   ① 名字只取 basename 再洗一遍：路径分隔符、.. 、控制字符全干掉，
+         *      不然 `../../启动文件夹/x.bat` 就能写到别处去
+         *   ② 后缀白名单：只收图、文本、pdf。**exe/bat/ps1 这些一律不收** ——
+         *      收下来就等于给了一条「往这台机器上放可执行文件」的路
+         *   ③ 落盘只在 inbox 一个目录，重名自动改名（不覆盖你已有的东西）
+         */
+        upload: (rawName, buf) => {
+          const OK_EXT = new Set([
+            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic',
+            '.txt', '.log', '.md', '.json', '.csv', '.yml', '.yaml', '.pdf',
+          ]);
+          try {
+            if (!buf || !buf.length) return { ok: false, error: '空文件' };
+            // ① 洗名字
+            let name = path.basename(String(rawName || '').replace(/[\\/]/g, '/'))
+              .replace(/[\x00-\x1f<>:"|?*]/g, '')
+              .replace(/^\.+/, '')
+              .trim()
+              .slice(0, 80);
+            if (!name) name = 'file';
+            // ② 后缀白名单
+            const ext = path.extname(name).toLowerCase();
+            if (!OK_EXT.has(ext)) {
+              return { ok: false, error: '这种格式不收（只收图片、文本和 pdf）' };
+            }
+            // ③ 只落 inbox，重名改名
+            const dir = path.join(DATA_ROOT, 'inbox');
+            fs.mkdirSync(dir, { recursive: true });
+            const fresh = desk.freshName(dir, name);
+            const full = path.join(dir, fresh);
+            fs.writeFileSync(full, buf);
+            log('[mobile] 手机传来 ' + fresh + '（' + Math.round(buf.length / 1024) + ' KB）');
+            return { ok: true, path: full, name: fresh };
+          } catch (err) {
+            return { ok: false, error: '存不下：' + err.message };
+          }
+        },
         // 叫停：只把 Esc 送进窗口。**不做关窗** —— 那不可逆，手机上误触
         // 的代价太大（要关就走到电脑前，或者在面板上关）
         interrupt: (id) => (terminals ? terminals.interruptRemote(id) : { ok: false, error: '终端管理还没起来' }),

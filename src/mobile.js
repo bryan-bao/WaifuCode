@@ -10,7 +10,8 @@
 // 零依赖（node 自带 http），跟局域网更新（updates.js）一个路数。
 // 安全三道闸：随机口令（不带就 401）、只有 waiting 的线才收放行、
 // 服务不开就完全不存在（mobile.enabled 默认关）。
-// 【边界】口令在 URL 里，扫码的人就是主人 —— 别把二维码发到群里。
+// 【边界】扫码的人就是主人 —— 别把二维码发到群里。口令进了手机就存在
+// 那台手机上、从地址栏抹掉（页面那头做的），所以别把**网址**当秘密防线。
 // ---------------------------------------------------------------------------
 const http = require('http');
 const crypto = require('crypto');
@@ -22,6 +23,21 @@ function tokenOk(got, want) {
   const b = Buffer.from(String(want || ''));
   if (!want || a.length !== b.length) return false;
   try { return crypto.timingSafeEqual(a, b); } catch (_) { return false; }
+}
+
+/** 二进制收包（传文件走这条）。上限单独给 —— 手机拍的照片动辄五六 MB */
+function readBytes(req, cap) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > cap) { req.destroy(); reject(new Error('文件太大')); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
 }
 
 function readBody(req, cap = 64 * 1024) {
@@ -47,6 +63,7 @@ function readBody(req, cap = 64 * 1024) {
  *   browse(dir)        -> { cwd, parent, dirs[], files[] } 让手机能翻电脑上的东西
  *   lanes(dir)         -> [{laneId,name,lastRun,alive,turns,hint}] 这个项目留着的线
  *   interrupt(id)      -> { ok, error? } 把 Esc 送进那个终端窗口（叫停）
+ *   upload(name, buf)  -> { ok, path?, name?, error? } 手机上的图/文件落到电脑上
  */
 function createMobileServer({ pageFile, token, hooks, log, iconFile }) {
   const clients = new Set(); // SSE 连接
@@ -110,8 +127,25 @@ function createMobileServer({ pageFile, token, hooks, log, iconFile }) {
         return json(200, r || { ok: false, why: '这条线不在了', turns: [] });
       }
 
-      // 翻电脑上的文件夹（手机上没法调系统选择器，只能这么来）。
-      // **只列目录名，绝不读文件内容** —— 这个口只为选项目服务
+      /**
+       * 手机上的图/文件传到电脑上，回一个**电脑上的路径**，你再把它丢给那条线。
+       *
+       * 【为什么不走 multipart】就一个文件，没必要拉一个解析器进来：
+       * 文件名走查询串，正文就是**裸字节**。少一层解析＝少一批边界情况。
+       *
+       * 【安全全在 main 那头】这个模块不认业务规则：名字怎么洗、允许什么后缀、
+       * 落到哪个目录，全由 upload 钩子说了算。这儿只管上限（别让人拿一个
+       * 无限长的请求把内存撑爆）。
+       */
+      if (req.method === 'POST' && pathname === '/api/upload') {
+        let buf;
+        try { buf = await readBytes(req, 25 * 1024 * 1024); }
+        catch (err) { return json(413, { ok: false, error: '文件太大（最多 25MB）' }); }
+        const r = await hooks.upload(String(params.get('name') || ''), buf);
+        if (log) log('[mobile] 收文件 ' + params.get('name') + ' -> ' + ((r && r.ok) ? r.path : (r && r.error) || '没收下'));
+        return json(r && r.ok ? 200 : 400, r || { ok: false, error: '没收下' });
+      }
+
       // 这个项目留着的线（关掉的窗口也能接回去）—— 手机原来只能接**还开着**的
       if (req.method === 'GET' && pathname === '/api/lanes') {
         return json(200, { lanes: (await hooks.lanes(params.get('dir') || '')) || [] });
@@ -126,6 +160,8 @@ function createMobileServer({ pageFile, token, hooks, log, iconFile }) {
         return json(200, r || { ok: false, error: '停不了' });
       }
 
+      // 翻电脑上的东西（手机上没法调系统选择器，只能这么来）。
+      // **只给名字路径类型大小，绝不读内容** —— 这个口只为「挑一个」服务
       if (req.method === 'GET' && pathname === '/api/browse') {
         return json(200, await hooks.browse(params.get('dir') || ''));
       }

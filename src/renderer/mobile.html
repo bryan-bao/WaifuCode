@@ -45,7 +45,10 @@
   }
   textarea { min-height: 76px; resize: vertical; }
   .row2 { display: flex; gap: 8px; }
-  .row2 > * { flex: 1; }
+  /* min-width:0 是关键：输入框默认 min-width 是 auto（按 size 属性算出来的
+     一百八十来像素），不清零的话这一行在 390 宽的手机上会**撑出屏幕右边**，
+     最右那个按钮被切掉一半（实拍） */
+  .row2 > * { flex: 1; min-width: 0; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .chip {
     background: var(--card2); border: 1px solid var(--line); color: var(--dim);
@@ -230,7 +233,12 @@
   .picker .item .sz { margin-left: auto; font-size: 11px; color: var(--faint); }
   .picker .item.file { color: #d7dce8; }
   .picker .hd { font-size: 11px; color: var(--faint); margin: 12px 2px 4px; }
-  /* 说话框旁边那个回形针（详情页里挑电脑上的文件） */
+  /* 目录那行右边那个小方按钮（传手机上的东西） */
+  .iconbtn {
+    flex: none; padding: 10px 12px; border-radius: var(--r-s); border: 1px solid var(--line);
+    background: var(--card2); color: var(--fg); font-size: 16px; margin-bottom: 0;
+  }
+  /* 说话框旁边那两个小按钮（挑电脑上的 / 传手机上的） */
   .say .clip {
     flex: none; padding: 0 12px; border-radius: var(--r-s); border: 1px solid var(--line);
     background: var(--card2); color: var(--fg); font-size: 16px;
@@ -257,7 +265,12 @@
     <div class="row2" style="align-items:center">
       <input id="dir" placeholder="项目目录" spellcheck="false" style="margin-bottom:0" />
       <button id="pick" style="flex:none;padding:10px 14px;border-radius:var(--r-s);border:1px solid var(--line);background:var(--card2);color:var(--fg);font:inherit">选电脑上的</button>
+      <button id="up-task" class="iconbtn" title="把手机上的图/文件传到电脑上">📤</button>
     </div>
+    <!-- 一个输入框两处共用（派活卡片和任务窗口），点哪个由 pickTarget 记着。
+         accept 里那串决定手机弹出来的是「相机/相册/文件」哪几样 -->
+    <input id="up" type="file" hidden
+           accept="image/*,.txt,.log,.md,.json,.csv,.yml,.yaml,.pdf" />
     <div style="height:8px"></div>
     <!-- 终端自己的命令（Claude 的 / 命令、codex 的 / 命令、! 开头的 shell）。
          手机上敲这些要命，点一下填进下面的框 —— 发不发你自己点 -->
@@ -853,6 +866,7 @@
           '<div class="chips quick" id="d-quick"></div>' +
           '<div class="row"><textarea id="d-say" placeholder="接着说……"></textarea>' +
           '<button class="clip" id="d-clip" title="挑电脑上的文件">📎</button>' +
+          '<button class="clip" id="d-up" title="传手机上的图/文件">📤</button>' +
           '<button id="d-send">发送</button></div><div id="d-msg" style="font-size:12px;min-height:18px;padding:4px 2px"></div></div>'
         : '<div class="empty">这个窗口已经关了，只能看历史</div>');
 
@@ -905,6 +919,7 @@
       // 挑电脑上的文件，路径填进说话框（这条线的目录是定死的，所以这儿
       // 挑文件夹也是**填路径**，不是换目录）
       $('d-clip').onclick = () => openPicker(d.dir || '', 'd-say');
+      if ($('d-up')) $('d-up').onclick = () => pickUpload('d-say');
     }
     if (d.canSend) {
       $('d-send').onclick = async () => {
@@ -966,6 +981,36 @@
        : kind === 'dir' ? '文件夹路径填进去了'
        : '路径填进去了，补一句要她拿它干嘛');
   }
+
+  /**
+   * 手机上的图/文件 → 传到电脑上 → 把**电脑上的那个路径**填进输入框。
+   *
+   * 这是「你在外面看到点什么，想让她看看」的那条路：拍张照、截个图、
+   * 手机上存的日志，传过去落在电脑的 inbox 里，再把路径丢给那条线。
+   * 跟「挑电脑上的」正好是反方向的一对。
+   */
+  function pickUpload(target) {
+    pickTarget = target || 'task';
+    $('up').value = '';   // 同一个文件连传两次也要能触发 change
+    $('up').click();
+  }
+
+  $('up').onchange = async () => {
+    const f = ($('up').files || [])[0];
+    if (!f) return;
+    // 先在手机这头拦一道：25MB 以上直接说，别让人等着传完才知道白等
+    if (f.size > 25 * 1024 * 1024) { note('这个文件太大了（最多 25MB）', 'err'); return; }
+    note('传着呢…… ' + fmtSize(f.size));
+    try {
+      // 文件名走查询串，正文就是裸字节 —— 服务端那头不用解 multipart
+      const r = await fetch(api('/api/upload?name=' + encodeURIComponent(f.name)), {
+        method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: f,
+      }).then((x) => x.json());
+      if (r && r.ok) putPath(r.path, /\.(png|jpe?g|gif|webp|bmp|heic)$/i.test(r.name || '') ? 'image' : '');
+      else note((r && r.error) || '没传上去', 'err');
+    } catch (e) { note('网络断了？' + e.message, 'err'); }
+  };
+  $('up-task').onclick = () => pickUpload('task');
 
   async function openPicker(start, target) {
     pickTarget = target || 'task';
