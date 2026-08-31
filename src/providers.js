@@ -20,6 +20,10 @@
 // 主进程把 cipher 注进来（useCipher），自检拿个假的替身也能跑。
 // 钥匙**只在拼 env 那一刻解开**，不进日志、不进 spec 文件、不进手机端。
 
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
 const OFFICIAL = 'official';
 
 // 官方那档能选的模型（跟 main.js 的 DISPATCH_MODELS 一份；空串 = 跟 Claude Code 自己的设置走）
@@ -107,6 +111,23 @@ function resolve(cfg, providerRaw, modelRaw, agent) {
  * 钥匙在这儿现解，解不开（换了 Windows 账号、safeStorage 没了）就当官方 —— 宁可跑在
  * 用户自己的账号上，也别拿一串乱码当钥匙去撞。
  */
+// 思考档位。用户 Claude Code 全局设置里常有 effortLevel: xhigh（Claude 5 才有的档），
+// 交互终端带着它发，第三方口不认 → 400「请使用 low、high 或 max」（智谱 1210，实拍）。
+// 环境变量 CLAUDE_CODE_EFFORT_LEVEL 压得过 settings.json（2.1.251 用假接口实测），
+// 所以第三方 Anthropic 口一律把档位压到对方认的：xhigh / medium → high，low / max 原样，
+// 用户根本没设就不加（让 CLI 走自己的默认）。
+// ponytail: 只读 ~/.claude/settings.json 一处；settings.local.json / 项目级的 effortLevel 没管，
+// 真有人在那儿设了再补
+const EFFORT_OK = new Set(['low', 'high', 'max']);
+function effortEnv() {
+  let lv = String(process.env.CLAUDE_CODE_EFFORT_LEVEL || '').trim();
+  if (!lv) {
+    try { lv = String(JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf8').replace(/^﻿/, '')).effortLevel || '').trim(); } catch (_) { lv = ''; }
+  }
+  if (!lv) return {};
+  return { CLAUDE_CODE_EFFORT_LEVEL: EFFORT_OK.has(lv) ? lv : 'high' };
+}
+
 function envFor(cfg, providerId, agent) {
   const r = resolve(cfg, providerId, '', agent);
   if (r.provider === OFFICIAL) return {};
@@ -120,7 +141,7 @@ function envFor(cfg, providerId, agent) {
   if (kindOf(p) === 'openai') return { OPENAI_BASE_URL: base, OPENAI_API_KEY: key || 'local' };
   // API_TIMEOUT_MS：第三方口（智谱 / DeepSeek）出长回复比官方慢得多，Claude Code 默认的
   // 单次请求超时会把它掐断报错。智谱文档明写要 3000000；只是「多等一会儿再放弃」，无副作用
-  return { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: key || 'local', API_TIMEOUT_MS: '3000000' };
+  return { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: key || 'local', API_TIMEOUT_MS: '3000000', ...effortEnv() };
 }
 
 /** 钥匙末四位，存档里带着方便认；密文本身不进任何列表 */
@@ -229,5 +250,5 @@ function redact(text, cfg) {
 module.exports = {
   OFFICIAL, OFFICIAL_MODELS, USD_CNY,
   useCipher, publicList, resolve, envFor, upsert, remove, find, kindOf, agentFor, modelsOf,
-  priceUsdOf, priceUsage, chatProviderId, forChat, redact, encryptKey, decryptKey,
+  priceUsdOf, priceUsage, chatProviderId, forChat, redact, encryptKey, decryptKey, effortEnv,
 };

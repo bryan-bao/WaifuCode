@@ -60,8 +60,8 @@ console.log('\n[3] 选了 DeepSeek：env 只多那两个变量，钥匙现解');
 {
   const id = cfg.providers[0].id;
   const env = P.envFor(cfg, id, 'claude');
-  check(Object.keys(env).sort().join(',') === 'ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL,API_TIMEOUT_MS',
-        '只加 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN + API_TIMEOUT_MS，别的一个不碰');
+  check(Object.keys(env).filter((k) => k !== 'CLAUDE_CODE_EFFORT_LEVEL').sort().join(',') === 'ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL,API_TIMEOUT_MS',
+        '只加 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN + API_TIMEOUT_MS（+ 档位压制），别的一个不碰');
   check(env.API_TIMEOUT_MS === '3000000', '第三方口把单次请求超时拉长（智谱文档要求的值），不然长回复被掐断');
   check(env.ANTHROPIC_AUTH_TOKEN === KEY && env.ANTHROPIC_BASE_URL === 'https://api.deepseek.com/anthropic', '钥匙解开了、地址对');
   const r = P.resolve(cfg, id, 'deepseek-v4-pro', 'claude');
@@ -164,7 +164,28 @@ console.log('\n[9] 接线：钥匙不进 spec、不进手机端、四处 spawn �
   check(ck.includes('test-providers.js'), '进了 CLAUDE.md 的自检清单');
 }
 
-console.log('\n[10] 钥匙怎么到终端窗口：term-shell 问一句，桌宠回一包 env');
+console.log('\n[10] 思考档位：第三方口只认 low / high / max');
+{
+  // 用户全局 effortLevel: xhigh → 智谱 400 [1210]「请使用 low、high 或 max」（2026-08-31 实拍）。
+  // 环境变量压得过 settings.json（2.1.251 用假接口实测），所以塞 CLAUDE_CODE_EFFORT_LEVEL 就够
+  const saved = process.env.CLAUDE_CODE_EFFORT_LEVEL;
+  const restore = () => { if (saved === undefined) delete process.env.CLAUDE_CODE_EFFORT_LEVEL; else process.env.CLAUDE_CODE_EFFORT_LEVEL = saved; };
+  const tryLv = (lv) => { process.env.CLAUDE_CODE_EFFORT_LEVEL = lv; return P.effortEnv().CLAUDE_CODE_EFFORT_LEVEL; };
+  check(tryLv('xhigh') === 'high', 'xhigh → high（xhigh 是 Claude 5 才有的档）');
+  check(tryLv('medium') === 'high', 'medium → high（智谱明说不认 medium）');
+  check(tryLv('low') === 'low' && tryLv('max') === 'max' && tryLv('high') === 'high', 'low / high / max 原样');
+  const c = { providers: [], dispatch: { provider: 'official' } };
+  c.providers = P.upsert(c, { name: '智谱', kind: 'anthropic', baseUrl: 'https://open.bigmodel.cn/api/anthropic', models: 'glm-5.3', key: KEY });
+  process.env.CLAUDE_CODE_EFFORT_LEVEL = 'xhigh';
+  check(P.envFor(c, c.providers[0].id, 'claude').CLAUDE_CODE_EFFORT_LEVEL === 'high', '第三方 Anthropic 口带着压过的档位');
+  check(!('CLAUDE_CODE_EFFORT_LEVEL' in P.envFor(c, 'official', 'claude')), '官方线不压：官方认 xhigh，压了反而是降级');
+  c.providers = P.upsert(c, { name: '本机', kind: 'openai', baseUrl: 'http://127.0.0.1:11434/v1', models: 'qwen3.7' });
+  const ol = c.providers.find((p) => p.kind === 'openai');
+  check(!('CLAUDE_CODE_EFFORT_LEVEL' in P.envFor(c, ol.id, 'codex')), 'OpenAI 口（codex）不带这个变量，它不认');
+  restore();
+}
+
+console.log('\n[11] 钥匙怎么到终端窗口：term-shell 问一句，桌宠回一包 env');
 (function () {
   // ① server.js：/term 收到 phase=env 时把 onTermEvent 回的 {env} 当响应体。
   //    只看源码不真起服务 —— Windows 上 node 的 listen 不带 SO_EXCLUSIVEADDRUSE，
