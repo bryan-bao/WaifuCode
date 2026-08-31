@@ -95,5 +95,14 @@ console.log('[6] 原子写：写完仍是合法 JSON，没有半个文件');
   ok('写后是合法 JSON、临时文件已清');
 }
 
+console.log('[7] 接线：两条 spawn claude 的路开工前都信任，codex 不掺和');
+{
+  const ts = fs.readFileSync(path.join(__dirname, '..', 'hooks', 'term-shell.js'), 'utf8');
+  const mn = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
+  assert(/agent !== 'codex'[^]{0,140}ensureTrusted/.test(ts), 'term-shell 只在 claude 分支预先信任');
+  assert(mn.includes('trust.ensureTrusted(opts.projectPath)'), '无头派活也补了信任（它不走 term-shell，是唯一漏网）');
+  ok('term-shell（开窗口/手机）+ 无头，两条路都信任');
+}
+
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) { /* 留着也无妨 */ }
 console.log('\n\x1b[32m✓ 全过\x1b[0m');

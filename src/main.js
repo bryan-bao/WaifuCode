@@ -50,6 +50,7 @@ const { remindStore } = require('./remind');
 const desk = require('./desk');
 // 「接入点」：让 Claude Code / Codex 用别家的模型（钥匙走 safeStorage 密文）
 const providers = require('./providers');
+const trust = require('./trust');   // 开 claude 前预先信任目录，免掉「Is this a project you trust?」框
 // 往 ~/.claude/settings.json 装那 5 条 hook。开机自己装 —— 原来只有开发机
 // 手动跑过，发出去的包在别人机器上她是个不会说话的动画
 const hookInstaller = require('../hooks/install');
@@ -3258,6 +3259,9 @@ function wireIpc() {
       if (cfg.mode === 'headless' && agent !== 'codex') {
         // opts 在后面，所以面板上临时选的那个会盖掉配置里的默认值。
         // 接入点的 env 在这儿现拼（钥匙只在这一刻解开，不进 opts、不进日志）
+        // 无头模式是主进程直接跑 claude，不经过 term-shell —— 那条信任在这儿补上
+        // （开窗口/手机派活都走 term-shell，已经信任过了；这条是唯一的漏网）
+        if (opts && opts.projectPath) { try { trust.ensureTrusted(opts.projectPath); } catch (_) { /* 写不进顶多再弹框 */ } }
         const r = sessions.dispatch({ permissionMode: cfg.permissionMode, ...opts, model,
           env: providers.envFor(loadConfig(), pick.provider, 'claude') });
         return { ok: true, ...r };
