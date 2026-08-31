@@ -48,6 +48,9 @@ const recap = require('./recap');
 const { remindStore } = require('./remind');
 // 桌面感知：拖文件分类、久未提交状态机、全屏判定
 const desk = require('./desk');
+// 往 ~/.claude/settings.json 装那 5 条 hook。开机自己装 —— 原来只有开发机
+// 手动跑过，发出去的包在别人机器上她是个不会说话的动画
+const hookInstaller = require('../hooks/install');
 // 「关于你」的小本子 + 她写的周记
 const { aboutStore } = require('./about');
 const diary = require('./diary');
@@ -1861,6 +1864,37 @@ function ensureCodexHookHash() {
   return codexHashProbing;
 }
 
+/**
+ * 把桌宠的 hook 装进 ~/.claude/settings.json —— **开机就装，装完 claude 也装**。
+ *
+ * 【为什么非得在这儿】原来装 hook 只有 `npm run install-hooks` 这一条路，
+ * 而那是开发机上手动跑的。打包发给别人的桌宠**一次都没装过**：那台机器上
+ * 她盯不了终端、护栏不响、「等你确认」不喊、回来不汇报，而且没有任何报错 ——
+ * 是「静默失效」里最大的一个（扩展方向那份盘点抓出来的）。
+ *
+ * install() 是幂等的：内容没变一个字节都不写、不备份；路径变了（换过安装目录）
+ * 会把旧条目换成新的。没装 claude 的机器不装 —— 那份 settings.json 是 Claude Code
+ * 的，人家没装 Claude Code 我们别去凭空造一份。
+ */
+function ensureHooks(why) {
+  try {
+    if (!claudeInstalled()) { log('[hooks] 没装 Claude Code，hook 先不装'); return null; }
+    const node = terminals ? terminals.node : null;
+    const r = hookInstaller.install({
+      nodeBin: node ? node.bin : process.execPath,
+      asNode: node ? Boolean(node.asNode) : true,
+      wrapperDir: path.join(DATA_ROOT, 'hooks'),
+    });
+    if (r.error) log('[hooks] 没装上（' + why + '）：' + r.error);
+    else if (r.changed) log('[hooks] 装好了 ' + r.added + ' 条（' + why + (r.removed ? '，换掉 ' + r.removed + ' 条旧的' : '') + '）→ ' + r.settings);
+    else log('[hooks] 已经是最新的（' + why + '）');
+    return r;
+  } catch (err) {
+    log('[hooks] 装 hook 出错：' + err.message);
+    return null;
+  }
+}
+
 function guardAgent(agent) {
   if (agent === 'codex') {
     if (agents.codexInstalled()) {
@@ -1945,6 +1979,8 @@ function installAgent(agent) {
       // 不推的话装完照样是 spawn ENOENT，用户得重启才好 —— 而她刚说完
       // 「装好啦，再点一次就能开工」（排查抓的）
       if (agent !== 'codex') {
+        // 刚装上 claude 的机器：开机那次因为「没装 Claude Code」跳过了，这儿补上
+        ensureHooks('刚装好 claude');
         try {
           const fresh = resolveClaudeBin();
           if (terminals) terminals.claudeBin = fresh;
@@ -3718,8 +3754,10 @@ if (!app.requestSingleInstanceLock()) {
     wireEvents();
     wireIpc();
 
-    // hook 服务。装不装 hook 是另一回事（npm run install-hooks），
-    // 但服务本身先起着 —— 没装 hook 时它只是空转，不花什么资源。
+    // 先把 hook 装进 ~/.claude/settings.json（幂等，没变不写），再起收 hook 的服务。
+    // 顺序无所谓 —— hook 是新开的 Claude Code 会话才生效的
+    ensureHooks('开机');
+
     startServer({
       runtimeFile: path.join(STORE, 'runtime.json'),
       log,
