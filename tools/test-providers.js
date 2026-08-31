@@ -60,8 +60,9 @@ console.log('\n[3] 选了 DeepSeek：env 只多那两个变量，钥匙现解');
 {
   const id = cfg.providers[0].id;
   const env = P.envFor(cfg, id, 'claude');
-  check(Object.keys(env).sort().join(',') === 'ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL',
-        '只加 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN，别的一个不碰');
+  check(Object.keys(env).sort().join(',') === 'ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL,API_TIMEOUT_MS',
+        '只加 ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN + API_TIMEOUT_MS，别的一个不碰');
+  check(env.API_TIMEOUT_MS === '3000000', '第三方口把单次请求超时拉长（智谱文档要求的值），不然长回复被掐断');
   check(env.ANTHROPIC_AUTH_TOKEN === KEY && env.ANTHROPIC_BASE_URL === 'https://api.deepseek.com/anthropic', '钥匙解开了、地址对');
   const r = P.resolve(cfg, id, 'deepseek-v4-pro', 'claude');
   check(r.provider === id && r.model === 'deepseek-v4-pro', '模型只认它自己名单里的');

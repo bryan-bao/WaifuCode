@@ -118,7 +118,9 @@ function envFor(cfg, providerId, agent) {
   const base = String(p.baseUrl || '').trim().replace(/\/+$/, '');
   if (!base) return {};
   if (kindOf(p) === 'openai') return { OPENAI_BASE_URL: base, OPENAI_API_KEY: key || 'local' };
-  return { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: key || 'local' };
+  // API_TIMEOUT_MS：第三方口（智谱 / DeepSeek）出长回复比官方慢得多，Claude Code 默认的
+  // 单次请求超时会把它掐断报错。智谱文档明写要 3000000；只是「多等一会儿再放弃」，无副作用
+  return { ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: key || 'local', API_TIMEOUT_MS: '3000000' };
 }
 
 /** 钥匙末四位，存档里带着方便认；密文本身不进任何列表 */
