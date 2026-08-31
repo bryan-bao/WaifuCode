@@ -302,6 +302,23 @@ console.log('\n[11] 拖文件进面板');
         '只认类型，**不读内容** —— 读不读是那条线自己的事（也是省钱）');
 }
 
+console.log('\n[12] 模型下拉：刷多少遍都不许长出空组');
+{
+  // 点开下拉那一下面板窗口会失焦再回焦 → focus 里的 fillModelSelect 又跑一遍。
+  // 只 remove(option) 会把空壳的 <optgroup> 留在原地，每点一次多一行「官方」（实测截图见 08-31）
+  const js = read('src/renderer/panel.js');
+  const mob = read('src/renderer/mobile.html');
+  const fill = js.slice(js.indexOf('async function fillModelSelect'), js.indexOf('let modelBeforeCodex'));
+  check(fill.includes("querySelectorAll('optgroup')") && fill.includes(') g.remove()'),
+        'panel：清下拉要连 <optgroup> 一起删');
+  check(!fill.includes('sel.remove(1)'), 'panel：不许再用 remove(1) 那种只删 option 的清法');
+  check(fill.includes('dataset.sig') && fill.includes('if (sel.dataset.sig === sig) return'),
+        'panel：名单没变就不重画（重画会把正选着的冲掉）');
+  const mfill = mob.slice(mob.indexOf('模型下拉：按接入点分组'), mob.indexOf('模型下拉：按接入点分组') + 1200);
+  check(mfill.includes("querySelectorAll('optgroup')") && mfill.includes(') g.remove()') && !mfill.includes('sel.remove(1)'),
+        '手机端：同一处同一个坑，也得连组一起删');
+}
+
 console.log('');
 console.log(bad === 0 ? '\x1b[32m全过了\x1b[0m' : '\x1b[31m' + bad + ' 项没过\x1b[0m');
 process.exit(bad === 0 ? 0 : 1);

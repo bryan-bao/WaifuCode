@@ -459,7 +459,7 @@
       if (sel.dataset.sig !== sig) {
         sel.dataset.sig = sig;
         const keep = sel.value;
-        while (sel.options.length > 1) sel.remove(1);
+        for (const g of sel.querySelectorAll('optgroup')) g.remove();   // 只删 option 会留空壳的组
         const SHORT = { 'claude-opus-5': 'Opus 5 · 主力', 'claude-sonnet-5': 'Sonnet 5 · 快，省一半',
                         'claude-haiku-4-5': 'Haiku 4.5 · 最快最省', 'claude-fable-5': 'Fable 5 · 最强也最贵' };
         for (const p of (s.providers || [])) {

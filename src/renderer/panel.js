@@ -685,8 +685,13 @@ async function fillModelSelect() {
   const sel = $('model');
   let list = [];
   try { list = await window.waifu.listProviders(); } catch (_) { list = []; }
+  // 名单没变就不重画：点开下拉那一下窗口会失焦再回焦，重画会把你正选着的冲掉
+  const sig = JSON.stringify(list.map((p) => [p.id, p.name, p.kind, p.models, p.hasKey, p.priced]));
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
   const keep = sel.value;
-  while (sel.options.length > 1) sel.remove(1);
+  // 连 <optgroup> 一起删。只 remove(option) 会留下空壳的组，每刷一次多一行「官方」
+  for (const g of sel.querySelectorAll('optgroup')) g.remove();
   for (const p of list) {
     const g = document.createElement('optgroup');
     g.label = p.builtin ? '官方' : p.name + (p.kind === 'openai' ? '（Codex 用）' : '');
