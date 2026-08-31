@@ -502,7 +502,7 @@ function checkDanger({ toolName, toolInput, dir }) {
 }
 
 class TerminalManager extends EventEmitter {
-  constructor({ storeDir, log, claudeBin, getConfig, runtimeFile }) {
+  constructor({ storeDir, log, claudeBin, getConfig, envFor, priceFor, runtimeFile }) {
     super();
     this.storeDir = storeDir;
     this.specDir = path.join(storeDir, 'terminals');
@@ -514,6 +514,9 @@ class TerminalManager extends EventEmitter {
     this.log = log || (() => {});
     this.claudeBin = claudeBin;
     this.getConfig = getConfig || (() => ({}));
+    // 接入点：开 CLI 前给 term-shell 的 env、算钱用的单价。都由 main 注入 —— 这个模块不碰钥匙
+    this.envFor = typeof envFor === 'function' ? envFor : () => ({});
+    this.priceFor = typeof priceFor === 'function' ? priceFor : () => null;
 
     this.items = new Map(); // id -> 终端记录
     this.seq = 0;
@@ -596,6 +599,8 @@ class TerminalManager extends EventEmitter {
     // Claude Code 自己的设置走。**这里不校验** —— 校验挡在 main.js 的入口，
     // 这儿只负责往 spec 里放
     model,
+    // 用哪个接入点（只传 id；钥匙不进 spec）。main.js 校验过：认不出的一律不传
+    provider, providerName,
     // 用哪个 CLI（'claude' 缺省 / 'codex'）。校验同样挡在 main.js。
     // codex 的可执行文件路径由 bin 带进来（claude 有构造时的 this.claudeBin，
     // codex 是逐次现解析的）；notesFile 是小抄路径 —— codex 没有
@@ -671,6 +676,8 @@ class TerminalManager extends EventEmitter {
       runtimeFile: this.runtimeFile,
       permissionMode: permissionMode || (this.getConfig().terminal || {}).permissionMode || 'auto',
       model: model || undefined,
+      provider: provider || undefined,
+      providerName: providerName || undefined,
     };
     fs.writeFileSync(path.join(this.specDir, id + '.json'), JSON.stringify(spec, null, 2), 'utf8');
 
@@ -733,6 +740,7 @@ class TerminalManager extends EventEmitter {
       task: spec.task || '',
       sessionId: spec.sessionId,
       agent: spec.agent || 'claude',
+      provider: spec.provider || null,   // 接入点 id（term-shell 要 env、算钱按它的单价）
       // codex 的钱和「接着聊」全系在这仨上。认领（_codexPeek）会更新它们，
       // 并回写进 spec 文件 —— 桌宠重启 _adopt 认回窗口时才不丢
       codexSessionId: spec.codexSessionId || null,
@@ -959,6 +967,13 @@ class TerminalManager extends EventEmitter {
       case 'open':
         this.emit('change');
         break;
+
+      // term-shell 开 CLI 之前来要「这条线要塞什么环境变量」。
+      // 【为什么不在 spawn 时给】wt 的标签页**不继承**我们 spawn 时的 env（wt.exe 只是
+      // 转发给已有的 WindowsTerminal 进程），launcher.cmd 又不许写钥匙（那是落盘明文）。
+      // 所以只能让它回头来问一句 —— 钥匙只在这一刻解开、只进那个子进程的 env
+      case 'env':
+        return { env: this.envFor(rec) || {} };
 
       case 'beat':
         rec.lastBeat = Date.now(); // _sweep 的「心跳断了」兜底靠它
@@ -1453,6 +1468,25 @@ class TerminalManager extends EventEmitter {
       // 卡在已经算出来的那个数上
       // ponytail: 卡地板，代价是文件被换掉后新会话的钱要涨过旧基线才看得见
       const u = cost.ofSession(rec.sessionId);
+      // 第三方接入点：cost.js 那张表是 Anthropic 的单价，套上去就是错的。
+      // 填了单价按它算（缓存全按输入价，宁可报高）；没填就「未计价」，**不显示 $0**
+      if (rec.provider && rec.provider !== 'official') {
+        const price = this.priceFor(rec);
+        if (price) {
+          const t = u.tokens || {};
+          let inTok = 0, outTok = 0;
+          for (const [k, v] of Object.entries(t)) {
+            if (/output/i.test(k)) outTok += Number(v) || 0; else inTok += Number(v) || 0;
+          }
+          rec.costUsd = Math.max(rec.costUsd || 0, (inTok * price[0] + outTok * price[1]) / 1e6);
+          rec.unpriced = false;
+        } else {
+          rec.costUsd = null;
+          rec.unpriced = true;
+        }
+        rec.costParts = null; rec.costTokens = u.tokens ? { ...u.tokens } : null; rec.costModels = null;
+        return;
+      }
       rec.costUsd = Math.max(rec.costUsd || 0, (rec.costCarry || 0) +
                     u.total - (rec.costBase || 0));
       // 明细描述的是**这份档案整体**（含接手前的历史）——算命中率和「大头是谁」
@@ -1722,6 +1756,8 @@ class TerminalManager extends EventEmitter {
         stuckMin: (t.status === 'running' && now - (t.lastHookAt || t.startedAt) > STUCK_MS)
           ? Math.round((now - (t.lastHookAt || t.startedAt)) / 60000) : 0,
         agent: t.agent || 'claude',
+        provider: t.provider || 'official',
+        unpriced: Boolean(t.unpriced),   // 第三方接入点没填单价：面板显示「未计价」而不是 $0
         // 面板靠它决定「接着聊」的话术：认领到了、**而且档案还在**才敢说
         // 「能接上」—— 用户清过 ~/.codex 的话，接过去实际是新开一条，
         // 话就不能说满（评审抓的）

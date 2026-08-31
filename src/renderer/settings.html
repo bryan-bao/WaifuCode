@@ -137,6 +137,17 @@
 
   ::-webkit-scrollbar { width: 8px; }
   ::-webkit-scrollbar-thumb { background: #262c3b; border-radius: 4px; }
+  /* 模型接入那块 */
+  .pv-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .pv-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line, #272e3f); border-radius: 8px; font-size: 12px; }
+  .pv-item .n { font-weight: 600; }
+  .pv-item .d { color: var(--dim, #8b93a7); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pv-item .r { font-size: 11px; color: var(--dim, #8b93a7); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pv-item .r.ok { color: var(--acc, #5eead4); }
+  .pv-item .r.bad { color: var(--bad, #f87171); }
+  .pv-form { border: 1px solid var(--line, #272e3f); border-radius: 8px; padding: 10px; margin-top: 8px; }
+  .pv-form .row { margin-bottom: 6px; }
+  .pv-form textarea { width: 100%; font: inherit; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -211,6 +222,33 @@
       <div class="row"><label>后台派活</label><select id="dispatchMode"></select></div>
       <div class="row"><label>终端任务</label><select id="terminalMode"></select></div>
 
+      <h3>模型接入</h3>
+      <p class="hint">让她用别家的模型（DeepSeek、通义千问、智谱、Kimi、本机 Ollama……）。
+        只影响<b>桌宠自己起的</b>那些窗口和对话 —— 你自己开的终端、你的 Claude 登录一个字不动，
+        切回「官方」就是原样。钥匙加密存在这台电脑上，不进日志、不进手机端。<br>
+        <b>这一块改了立刻生效</b>，不用点下面的保存。</p>
+      <div id="pv-list" class="pv-list"></div>
+      <button class="chip" id="pv-add">＋ 加一个接入点</button>
+      <div id="pv-form" class="pv-form" hidden>
+        <div class="row"><label>名字</label><input type="text" id="pv-name" spellcheck="false" placeholder="比如 DeepSeek" /></div>
+        <div class="row"><label>给谁用</label><select id="pv-kind">
+          <option value="anthropic">Anthropic 兼容口 · 给 Claude Code 用</option>
+          <option value="openai">OpenAI 兼容口 · 给 Codex 用</option>
+        </select></div>
+        <div class="row"><label>地址</label><input type="text" id="pv-url" spellcheck="false" placeholder="https://api.deepseek.com/anthropic" /></div>
+        <div class="row"><label>钥匙</label><input type="password" id="pv-key" spellcheck="false" placeholder="sk-…（本机 Ollama 留空）" /><button class="chip" id="pv-eye" title="看一眼">👁</button></div>
+        <div class="row"><label>模型</label><textarea id="pv-models" rows="3" spellcheck="false" placeholder="每行一个模型名，第一个是默认&#10;deepseek-v4-flash&#10;deepseek-v4-pro"></textarea></div>
+        <div class="row"><label>单价</label>
+          <input type="number" id="pv-in" min="0" step="0.1" placeholder="输入" style="width:80px" /><span class="val">元/百万</span>
+          <input type="number" id="pv-out" min="0" step="0.1" placeholder="输出" style="width:80px" /><span class="val">元/百万（不填就显示「未计价」）</span>
+        </div>
+        <div class="row">
+          <button class="chip primary" id="pv-save">存</button>
+          <button class="chip" id="pv-cancel">取消</button>
+          <span class="val" id="pv-msg"></span>
+        </div>
+      </div>
+
       <h3>终端</h3>
       <div class="row"><label>用哪个壳</label><select id="terminalApp"></select></div>
 
@@ -261,6 +299,10 @@
     <div class="tab" id="tab-her">
       <h3>名字</h3>
       <div class="row"><input type="text" id="pname" spellcheck="false" placeholder="小依" /></div>
+
+      <h3>她开口用哪个</h3>
+      <p class="hint">私聊 / 搭话 / 周记用哪个接入点。干活用官方、聊天用便宜的国产模型也行 —— 两边互不影响。</p>
+      <div class="row"><label>私聊 / 搭话 / 周记</label><select id="chatProvider"></select></div>
 
       <h3>性格</h3>
       <p class="hint">这段会作为人设塞进每次对话。改完<b>下一段对话</b>才生效。</p>

@@ -40,7 +40,7 @@ function startServer({ runtimeFile, onEvent, onTermEvent, onListen, log }) {
             // close 那条的返回值带一行总账，作为响应体还给 term-shell
             //（它印在「按回车关掉」上面）。别的事件照旧 204 秒回
             const reply = onTermEvent ? onTermEvent(payload) : null;
-            if (reply && reply.line) {
+            if (reply && (reply.line || reply.env)) {
               res.writeHead(200, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify(reply));
               return;

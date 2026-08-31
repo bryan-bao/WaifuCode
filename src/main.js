@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell,
+  app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell, safeStorage,
   clipboard,
   globalShortcut,
 } = require('electron');
@@ -48,6 +48,8 @@ const recap = require('./recap');
 const { remindStore } = require('./remind');
 // 桌面感知：拖文件分类、久未提交状态机、全屏判定
 const desk = require('./desk');
+// 「接入点」：让 Claude Code / Codex 用别家的模型（钥匙走 safeStorage 密文）
+const providers = require('./providers');
 // 往 ~/.claude/settings.json 装那 5 条 hook。开机自己装 —— 原来只有开发机
 // 手动跑过，发出去的包在别人机器上她是个不会说话的动画
 const hookInstaller = require('../hooks/install');
@@ -1353,6 +1355,7 @@ async function tryDiary() {
       facts,
       aboutBits: about ? about.sample(2) : [],
       log,
+      getProvider: (agent) => providers.forChat(loadConfig(), agent),
     });
     diaryBusy = false;
     if (!r) { log('[diary] 这周没写出来，下周一再说'); return; }
@@ -1895,6 +1898,68 @@ function ensureHooks(why) {
   }
 }
 
+/**
+ * 「测一下」：拿这条接入点的地址和钥匙真起一次 CLI，回一个字。
+ * 一次把「不用登录、地址通、模型名认」三件事验完 —— 不用等派活失败了才知道。
+ * 走的就是派活那条路的参数（-p + 那两个环境变量），所以它通了派活就通。
+ */
+function testProvider(id) {
+  const cfg = loadConfig();
+  const p = providers.find(cfg, id);
+  if (!p) return { ok: false, error: '没这条接入点' };
+  const agent = providers.agentFor(providers.kindOf(p));
+  const env = providers.envFor(cfg, id, agent);
+  if (!Object.keys(env).length) return { ok: false, error: '钥匙解不开或地址是空的' };
+  const pick = providers.resolve(cfg, id, '', agent);
+  const noCli = guardAgent(agent);
+  if (noCli) return { ok: false, error: noCli.error };
+
+  let bin, args;
+  if (agent === 'claude') {
+    bin = resolveClaudeBin();
+    args = ['-p', '只回一个字：好', '--output-format', 'json', '--tools', '', '--setting-sources', ''];
+    if (pick.model) args.push('--model', pick.model);
+  } else {
+    bin = agents.resolveCodexBin();
+    args = agents.codexChatArgs({});
+    if (pick.model) args.push('-m', pick.model);
+  }
+  const useShell = /\.(cmd|bat)$/i.test(bin);
+  const finalArgs = useShell ? args.map((a) => (a === '' ? '""' : a)) : args;
+  return new Promise((resolve) => {
+    let out = '', err = '', done = false;
+    const finish = (v) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } };
+    let proc;
+    try {
+      proc = spawn(bin, finalArgs, {
+        cwd: app.getPath('temp'), windowsHide: true, shell: useShell,
+        env: { ...process.env, ...env, WAIFU_SELF: 'test' },
+      });
+    } catch (e) { return finish({ ok: false, error: '起不来：' + e.message }); }
+    const timer = setTimeout(() => { try { proc.kill(); } catch (_) { /* 已死 */ } finish({ ok: false, error: '45 秒没回音（地址不通？）' }); }, 45000);
+    proc.stdout.on('data', (c) => { out += c; });
+    proc.stderr.on('data', (c) => { err += c; });
+    proc.stdin.on('error', () => { /* codex 秒退时 EPIPE，别炸主进程 */ });
+    if (agent === 'codex') { try { proc.stdin.end('只回一个字：好', 'utf8'); } catch (_) { /* close 兜底 */ } }
+    proc.on('error', (e) => finish({ ok: false, error: '起不来：' + e.message }));
+    proc.on('close', (code) => {
+      // 报错文本可能把请求头原样带出来 —— 抹掉钥匙再给人看
+      const tail = providers.redact((err || out).trim().split(/\r?\n/).slice(-3).join(' ').slice(0, 300), cfg);
+      if (agent === 'claude') {
+        let j = null;
+        try { j = JSON.parse(out); } catch (_) { /* 不是 JSON 就是没跑起来 */ }
+        if (j && !j.is_error && typeof j.result === 'string') {
+          return finish({ ok: true, text: '通了：她回「' + j.result.trim().slice(0, 20) + '」' +
+            (pick.model ? '（模型 ' + pick.model + '）' : '') });
+        }
+        return finish({ ok: false, error: (j && j.result ? String(j.result).slice(0, 200) : tail) || ('退出码 ' + code) });
+      }
+      if (code === 0 && out.trim()) return finish({ ok: true, text: '通了（codex 有回音）' + (pick.model ? '，模型 ' + pick.model : '') });
+      return finish({ ok: false, error: tail || ('退出码 ' + code) });
+    });
+  });
+}
+
 function guardAgent(agent) {
   if (agent === 'codex') {
     if (agents.codexInstalled()) {
@@ -2223,6 +2288,9 @@ function mobileState() {
     todayUsd: mobileToday.usd,
     projects: projects.map((p) => ({ name: p.name, path: p.path })),
     terminals: terminals ? terminals.list() : [],
+    // 接入点名单（公开形态：名字、模型、有没有钥匙 —— **没有钥匙本身**）
+    providers: providers.publicList(cfg),
+    dispatchProvider: String((cfg.dispatch || {}).provider || providers.OFFICIAL),
   };
 }
 
@@ -2267,11 +2335,9 @@ function ensureMobile() {
           // 手机上选了就用手机的，没选才跟电脑上的设置走。
           // **一定要过 resolveDispatchModel**：那是白名单，手机来的字段
           // 是外部输入，不能直接拼进命令行
-          const model = agent === 'codex' ? undefined
-            : (opts.model ? resolveDispatchModel(opts.model)
-                          : resolveDispatchModel((loadConfig().dispatch || {}).model));
+          const pick = resolveDispatchModel(opts.model || undefined, opts.provider || undefined, agent);
           try {
-            return { ok: true, ...openLaneTerminal({ ...opts, model, agent }, { minimized: true }) };
+            return { ok: true, ...openLaneTerminal({ ...opts, model: pick.model, provider: pick.provider, agent }, { minimized: true }) };
           } catch (err) {
             return { ok: false, error: err.message };
           }
@@ -2527,23 +2593,34 @@ function laneNameFromTask(task, project, n) {
  * （term-shell 的 --model），收任意字符串等于让面板往命令行里塞参数。
  * 空串 = 不传 --model，让 claude 用它自己设置里的。
  */
-const DISPATCH_MODELS = new Set([
-  '', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'claude-fable-5',
-]);
-
 /**
- * 面板传来的模型：过一遍白名单，顺手记住。
+ * 面板/手机传来的「接入点 + 模型」：过一遍白名单，顺手记住。
  *
  * 「记住」是这个功能的一半 —— 你选一次，后台干 / 开终端两条路从此都默认用它，
  * 下次打开面板还是它。不认识的值当没选（比如老版本存档里的脏数据）。
+ *
+ * 白名单在 providers.resolve：官方只认 claude-* 那几个；第三方只认它自己名单里的；
+ * 接入点认不出、或者口跟 CLI 对不上（拿 openai 口给 claude）→ 一律官方。
+ * 返回 { provider, model }。没传（undefined）= 用记住的那套。
+ *
+ * codex + 官方不落盘：codex 不认 claude 的模型名，别把你记住的 claude 模型冲掉
+ * ——「你切回 claude 时上次选的模型还在」这条原来就有。
  */
-function resolveDispatchModel(raw) {
-  const m = String(raw == null ? '' : raw).trim();
-  if (!DISPATCH_MODELS.has(m)) return undefined;
-  try {
-    if ((loadConfig().dispatch || {}).model !== m) config.patch({ dispatch: { model: m } });
-  } catch (_) { /* 存不上就只这次有效 */ }
-  return m || undefined;
+function resolveDispatchModel(rawModel, rawProvider, agent) {
+  const cfg = loadConfig();
+  const d = cfg.dispatch || {};
+  const pv = rawProvider === undefined ? d.provider : rawProvider;
+  const md = rawModel === undefined ? d.model : rawModel;
+  const r = providers.resolve(cfg, pv, md, agent || 'claude');
+  const remember = !(agent === 'codex' && r.provider === providers.OFFICIAL);
+  if (remember) {
+    try {
+      if ((d.provider || providers.OFFICIAL) !== r.provider || (d.model || '') !== (r.model || '')) {
+        config.patch({ dispatch: { provider: r.provider, model: r.model || '' } });
+      }
+    } catch (_) { /* 存不上就只这次有效 */ }
+  }
+  return r;
 }
 
 /**
@@ -2654,8 +2731,15 @@ function openLaneTerminal(opts, { minimized }) {
     task: opts.task,
     // 面板上这一次选的权限模式（没选就是 undefined，terminals 回落到配置默认值）
     permissionMode: opts.permissionMode || undefined,
-    // codex 不认 claude 的模型名，这条线上永远不传（模型跟 ~/.codex/config.toml 走）
-    model: agent === 'codex' ? undefined : opts.model,
+    // 模型名由 resolveDispatchModel 按接入点校验过：官方是 claude-*，第三方是它名单里的；
+    // codex 只在选了 openai 兼容口的接入点时才有（它不认 claude 的模型名）
+    model: opts.model,
+    // 接入点只传 id。**钥匙不进 spec 文件** —— term-shell 开 CLI 前会回头向桌宠要 env
+    provider: opts.provider && opts.provider !== providers.OFFICIAL ? opts.provider : undefined,
+    providerName: (() => {
+      const p = opts.provider ? providers.find(loadConfig(), opts.provider) : null;
+      return p ? String(p.name || '') : undefined;
+    })(),
     port: hookPort,
     minimized,
     agent,
@@ -2755,7 +2839,7 @@ function acceptOffer(offer) {
           projectPath: offer.dir, laneName: '拟提交信息',
           task: '看看这个仓库还没提交的改动（git status、git diff），帮我拟一条像样的提交信息给我过目。**先别真的提交**，等我确认。',
           agent,
-          model: agent === 'codex' ? undefined : resolveDispatchModel((loadConfig().dispatch || {}).model),
+          ...resolveDispatchModel(undefined, undefined, agent),
         }, { minimized: false });
         send('session:say', { name: '拟提交信息', text: '好，我去看看改了什么，拟好念给你听。' });
       } catch (err) {
@@ -2775,7 +2859,7 @@ function acceptOffer(offer) {
         openLaneTerminal({
           projectPath: offer.dir, laneId: offer.laneId, laneName: offer.laneName || '',
           task: '', agent: 'claude',
-          model: resolveDispatchModel((loadConfig().dispatch || {}).model),
+          ...resolveDispatchModel(undefined, undefined, 'claude'),
         }, { minimized: false });
         send('session:say', { name: offer.laneName || '', text: '接上了，窗口开好了。' });
       } catch (err) {
@@ -3164,22 +3248,25 @@ function wireIpc() {
 
     // codex 的线不带模型（它不认 claude 的模型名），也**不动**记住的那个 ——
     // 你切回 claude 时上次选的模型还在
-    const model = agent === 'codex' ? undefined
-      : ('model' in (opts || {}) ? resolveDispatchModel(opts.model)
-                                 : resolveDispatchModel(cfg.model));
+    const pick = resolveDispatchModel(
+      'model' in (opts || {}) ? opts.model : undefined,
+      'provider' in (opts || {}) ? opts.provider : undefined, agent);
+    const model = pick.model;
     try {
       // 老的无头模式是 claude 专属（sessions.dispatch 拼的是 claude 参数）。
       // codex 一律走终端路 —— 反正也是最小化的，行为几乎没差
       if (cfg.mode === 'headless' && agent !== 'codex') {
-        // opts 在后面，所以面板上临时选的那个会盖掉配置里的默认值
-        const r = sessions.dispatch({ permissionMode: cfg.permissionMode, ...opts, model });
+        // opts 在后面，所以面板上临时选的那个会盖掉配置里的默认值。
+        // 接入点的 env 在这儿现拼（钥匙只在这一刻解开，不进 opts、不进日志）
+        const r = sessions.dispatch({ permissionMode: cfg.permissionMode, ...opts, model,
+          env: providers.envFor(loadConfig(), pick.provider, 'claude') });
         return { ok: true, ...r };
       }
 
       // 会话身份归 sessions 管（主线 / 分线 / 回到老线都在那边算），
       // 窗口和监督归 terminals 管 —— 跟 session:open-terminal 走的是同一套，
       // 唯一的差别就是 minimized
-      const r = openLaneTerminal({ ...opts, model, agent }, { minimized: true });
+      const r = openLaneTerminal({ ...opts, model, provider: pick.provider, agent }, { minimized: true });
       return { ok: true, ...r, terminal: true };
     } catch (err) {
       log('[session] 派活失败: ' + err.message);
@@ -3194,14 +3281,14 @@ function wireIpc() {
     if (noCli) return noCli;
     if (agent === 'codex') await ensureCodexHookHash();   // 同上：别让「Hooks need review」冒出来
 
-    const model = agent === 'codex' ? undefined
-      : ('model' in (opts || {}) ? resolveDispatchModel(opts.model)
-                                 : resolveDispatchModel(dcfg.model));
+    const pick = resolveDispatchModel(
+      'model' in (opts || {}) ? opts.model : undefined,
+      'provider' in (opts || {}) ? opts.provider : undefined, agent);
     try {
       // 会话身份归 sessions 管（主线 / 分线 / 回到老线都在那边算），
       // 窗口和监督归 terminals 管
       panelYield(); // 你点了「开终端我看着」，那个窗口就该出现在最上面
-      const r = openLaneTerminal({ ...opts, model, agent }, { minimized: false });
+      const r = openLaneTerminal({ ...opts, model: pick.model, provider: pick.provider, agent }, { minimized: false });
       mood.onInteract('talk');
       return { ok: true, ...r };
     } catch (err) {
@@ -3310,8 +3397,31 @@ function wireIpc() {
   ipcMain.on('settings:open', () => createSettingsWindow());
   ipcMain.on('settings:close', () => settingsWin && !settingsWin.isDestroyed() && settingsWin.close());
 
+  // ── 接入点 ────────────────────────────────────────────────────────────
+  ipcMain.handle('providers:list', () => providers.publicList(loadConfig()));
+  ipcMain.handle('providers:save', (_e, draft) => {
+    try {
+      const list = providers.upsert(loadConfig(), draft || {});
+      config.patch({ providers: list });
+      log('[providers] 存了一条：' + String((draft || {}).name || '').slice(0, 30));
+      return { ok: true, list: providers.publicList(loadConfig()) };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('providers:remove', (_e, id) => {
+    const cfg = loadConfig();
+    const pid = String(id || '');
+    config.patch({ providers: providers.remove(cfg, pid) });
+    // 正选着它的地方退回官方 —— 不退的话 resolve 也会当官方，但面板上会显示一个不存在的名字
+    if ((cfg.dispatch || {}).provider === pid) config.patch({ dispatch: { provider: providers.OFFICIAL, model: '' } });
+    if ((cfg.chat || {}).provider === pid) config.patch({ chat: { provider: 'same' } });
+    return { ok: true, list: providers.publicList(loadConfig()) };
+  });
+  ipcMain.handle('providers:test', (_e, id) => testProvider(String(id || '')));
+
   ipcMain.handle('settings:get', () => ({
-    config: loadConfig(),
+    // providers 那一栏换成公开形态（没钥匙、没密文）—— 设置窗拿的是整份快照，
+    // 保存时又整份写回，密文若随快照走一圈就有被洗掉的可能
+    config: (() => { const c = loadConfig(); c.providers = providers.publicList(c).filter((p) => !p.builtin); return c; })(),
     meta: {
       models: scanModels(),
       voices: VOICES,
@@ -3367,6 +3477,8 @@ function wireIpc() {
       // announced（她喊过哪个新版）是她自己的小本本，不归设置窗管 —— 设置窗
       // 开着的当口她喊了一嗓子的话，保存旧快照会把这笔抹掉、下次又喊一遍
       if (next.update) { delete next.update.announced; delete next.update.seenVersion; }
+      // 接入点归 providers:save 管（钥匙要走密文那条路），设置窗整份写回时不许带
+      delete next.providers;
       const after = config.patch(next);
 
       // 【下面每一步都各自兜住。】盘在上面那句 config.patch 就已经写了 ——
@@ -3701,6 +3813,13 @@ if (!app.requestSingleInstanceLock()) {
     // 喂终身账（lifetime.json，读一个小文件）—— 千万别喂 totals()：
     // 那是全量扫 90 个日流水的，里程碑每分钟问一次会把主进程问出卡顿；
     // 而且它是 90 天滚动窗口，「烧满一百刀」的终身语义就不对了（评审抓的）
+    // 接入点的钥匙走 safeStorage（Windows 上是 DPAPI）：config.json 里只有密文。
+    // 必须在 app ready 之后才能碰它
+    providers.useCipher({
+      available: () => { try { return safeStorage.isEncryptionAvailable(); } catch (_) { return false; } },
+      encrypt: (s) => safeStorage.encryptString(s).toString('base64'),
+      decrypt: (b) => safeStorage.decryptString(Buffer.from(String(b), 'base64')),
+    });
     mood = new Mood({ storeDir: STORE, getTotals: () => journal.lifetime() });
     sessions = new SessionManager({
       storeDir: STORE,
@@ -3715,6 +3834,10 @@ if (!app.requestSingleInstanceLock()) {
       log,
       claudeBin: resolveClaudeBin(),
       getConfig: loadConfig,
+      // 接入点：term-shell 开 CLI 前问一次「这条线要塞什么 env」（钥匙只在这一刻解开）；
+      // 算钱时问一次「这条线的单价」（第三方没填单价就显示「未计价」）
+      envFor: (rec) => providers.envFor(loadConfig(), rec.provider, rec.agent || 'claude'),
+      priceFor: (rec) => providers.priceUsdOf(loadConfig(), rec.provider),
     });
     // 装了 codex 就**开机先把 hook 的信任哈希问了**（本地 app-server，
     // 不调模型不花钱，约 2 秒）。原来是等到第一次派 codex 才问，而那一趟是
@@ -3732,6 +3855,8 @@ if (!app.requestSingleInstanceLock()) {
       getMoodDesc: () => (mood ? mood.describe() : ''),
       // 小本子喂回给她 —— 记得才谈得上「自然提起」，也防她重复记
       getAbout: () => about.forPrompt(),
+      // 她开口用哪个接入点（设置 → 她 → 「她开口用哪个」；默认跟派活一样）
+      getProvider: (agent) => providers.forChat(loadConfig(), agent),
     });
     // 她在回复里附了 <<MEM:...>>（听到了关于他的事）→ 记进小本子。
     // 不额外说话 —— 回复本身已经自然接过话头了，再蹦一句「记下了」很出戏
@@ -3740,7 +3865,8 @@ if (!app.requestSingleInstanceLock()) {
       if (r.ok) log('[about] 记了一条：' + r.text);
     });
     performer = new Performer({ log, storeDir: STORE });
-    greeter = new Greeter({ log, claudeBin: resolveClaudeBin(), getConfig: loadConfig });
+    greeter = new Greeter({ log, claudeBin: resolveClaudeBin(), getConfig: loadConfig,
+      getProvider: (agent) => providers.forChat(loadConfig(), agent) });
 
     play = new Play({
       log,

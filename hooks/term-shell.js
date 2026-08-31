@@ -190,6 +190,25 @@ function banner() {
 let beat = null;
 let retried = false;
 
+// 接入点的环境变量（ANTHROPIC_BASE_URL 那两个）。**开 CLI 之前向桌宠要一次**：
+// 这个进程是 wt 拉起来的，不继承桌宠 spawn 时的 env；spec 文件里又只有接入点的 id
+// （钥匙不落盘）。拿不到就不加 —— 那条线就走用户自己的账号，并在窗口里说一声
+let extraEnv = {};
+async function fetchEnv() {
+  if (!spec.provider || spec.provider === 'official') return;
+  let raw = '';
+  try { raw = await tell({ phase: 'env' }); } catch (_) { /* 桌宠没开 */ }
+  try {
+    const j = JSON.parse(raw || '{}');
+    if (j && j.env && typeof j.env === 'object') extraEnv = j.env;
+  } catch (_) { /* 不是 JSON 就当没拿到 */ }
+  if (Object.keys(extraEnv).length) {
+    console.log('\x1b[90m  接入点：' + (spec.providerName || spec.provider) + '（只管这个窗口，你自己的登录不受影响）\x1b[0m');
+  } else {
+    console.log('\x1b[33m  接入点「' + (spec.providerName || spec.provider) + '」的钥匙没拿到（桌宠没开？），这条线走你自己的账号\x1b[0m');
+  }
+}
+
 (async () => {
   banner();
   await tell({ phase: 'open', pid: process.pid, dir: spec.dir, name: spec.name, task: spec.task });
@@ -231,6 +250,7 @@ let retried = false;
     tell({ phase: 'gone' }).then(() => process.exit(0), () => process.exit(0));
   });
 
+  await fetchEnv();
   launch(Boolean(spec.resume));
 })();
 
@@ -277,6 +297,7 @@ function launch(useResume) {
     shell: isBatch,
     env: {
       ...process.env,
+      ...extraEnv,   // 接入点的那两个变量（官方 = 空）
       // hook 是 claude 的子进程，会继承这两个变量 —— 桌宠据此认人、认路
       WAIFU_TERM_ID: id,
       WAIFU_TERM_NAME: spec.name || '',

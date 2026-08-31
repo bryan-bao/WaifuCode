@@ -5,6 +5,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
 const agents = require('./agents'); // 「用谁来干」选了 codex 时，搭话也跟着走 codex
+const providers = require('./providers'); // 第三方接入点的单价
 
 // 想太久就别等了 —— 你戳她一下，等五秒还没反应就很傻
 const TIMEOUT_MS = 25 * 1000;
@@ -88,7 +89,9 @@ function idleWord(min) {
 }
 
 class Greeter {
-  constructor({ claudeBin, getConfig, log } = {}) {
+  constructor({ claudeBin, getConfig, log, getProvider } = {}) {
+    // 搭话用哪个接入点（跟私聊同一个设置）。官方 = 全空
+    this.getProvider = typeof getProvider === 'function' ? getProvider : () => ({ id: 'official', env: {}, price: null });
     this.claudeBin = claudeBin || 'claude';
     this.getConfig = getConfig || (() => ({}));
     this.log = log || (() => {});
@@ -217,6 +220,8 @@ class Greeter {
       '--output-format', 'json',
       '--max-budget-usd', '0.20',
     ];
+    const pv = this.getProvider('claude') || { id: 'official', env: {}, price: null };
+    if (pv.model) args.push('--model', pv.model);
     const finalArgs = useShell ? args.map((a) => (a === '' ? '""' : a)) : args;
 
     return new Promise((resolve) => {
@@ -235,7 +240,7 @@ class Greeter {
         windowsHide: true,
         shell: useShell,
         // 这是她自己起的进程，别让 hook 原路打回来搅乱心情系统
-        env: { ...process.env, WAIFU_SELF: 'greet' },
+        env: { ...process.env, ...(pv.env || {}), WAIFU_SELF: 'greet' },
       });
 
       const timer = setTimeout(() => {
@@ -278,7 +283,10 @@ class Greeter {
           if (r.offer && r.offer.kind === 'none') r.offer = null;
           // 这次花了多少也带出去 —— 上面那句 log 早就解出来了，但只进了日志文本，
           // 调用方拿不到，于是「今天在她身上花了多少」里最大的一笔一直是缺的
-          r.costUsd = outer.total_cost_usd || 0;
+          // 第三方接入点：CLI 报的钱是 Anthropic 单价，按接入点的单价重算（没填就 0）
+          r.costUsd = pv.id !== 'official'
+            ? (pv.price ? providers.priceUsage(outer.usage || {}, pv.price) : 0)
+            : (outer.total_cost_usd || 0);
           finish(r);
         } catch (err) {
           this.log('[greet] 没解出来: ' + err.message);

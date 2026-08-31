@@ -100,6 +100,12 @@ contextBridge.exposeInMainWorld('waifu', {
   closeSettings: () => ipcRenderer.send('settings:close'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (cfg) => ipcRenderer.invoke('settings:save', cfg),
+  // --- 接入点（别家的模型）---
+  // 名单是公开形态（没有钥匙）；存的时候钥匙明文只在这一趟过一下，主进程加密落盘
+  listProviders: () => ipcRenderer.invoke('providers:list'),
+  saveProvider: (draft) => ipcRenderer.invoke('providers:save', draft),
+  removeProvider: (id) => ipcRenderer.invoke('providers:remove', id),
+  testProvider: (id) => ipcRenderer.invoke('providers:test', id),
   // 调外观时立刻推给桌宠预览，不用等保存 —— 看不到效果就没法调
   previewLook: (look) => ipcRenderer.send('settings:preview-look', look),
   tryVoice: (voice) => ipcRenderer.invoke('settings:try-voice', voice),

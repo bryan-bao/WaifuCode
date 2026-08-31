@@ -242,8 +242,9 @@ function createMobileServer({ pageFile, token, hooks, log, iconFile }) {
           laneName: String(body.laneName || '').trim(),
           permissionMode: body.permissionMode || undefined,
           agent: body.agent === 'codex' ? 'codex' : 'claude',
-          // 模型原样透传，白名单归一交给 main（这个模块不认业务规则）
+          // 模型和接入点原样透传，白名单归一交给 main（这个模块不认业务规则）
           model: String(body.model || ''),
+          provider: String(body.provider || ''),
         });
         return json(r && r.ok === false ? 400 : 200, r);
       }

@@ -10,6 +10,7 @@
 const { spawn } = require('child_process');
 const os = require('os');
 const agents = require('./agents');
+const providers = require('./providers'); // 第三方接入点的单价
 
 const TIMEOUT_MS = 90 * 1000;
 
@@ -82,13 +83,15 @@ function prompt(persona, facts, aboutBits) {
  * 让她写。claude / codex 两张嘴（跟「用谁来干」走）。
  * 出岔子返回 null —— 周记写不出来天塌不下来，下周一再试。
  */
-function write({ claudeBin, getConfig, persona, facts, aboutBits, log = () => {} }) {
+function write({ claudeBin, getConfig, persona, facts, aboutBits, log = () => {}, getProvider }) {
   const p = prompt(persona, facts, aboutBits);
   const useCodex = (getConfig().dispatch || {}).agent === 'codex';
-  return useCodex ? _codex(p, log) : _claude(claudeBin, p, log);
+  // 周记用哪个接入点（跟私聊同一个设置）。只接 claude 那张嘴
+  const pv = (typeof getProvider === 'function' && getProvider('claude')) || { id: 'official', env: {}, price: null };
+  return useCodex ? _codex(p, log) : _claude(claudeBin, p, log, pv);
 }
 
-function _claude(bin, p, log) {
+function _claude(bin, p, log, pv) {
   const useShell = /\.(cmd|bat)$/i.test(bin);
   const args = [
     '-p', '（写这周的周记）',
@@ -98,10 +101,12 @@ function _claude(bin, p, log) {
     '--output-format', 'json',
     '--max-budget-usd', '0.30',
   ];
+  if (pv && pv.model) args.push('--model', pv.model);
   const finalArgs = useShell ? args.map((a) => (a === '' ? '""' : a)) : args;
   return new Promise((resolve) => {
     let out = '';
-    const proc = spawn(bin, finalArgs, { cwd: os.tmpdir(), windowsHide: true, shell: useShell });
+    const proc = spawn(bin, finalArgs, { cwd: os.tmpdir(), windowsHide: true, shell: useShell,
+      env: { ...process.env, ...((pv && pv.env) || {}), WAIFU_SELF: 'diary' } });
     const timer = setTimeout(() => { try { proc.kill(); } catch (_) { /* 已死 */ } }, TIMEOUT_MS);
     proc.stdout.on('data', (c) => { out += c; });
     proc.on('error', (e) => { clearTimeout(timer); log('[diary] 起不来: ' + e.message); resolve(null); });
@@ -110,7 +115,11 @@ function _claude(bin, p, log) {
       try {
         const j = JSON.parse(out);
         const text = String(j.result || '').trim();
-        resolve(text ? { text, costUsd: j.total_cost_usd || 0 } : null);
+        // 第三方接入点：按它的单价重算（没填就 0），CLI 报的是 Anthropic 单价
+        const costUsd = (pv && pv.id !== 'official')
+          ? (pv.price ? providers.priceUsage(j.usage || {}, pv.price) : 0)
+          : (j.total_cost_usd || 0);
+        resolve(text ? { text, costUsd } : null);
       } catch (_) { resolve(null); }
     });
   });

@@ -42,8 +42,16 @@ const DEFAULTS = {
    *
    * 想改回去：acceptEdits / dontAsk / plan / manual 都是合法值。
    */
+  // 「接入点」：让她用别家的模型（DeepSeek / 千问 / 智谱 / Kimi / 本机 Ollama…）。
+  // 每条 { id, name, kind: 'anthropic'|'openai', baseUrl, keyEnc（safeStorage 密文）,
+  // keyTail, models[], priceIn, priceOut（元/百万） }。见 src/providers.js
+  providers: [],
+  // 她开口（私聊/搭话/周记）用哪个接入点：'same' = 跟派活一样，或某条的 id / 'official'
+  chat: { provider: 'same' },
   dispatch: {
     permissionMode: 'auto',
+    // 派活用哪个接入点：'official' = 你自己登录的账号；或 providers 里某条的 id
+    provider: 'official',
     // 派活用哪个模型。空 = 跟 Claude Code 自己的设置走。
     // 面板上选一次就记住（后台干 / 开终端两条路都用它）
     model: '',

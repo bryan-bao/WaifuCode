@@ -229,10 +229,10 @@ console.log('\n[10] 派活那一栏：一屏装得下');
         '线名自动取的那条路也要刷摘要');
   check(js.includes("localStorage.getItem('waifu.setupOpen')"),
         '展开还是收着记在这台机器上');
-  { const ag = js.slice(js.indexOf('function syncAgentUi'), js.indexOf('function syncAgentUi') + 1400);
+  { const ag = js.slice(js.indexOf('function syncAgentUi'), js.indexOf('function syncAgentUi') + 2800);
     check(ag.includes('syncSetupSummary();'),
           'syncAgentUi 末尾也要刷 —— 它会改写选项文字，摘要得跟着重算'); }
-  check(html.includes('data-short="Sonnet 5"') && html.includes('Sonnet 5 · 省一半'),
+  check(js.includes("'claude-sonnet-5': ['Sonnet 5', 'Sonnet 5 · 省一半']") && html.includes('data-short="跟设置走"'),
         '选项文字要短：格子只有 ~150px 宽，长句子会被浏览器生切在半截（实拍「Claude Code ——」）');
   // 窄面板下的两桩「压扁就竖排」（用户实拍）
   check(html.includes('#lanes .chip, #recent .chip { flex: none; white-space: nowrap; }'),

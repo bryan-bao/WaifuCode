@@ -169,7 +169,115 @@ function fillVoice() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// 模型接入（别家的模型）。这一块**改了立刻落盘**（走 providers:save，钥匙要走
+// 密文那条路），不经过页面底下那个「保存」—— 所以 cfg 快照里不带它
+// ---------------------------------------------------------------------------
+let pvEditing = null;   // 正在改哪条（null = 新增）
+
+async function fillProviders() {
+  const box = $('pv-list');
+  if (!box) return;
+  let list = [];
+  try { list = await window.waifu.listProviders(); } catch (_) { list = []; }
+  box.innerHTML = '';
+  for (const p of list) {
+    const row = document.createElement('div');
+    row.className = 'pv-item';
+    const n = document.createElement('span'); n.className = 'n'; n.textContent = p.name; row.appendChild(n);
+    const d = document.createElement('span'); d.className = 'd';
+    d.textContent = p.builtin
+      ? '你登录的账号 · ' + (p.models || []).length + ' 个模型'
+      : (p.kind === 'openai' ? 'Codex' : 'Claude Code') + ' · ' + (p.models || []).join(' / ') +
+        (p.hasKey ? ' · 钥匙 …' + p.keyTail : ' · 没钥匙') + (p.priced ? '' : ' · 未计价');
+    d.title = p.baseUrl || '';
+    row.appendChild(d);
+    const r = document.createElement('span'); r.className = 'r'; row.appendChild(r);
+    if (!p.builtin) {
+      const t = document.createElement('button'); t.className = 'chip'; t.textContent = '测一下';
+      t.onclick = async () => {
+        t.disabled = true; r.className = 'r'; r.textContent = '测着呢（最多 45 秒）…';
+        const res = await window.waifu.testProvider(p.id).catch((e) => ({ ok: false, error: e.message }));
+        r.className = 'r ' + (res && res.ok ? 'ok' : 'bad');
+        r.textContent = res && res.ok ? res.text : '✗ ' + ((res && res.error) || '没通');
+        r.title = r.textContent;
+        t.disabled = false;
+      };
+      row.appendChild(t);
+      const e = document.createElement('button'); e.className = 'chip'; e.textContent = '改';
+      e.onclick = () => openProviderForm(p);
+      row.appendChild(e);
+      const x = document.createElement('button'); x.className = 'chip'; x.textContent = '删';
+      x.onclick = async () => {
+        if (!confirm('删掉「' + p.name + '」？正用着它的线不受影响，下次派活退回官方。')) return;
+        await window.waifu.removeProvider(p.id);
+        fillProviders(); fillChatProvider();
+      };
+      row.appendChild(x);
+    }
+    box.appendChild(row);
+  }
+}
+
+function openProviderForm(p) {
+  pvEditing = p ? p.id : null;
+  $('pv-form').hidden = false;
+  $('pv-name').value = p ? p.name : '';
+  $('pv-kind').value = p ? p.kind : 'anthropic';
+  $('pv-url').value = p ? (p.baseUrl || '') : '';
+  $('pv-key').value = '';
+  $('pv-key').placeholder = p && p.hasKey ? '不改就留空（现在的钥匙 …' + p.keyTail + '）' : 'sk-…（本机 Ollama 留空）';
+  $('pv-models').value = p ? (p.models || []).join('\n') : '';
+  $('pv-in').value = p && p.priceIn ? p.priceIn : '';
+  $('pv-out').value = p && p.priceOut ? p.priceOut : '';
+  $('pv-msg').textContent = '';
+  $('pv-name').focus();
+}
+
+function wireProviders() {
+  if (!$('pv-add')) return;
+  $('pv-add').onclick = () => openProviderForm(null);
+  $('pv-cancel').onclick = () => { $('pv-form').hidden = true; pvEditing = null; };
+  $('pv-eye').onclick = () => { const k = $('pv-key'); k.type = k.type === 'password' ? 'text' : 'password'; };
+  $('pv-save').onclick = async () => {
+    const draft = {
+      id: pvEditing || undefined,
+      name: $('pv-name').value, kind: $('pv-kind').value, baseUrl: $('pv-url').value,
+      models: $('pv-models').value,
+      priceIn: $('pv-in').value === '' ? undefined : Number($('pv-in').value),
+      priceOut: $('pv-out').value === '' ? undefined : Number($('pv-out').value),
+    };
+    // 钥匙框空着 = 不动（改的时候）；新增时空着 = 没钥匙（本机 Ollama）
+    const key = $('pv-key').value.trim();
+    if (key) draft.key = key; else if (!pvEditing) draft.key = '';
+    $('pv-save').disabled = true;
+    const r = await window.waifu.saveProvider(draft).catch((e) => ({ ok: false, error: e.message }));
+    $('pv-save').disabled = false;
+    if (!r || !r.ok) { $('pv-msg').textContent = '✗ ' + ((r && r.error) || '没存上'); return; }
+    $('pv-key').value = '';   // 明文只在内存里过这一趟
+    $('pv-form').hidden = true; pvEditing = null;
+    fillProviders(); fillChatProvider();
+  };
+}
+
+/** 她开口用哪个：跟派活一样 / 官方 / 某条 Anthropic 口的接入点 */
+async function fillChatProvider() {
+  const sel = $('chatProvider');
+  if (!sel) return;
+  let list = [];
+  try { list = await window.waifu.listProviders(); } catch (_) { list = []; }
+  sel.innerHTML = '';
+  const add = (v, t) => { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); };
+  add('same', '跟派活一样');
+  for (const p of list) if (p.kind === 'anthropic') add(p.id, p.builtin ? '官方（你登录的账号）' : p.name + (p.hasKey ? '' : '（没钥匙）'));
+  sel.value = get('chat.provider', 'same');
+  if (sel.value !== get('chat.provider', 'same')) sel.value = 'same';
+  sel.onchange = () => set('chat.provider', sel.value);
+}
+
 function fillWork() {
+  fillProviders();
+  wireProviders();
   const fill = (id, path, items) => {
     const sel = $(id);
     sel.innerHTML = '';
@@ -292,6 +400,7 @@ function fillWork() {
 }
 
 function fillHer() {
+  fillChatProvider();
   $('pname').value = get('persona.name', '小依');
   $('pname').oninput = () => set('persona.name', $('pname').value);
 
@@ -324,7 +433,8 @@ $('save').onclick = async () => {
   // （它随时会往 config 里写）。整份写回去会把你开着设置窗口期间在面板上
   // 选的模型冲回旧值 —— 这一页没有它的控件，摘掉，别替别人做主
   const out = JSON.parse(JSON.stringify(cfg));
-  if (out.dispatch) { delete out.dispatch.model; delete out.dispatch.agent; }
+  if (out.dispatch) { delete out.dispatch.model; delete out.dispatch.agent; delete out.dispatch.provider; }
+  delete out.providers; // 接入点走 providers:save（钥匙要密文），整份写回会把密文洗掉
   delete out.panel; // 面板皮肤也归面板自己管，同一个理
   const r = await window.waifu.saveSettings(out);
   $('save').disabled = false;

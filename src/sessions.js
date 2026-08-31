@@ -417,7 +417,7 @@ class SessionManager extends EventEmitter {
    * npm test 照样卡在那儿等确认，后台任务就白瞎了。
    * 但也绝不给 bypassPermissions，那等于把整台机器交出去。
    */
-  dispatch({ projectPath, task, permissionMode = 'auto', model }) {
+  dispatch({ projectPath, task, permissionMode = 'auto', model, env: extraEnv }) {
     const dir = path.resolve(projectPath);
 
     if (!fs.existsSync(dir)) {
@@ -478,6 +478,7 @@ class SessionManager extends EventEmitter {
       windowsHide: true,
       env: {
         ...process.env,
+        ...(extraEnv || {}),   // 接入点的那两个变量（官方 = 空）
         // 打个标记：这个进程是她自己起的。
         // 不打的话，这条会话触发的 hook 会原路打回桌宠，被当成「你在别的窗口
         // 手动干活」再算一遍情绪 —— 同一件事进两次账，心情系统会失真。

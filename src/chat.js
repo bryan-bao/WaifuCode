@@ -10,6 +10,7 @@ const { EventEmitter } = require('events');
 const { sessionExists } = require('./sessions');
 // codex 那半边（「用谁来干」选了 codex 时，陪聊也跟着走 codex）
 const agents = require('./agents');
+const providers = require('./providers'); // 第三方接入点的单价（钥匙不在这儿碰）
 
 /**
  * 告诉她「除了说话，你还能真的动起来」。
@@ -202,10 +203,13 @@ const KEEP_MSGS = 300;
  * 半天没人说话时进程怎么办、崩了怎么恢复，得不偿失。
  */
 class Chat extends EventEmitter {
-  constructor({ storeDir, claudeBin, getConfig, getMoodDesc, log, getAbout }) {
+  constructor({ storeDir, claudeBin, getConfig, getMoodDesc, log, getAbout, getProvider }) {
     super();
     this.file = path.join(storeDir, 'chat.json');
     this.claudeBin = claudeBin;
+    // 她开口用哪个接入点：{ id, env, price, model }。官方 = 全空。
+    // 只接 claude 那张嘴 —— codex 的第三方口 v1 不接（-m 在 exec resume 上没验过）
+    this.getProvider = typeof getProvider === 'function' ? getProvider : () => ({ id: 'official', env: {}, price: null });
     this.getConfig = getConfig || (() => ({}));
     this.getMoodDesc = getMoodDesc || (() => '');
     // 解构了不赋值 = 「用而不引」同款静默死：_aboutBlock 里 this.getAbout
@@ -697,6 +701,10 @@ class Chat extends EventEmitter {
     // 她照样答「我是 Claude」。整个换掉才真的变成她。
     args.push('--system-prompt', this._systemPrompt());
 
+    // 接入点：第三方要显式给它名单里的模型名（端点认不得 claude 的默认名）
+    const pv = this.getProvider('claude') || { id: 'official', env: {}, price: null };
+    if (pv.model) args.push('--model', pv.model);
+
     const bin = this.claudeBin || 'claude';
     const useShell = /\.(cmd|bat)$/i.test(bin); // npm 装的是 .cmd，得靠 shell 才拉得起来
     // 走 shell 时空字符串参数会被直接吞掉（--tools 后面那个空值就没了，
@@ -707,7 +715,7 @@ class Chat extends EventEmitter {
       cwd: path.dirname(this.file), // 一个不相干的目录，她在这儿本来也不该碰文件
       windowsHide: true,
       shell: useShell,
-      env: { ...process.env, WAIFU_SELF: 'chat' },
+      env: { ...process.env, ...(pv.env || {}), WAIFU_SELF: 'chat' },
     });
     this.proc = proc;
 
@@ -757,7 +765,13 @@ class Chat extends EventEmitter {
             }
           }
         } else if (msg.type === 'result') {
-          if (typeof msg.total_cost_usd === 'number') costUsd = msg.total_cost_usd;
+          if (typeof msg.total_cost_usd === 'number') {
+            // 第三方接入点：CLI 报的 total_cost_usd 是按 Anthropic 单价算的，不能信；
+            // 按接入点填的单价算，没填就 0（不记账）
+            costUsd = pv.id !== 'official'
+              ? (pv.price ? providers.priceUsage(msg.usage || {}, pv.price) : 0)
+              : msg.total_cost_usd;
+          }
           if (typeof msg.result === 'string' && msg.result.trim()) reply = msg.result;
         }
       }

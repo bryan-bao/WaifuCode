@@ -325,10 +325,12 @@ async function refreshTerms() {
 
     // 这条线烧了多少钱。claude 读它自己的会话记录；codex 读 rollout 里的
     // 累计 token（认领到文件才有数，认领不到就是 0，不显示 —— 不编数）
-    const cost = money(t.costUsd);
+    // 第三方接入点没填单价 → 「未计价」。**不显示 $0**，那是骗人
+    const cost = t.unpriced ? '未计价' : money(t.costUsd);
     if (cost) {
       const c = document.createElement('span');
       c.className = 'cost';
+      if (t.unpriced) { c.style.opacity = '.55'; c.title = '这条线用的接入点没填单价 —— 设置 → 干活 → 模型接入 里填上就有数'; }
       c.textContent = cost;
       // 悬停给明细：钱烧在哪、缓存有没有在干活 ——「省钱主战场」的仪表
       const lines = ['这条线到现在烧了多少（按官方 API 单价折算）'];
@@ -572,8 +574,9 @@ function readForm() {
     // 空 = 用设置里的默认值。**只影响这一次**，不动 config.json
     permissionMode: $('perm').value || undefined,
     // 模型跟权限不一样：**选一次就记住**（主进程存进 config），
-    // 后台干 / 开终端 / 右键菜单派活从此都默认用它
-    model: $('model').value,
+    // 后台干 / 开终端 / 右键菜单派活从此都默认用它。
+    // 值是「接入点|模型」，拆开传 —— 主进程按接入点各自的白名单校验
+    ...splitModel($('model').value),
     // 用谁来干（claude / codex），同样是选一次就记住
     agent: $('agent').value,
   };
@@ -634,7 +637,7 @@ function syncSetupSummary() {
   const parts = [
     '<b>' + esc(short($('agent'))) + '</b>',
     // codex 的模型在它自己的配置里选，这儿管不着 —— 报一个假模型名是骗人
-    '<b>' + esc(codex ? '模型跟它自己的设置' : short($('model'))) + '</b>',
+    '<b>' + esc(codex && $('model').disabled ? '模型跟它自己的设置' : short($('model'))) + '</b>',
     esc(short($('perm'))),
   ];
   sum.innerHTML = parts.join('<i>·</i>');
@@ -655,13 +658,78 @@ const PERM_CLAUDE_FULL = [
   '全都别问 —— 她自己拿主意',
 ].join('\n');
 
+/**
+ * 模型下拉：按接入点分组。值 = 「接入点id|模型名」，空串 = 跟设置走。
+ *
+ * 官方那组是 claude-* 那四个；设置里加的每一家一组（Anthropic 兼容口的给 Claude
+ * Code，OpenAI 兼容口的给 Codex）。哪组能选由 syncAgentUi 按「用谁来干」定。
+ * 名单从主进程要（listProviders），**里面没有钥匙**。
+ */
+const OFFICIAL_SHORT = {
+  'claude-opus-5': ['Opus 5', 'Opus 5 · 主力'],
+  'claude-sonnet-5': ['Sonnet 5', 'Sonnet 5 · 省一半'],
+  'claude-haiku-4-5': ['Haiku 4.5', 'Haiku 4.5 · 最省'],
+  'claude-fable-5': ['Fable 5', 'Fable 5 · 最贵'],
+};
+function splitModel(v) {
+  const s = String(v || '');
+  const i = s.indexOf('|');
+  if (i < 0) return { provider: 'official', model: s };   // 老存档里裸的模型名
+  return { provider: s.slice(0, i) || 'official', model: s.slice(i + 1) };
+}
+function joinModel(provider, model) {
+  if (!model && (!provider || provider === 'official')) return '';
+  return (provider || 'official') + '|' + (model || '');
+}
+async function fillModelSelect() {
+  const sel = $('model');
+  let list = [];
+  try { list = await window.waifu.listProviders(); } catch (_) { list = []; }
+  const keep = sel.value;
+  while (sel.options.length > 1) sel.remove(1);
+  for (const p of list) {
+    const g = document.createElement('optgroup');
+    g.label = p.builtin ? '官方' : p.name + (p.kind === 'openai' ? '（Codex 用）' : '');
+    g.dataset.kind = p.kind;
+    g.dataset.pid = p.id;
+    for (const m of p.models || []) {
+      const o = document.createElement('option');
+      o.value = joinModel(p.id, m);
+      const short = p.builtin ? (OFFICIAL_SHORT[m] || [m, m]) : [p.name + ' ' + m, m];
+      o.dataset.short = short[0];
+      o.textContent = p.builtin ? short[1] : m + (p.priced ? '' : ' · 未计价');
+      g.appendChild(o);
+    }
+    if (!p.builtin && !p.hasKey && p.kind === 'anthropic') g.label += '（没钥匙）';
+    sel.appendChild(g);
+  }
+  sel.value = keep;
+  if (sel.value !== keep) sel.value = '';
+}
+
 let modelBeforeCodex = '';
 function syncAgentUi() {
   const codex = $('agent').value === 'codex';
   const model = $('model');
-  if (codex && !model.disabled) { modelBeforeCodex = model.value; model.value = ''; }
-  if (!codex && model.disabled) model.value = modelBeforeCodex;
-  model.disabled = codex;
+  // 哪组能选：claude 只看 Anthropic 兼容口（含官方），codex 只看 OpenAI 兼容口
+  let codexHasAny = false;
+  for (const g of model.querySelectorAll('optgroup')) {
+    const forCodex = g.dataset.kind === 'openai';
+    g.hidden = codex ? !forCodex : forCodex;
+    if (codex && forCodex) codexHasAny = true;
+  }
+  // 进 codex 那一下把 claude 这边选的记下来，回来时还给你 ——
+  // 「你切回 claude 时上次选的模型还在」这条原来就有
+  const kindOfSel = () => { const o = model.selectedOptions[0]; const g = o && o.parentElement; return g && g.tagName === 'OPTGROUP' ? g.dataset.kind : ''; };
+  if (codex && !syncAgentUi.wasCodex) modelBeforeCodex = model.value;
+  syncAgentUi.wasCodex = codex;
+  // 选着的那组被藏起来了 → 换成合适的：回 claude 就还原之前的，进 codex 就清空
+  if (model.value && model.selectedOptions[0] && model.selectedOptions[0].parentElement.hidden) {
+    model.value = (!codex && modelBeforeCodex) ? modelBeforeCodex : '';
+    if (kindOfSel() === 'openai' && !codex) model.value = '';
+  }
+  // 选了 codex 又没有给它用的接入点 → 照旧灰掉（模型跟 ~/.codex/config.toml 走）
+  model.disabled = codex && !codexHasAny;
   model.options[0].text = codex ? '跟 Codex 的设置走' : '跟设置走';
   model.title = codex ? 'Codex 用哪个模型在它自己的配置里选，这儿管不着' : '';
 
@@ -815,7 +883,7 @@ async function doTerminal() {
     task: $('task').value.trim(),
     laneName: $('lane').value.trim(),
     permissionMode: $('perm').value || undefined,
-    model: $('model').value,
+    ...splitModel($('model').value),
     agent: $('agent').value,
   });
 
@@ -896,6 +964,9 @@ $('browse').onclick = async () => {
   const d = await window.waifu.pickFolder();
   if (d) { $('dir').value = d; msg(''); refreshGit(); }
 };
+
+// 设置里加了/删了接入点，回到面板时把模型下拉刷一遍（不刷就得关了重开才看得到）
+window.addEventListener('focus', () => { fillModelSelect().then(() => { syncAgentUi(); }).catch(() => {}); });
 
 // 分支状态跟着目录走（打字、点最近项目、浏览选目录，三条路都要刷）
 $('dir').addEventListener('input', refreshGit);
@@ -1078,7 +1149,10 @@ window.waifu.on('term:report', (e) => {
   try {
     const st = await window.waifu.getSettings();
     const cfg = (st && st.config) || {};
-    $('model').value = (cfg.dispatch || {}).model || '';
+    await fillModelSelect();
+    const d = cfg.dispatch || {};
+    $('model').value = joinModel(d.provider, d.model);
+    if ($('model').value !== joinModel(d.provider, d.model)) $('model').value = ''; // 那条接入点被删了
     modelBeforeCodex = $('model').value;
     $('agent').value = (cfg.dispatch || {}).agent === 'codex' ? 'codex' : 'claude';
     syncAgentUi();

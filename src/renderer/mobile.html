@@ -309,12 +309,9 @@
         <option value="claude">Claude Code</option>
         <option value="codex">Codex</option>
       </select>
+      <!-- 选项按接入点分组，由 render() 从状态里填；值是「接入点id|模型名」 -->
       <select id="model">
         <option value="">模型：跟电脑上的设置走</option>
-        <option value="claude-opus-5">Opus 5 · 主力</option>
-        <option value="claude-sonnet-5">Sonnet 5 · 快，省一半</option>
-        <option value="claude-haiku-4-5">Haiku 4.5 · 最快最省</option>
-        <option value="claude-fable-5">Fable 5 · 最强也最贵</option>
       </select>
     </div>
     <div class="row2">
@@ -424,7 +421,17 @@
     // 但**只能藏 model 这一个下拉，绝不能藏它那一行**：agent 和 model 是
     // 同一个 .row2 里的两兄弟，藏整行等于把「换回 Claude」的下拉一起藏了，
     // 选了 codex 就再也切不回来（用户实拍）
-    $('model').style.display = $('agent').value === 'codex' ? 'none' : '';
+    {
+      const codex = $('agent').value === 'codex';
+      let any = false;
+      for (const g of $('model').querySelectorAll('optgroup')) {
+        const forCodex = g.dataset.kind === 'openai';
+        g.hidden = codex ? !forCodex : forCodex;
+        if (codex && forCodex) any = true;
+      }
+      // codex 又没有给它用的接入点 → 藏掉（模型跟它自己的设置走）
+      $('model').style.display = (codex && !any) ? 'none' : '';
+    }
     $('projects').style.display = live ? 'none' : 'flex';
     $('task').placeholder = live ? '接着说一句（直接进那个终端）'
       : pickedLane ? '接着「' + pickedLane.name + '」说一句' : '要干什么活';
@@ -443,6 +450,34 @@
     if (!s) return;
     $('who').textContent = s.name || '小依';
     $('today').textContent = (s.mood ? s.mood + ' · ' : '') + '今天 ' + (money(s.todayUsd) || '¥0');
+
+    // 模型下拉：按接入点分组（名单里没有钥匙，只有名字和模型）。
+    // 内容没变就不重画 —— 重画会把你选着的冲掉
+    {
+      const sel = $('model');
+      const sig = JSON.stringify((s.providers || []).map((p) => [p.id, p.name, p.kind, p.models]));
+      if (sel.dataset.sig !== sig) {
+        sel.dataset.sig = sig;
+        const keep = sel.value;
+        while (sel.options.length > 1) sel.remove(1);
+        const SHORT = { 'claude-opus-5': 'Opus 5 · 主力', 'claude-sonnet-5': 'Sonnet 5 · 快，省一半',
+                        'claude-haiku-4-5': 'Haiku 4.5 · 最快最省', 'claude-fable-5': 'Fable 5 · 最强也最贵' };
+        for (const p of (s.providers || [])) {
+          const g = document.createElement('optgroup');
+          g.label = p.builtin ? '官方' : p.name + (p.kind === 'openai' ? '（Codex 用）' : '');
+          g.dataset.kind = p.kind;
+          for (const m of (p.models || [])) {
+            const o = document.createElement('option');
+            o.value = p.id + '|' + m;
+            o.textContent = p.builtin ? (SHORT[m] || m) : m;
+            g.appendChild(o);
+          }
+          sel.appendChild(g);
+        }
+        sel.value = keep;
+        if (sel.value !== keep) sel.value = '';
+      }
+    }
 
     // 「派给谁」下拉：把电脑上还开着的线列出来
     const sel = $('target');
@@ -1359,8 +1394,10 @@
           laneId: pickedLane ? pickedLane.laneId : undefined,
           agent: pickedLane ? 'claude' : $('agent').value,
           permissionMode: $('perm').value || undefined,
-          // codex 不认模型参数，选了也不发（发过去只会被 main 丢掉，但别让人误会）
-          model: $('agent').value === 'codex' ? '' : $('model').value,
+          // 值是「接入点|模型」，拆开传；主进程按接入点各自的白名单校验，
+          // 口跟 CLI 对不上的（拿 Anthropic 口给 codex）会被它当官方
+          ...(() => { const v = $('model').value; const i = v.indexOf('|');
+                      return i < 0 ? { provider: '', model: v } : { provider: v.slice(0, i), model: v.slice(i + 1) }; })(),
         }),
       }).then((x) => x.json());
       if (r && r.ok !== false) {

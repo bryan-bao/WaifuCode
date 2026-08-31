@@ -653,12 +653,10 @@
           </div>
           <div class="f">
             <label>用哪个模型</label>
-            <select id="model" title="选一次就记住，两种派法都用它&#10;&#10;Opus 5 —— 主力，复杂的活交给它&#10;Sonnet 5 —— 快，便宜差不多一半&#10;Haiku 4.5 —— 最快最省，简单活&#10;Fable 5 —— 最强也最贵（Opus 两倍价）">
+            <!-- 选项由 panel.js 按接入点分组填：官方那组 + 设置里加的每一家。
+                 值的形状是「接入点id|模型名」，空串 = 跟设置走 -->
+            <select id="model" title="选一次就记住，两种派法都用它&#10;别家的模型在 设置 → 干活 → 模型接入 里加&#10;&#10;Opus 5 —— 主力，复杂的活交给它&#10;Sonnet 5 —— 快，便宜差不多一半&#10;Haiku 4.5 —— 最快最省，简单活&#10;Fable 5 —— 最强也最贵（Opus 两倍价）">
               <option value="" data-short="跟设置走">跟设置走</option>
-              <option value="claude-opus-5" data-short="Opus 5">Opus 5 · 主力</option>
-              <option value="claude-sonnet-5" data-short="Sonnet 5">Sonnet 5 · 省一半</option>
-              <option value="claude-haiku-4-5" data-short="Haiku 4.5">Haiku 4.5 · 最省</option>
-              <option value="claude-fable-5" data-short="Fable 5">Fable 5 · 最贵</option>
             </select>
           </div>
           <div class="f">
