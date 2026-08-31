@@ -290,6 +290,13 @@ function launch(useResume) {
   const isBatch = /\.(cmd|bat)$/i.test(bin); // npm 装的是 .cmd，得靠 shell 才拉得起来
   const startedAt = Date.now();
 
+  // 开 claude 前替用户把「信任这个文件夹吗」那个框先点了 —— 他从面板选目录派活
+  // 就等于信任它。幂等、不抛，写不进顶多再弹一次框。codex 不走这套（它有自己的 trust hash）。
+  if (spec.agent !== 'codex' && spec.dir) {
+    try { require(path.join(ROOT, 'src', 'trust.js')).ensureTrusted(spec.dir); }
+    catch (_) { /* 信任写不进不该拖垮开窗口 */ }
+  }
+
   const args = buildArgs(useResume);
   const child = spawn(bin, isBatch ? args.map(quoteArg) : args, {
     cwd: spec.dir,

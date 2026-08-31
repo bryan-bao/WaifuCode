@@ -50,6 +50,7 @@
     "test:update": "node tools/test-update.js",
     "test:mobile": "node tools/test-mobile.js",
     "test:hooks": "node tools/test-hooks.js",
+    "test:trust": "node tools/test-trust.js",
     "test:providers": "node tools/test-providers.js",
     "test:shot": "node tools/test-shot.js",
     "scan-chcp": "node tools/scan-chcp.js",

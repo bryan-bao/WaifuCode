@@ -43,6 +43,7 @@
   node tools/test-desk.js              # 桌面感知：拖文件分流/日志尾巴/git 值日生/全屏勿扰
   node tools/test-about.js             # 她记得你：小本子/MEM 标记/周记
   node tools/test-hooks.js             # 开机装 hook：幂等、别人的不动、没 node 走垫片
+  node tools/test-trust.js             # 预先信任目录：key 跟 claude 对齐、坏 claude.json 绝不覆盖
   node tools/test-providers.js         # 接入点：官方 env 必空、认不出当官方、钥匙不进名单/spec/日志
   npx electron tools/test-stage.js     # 真模型，约 1 分钟
   ```
