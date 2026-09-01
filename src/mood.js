@@ -21,6 +21,18 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
  * 跟原本「关机一整晚回满」的设计意图一致。
  * 两条路（开着机歇 / 关了机歇）用同一个数，不然两种用法下她的作息会不一样。
  */
+/**
+ * 没活干时她自己会做的小动作，按「想不想动」（_want）分三档。
+ * 名字**必须**在 renderer/dance.js 的 GESTURES 里真有 —— 认不出的名字
+ * dancer.gesture 是静默不动的，日志里一个字都没有（test-mood 里有源码对表守着）。
+ * 故意不放 angry / panic：没人惹她的时候自己发火很怪。
+ */
+const ACTS = {
+  up: ['happy', 'playful', 'excited', 'curious'],   // 精神好，动得勤
+  flat: ['curious', 'bored', 'shy'],
+  low: ['tired', 'sleepy', 'bored'],                // 蔫了，半天动一下
+};
+
 const REST_PER_HOUR = 21; // 在线 tick 和离线补算**必须同一个数** —— 不然作息随「开没开着」分叉
 const REST_PER_MIN = REST_PER_HOUR / 60;
 
@@ -43,6 +55,9 @@ const BOND_LEVELS = [
 
 // 台词库。同一状态多准备几句，避免她像个复读机。
 const LINES = {
+  // 她自己去歇着 / 醒过来时说的。**不是状态名**，只被 _startRest/_endRest 显式 pick
+  nap: ['我先眯一会儿…有事叫我。', '困了，就靠一下下。', '没活干，我打个盹儿去了。'],
+  wake: ['唔…来活了？我这就起来。', '啊…我醒了我醒了。', '唔…我睡了多久？'],
   greet: ['我在的，有活儿随时叫我～', '来啦，今天干点什么？', '在呢在呢。'],
   accept: ['收到，这就去。', '好，交给我。', '知道了，我去看看。'],
   working: ['还在弄，别催我…', '有点复杂，等我一下。', '快了快了。'],
@@ -154,6 +169,19 @@ class Mood extends EventEmitter {
     // 它现在是**会回落的**那一层温度，「只涨不跌」的部分挪去了羁绊（bond）
     this.energy = 80;
     this.mood = 62;
+    /**
+     * 现在几点。**做成钩子是为了能测** —— 作息逻辑全挂在钟点上，写死
+     * new Date().getHours() 的话「深夜她该干嘛」根本没法写断言（greet.js
+     * 早就踩过，那边留了 ctx.now 注入口）。
+     * **只注入钟点，别把 Date.now() 也做成可注入的** —— lastTick/lastSeen/
+     * restUntil 那些是真实时间戳和时间差，混进假时钟会跟离线补算打架。
+     */
+    this._hour = () => new Date().getHours();
+    // 她自己决定歇到什么时候。**绝对时间戳**（不是拍数）—— tick 是 unref 的
+    // 一分钟一拍，合盖会整段跳过，按拍数累加就会「睡过头睡不醒」。0 = 醒着
+    this.restUntil = 0;
+    this._nextAt = 0;    // 下次该自己动一下的时刻（纯内存，重启重掷）
+    this._saidAt = 0;    // 上次自言自语的时刻（纯内存，防复读）
     // 【今天这一天过得怎么样】心情不该只由「刚才发生了什么」决定 —— 真人是
     // 「今天净出岔子」，于是干成一件也高兴不到哪去。这本账每天翻篇（_rollDay），
     // 喂给 _dayTone() 当心情的重心。
@@ -189,7 +217,6 @@ class Mood extends EventEmitter {
     // 桌宠上次「活着算了一拍」的时刻。跟 lastSeen 是两回事：
     // lastSeen 说的是「你在不在」，这个说的是「我在不在」
     this.lastTick = Date.now();
-    this.awake = true;
 
     // 刚一遍过干成一个活，得意劲儿能撑到这个时间点。
     // 不存档：得意是「刚刚才发生的事」带来的，隔了一夜还得意就很怪。
@@ -241,6 +268,7 @@ class Mood extends EventEmitter {
       this.energy = clamp(s.energy ?? this.energy);
       this.mood = clamp(s.mood ?? this.mood);
       this.workedMin = Math.max(0, Number(s.workedMin) || 0);
+      this.restUntil = Number(s.restUntil) || 0;
       // 昨天的账不许算到今天头上 —— 昨天再糟，今天也是新的一天
       if (s.day && s.day.key === dayKey()) {
         this.day = { ...this.day, ...s.day };
@@ -346,6 +374,9 @@ class Mood extends EventEmitter {
             // 就是每次重启全部归零，而且一声不吭
             firstMet: this.firstMet,
             tasksDone: this.tasksDone,
+            // 歇到什么时候。**必须落盘** —— 不落的话重启她就凭空醒了（save 是
+            // 手写枚举字段的，这是这个文件里最容易漏的一处）
+            restUntil: this.restUntil,
             day: this.day,
             workedMin: this.workedMin,
             daysSeen: this.daysSeen,
@@ -366,8 +397,8 @@ class Mood extends EventEmitter {
     }
   }
 
-  isLateNight() {
-    const h = new Date().getHours();
+  isLateNight() {   // 钟点走 this._hour()，可注入（见构造里那段）
+    const h = this._hour();
     return h >= 23 || h < 5;
   }
 
@@ -376,6 +407,11 @@ class Mood extends EventEmitter {
     if (this.busy) {
       return this.errorStreak >= 3 ? 'frustrated' : 'working';
     }
+    // 她自己歇着的时候也走 sleepy。**绝不新造状态名** —— tools/test-profiles.js
+    // 会把这个函数里每一个 return 后面的字符串当成表情名去各个模型里找，多一个
+    // 就得给每个模型补一张同名表情，漏一个是静默失效（脸一直不变、日志里也没有）。
+    // 连注释里都不能出现 return 加引号的示例：它是正则抠的，照抄不误（刚踩过，6 个模型全红）
+    if (this._resting()) return 'sleepy';
     if (this.energy < 18 || (this.isLateNight() && this.energy < 45)) return 'sleepy';
     if (this.errorStreak >= 3) return 'frustrated';
     // 「被冷落」要排在「心情好」前面。affection 掉到 25 得晾上好几个钟头，
@@ -470,6 +506,117 @@ class Mood extends EventEmitter {
     return (clamp(this.mood) - 50) / 50;
   }
 
+  /**
+   * 她现在想不想动（-1 ~ +1）。精力六成、心情四成，今天顺不顺再压 ±0.2。
+   *
+   * 这是「有自我意识」那一层的全部：她做什么不是被规则强制的，是**照着自己
+   * 当下的状态挑的** —— 精神好就动得勤、找点事做；蔫了就半天不动，想歇着。
+   * 同样是没活干，今天砸了三个活和今天一路顺风，她看起来是不一样的。
+   *
+   * **clamp 必须显式传 (-1, 1)** —— 这个文件里 clamp 的默认是 (0, 100)，
+   * 忘了传就永远返回 0~1，她再蔫也不会想睡。
+   * 它只影响「动得勤不勤」和「白天要不要眯一会儿」，**不改任何速率** ——
+   * 不构成新的正反馈环（_dayTone 不回写心情）。
+   */
+  _want() {
+    return clamp((this.energy - 45) / 55 * 0.6 + (this.mood - 50) / 50 * 0.4 +
+                 this._dayTone() / 100, -1, 1);
+  }
+
+  /** 她是不是正歇着。手上一有活就不算歇 —— 睡着期间来活了要能立刻起来 */
+  _resting() {
+    return this.restUntil > Date.now() && !this.busy && this.watching === 0;
+  }
+
+  /**
+   * 下次自己动一下的间隔。精神好约 6 分钟，蔫了约 25 分钟，再抖 ±25%。
+   *
+   * **必须存成 this._nextAt = now + this._gap()，不许每拍现算再比较** ——
+   * 那样随机数每分钟重掷一次，抖动白加，实际退化成「最小间隔」，她又变回节拍器。
+   * 嫌她太闹或太死，只调 6 和 19 这两个数。
+   */
+  _gap() {
+    const want = (this._want() + 1) / 2;                 // 0~1
+    return (6 + (1 - want) * 19) * (0.75 + Math.random() * 0.5) * 60000;
+  }
+
+  /** 深夜那一觉睡到早上 5 点 —— 跟 dayKey 的日界线同一个钟，省一个常数 */
+  _nextFiveAM(now) {
+    const d = new Date(now);
+    if (d.getHours() >= 5) d.setDate(d.getDate() + 1);
+    d.setHours(5, 0, 0, 0);
+    return d.getTime();
+  }
+
+  /**
+   * 她自己去歇着。深夜睡到 5 点，白天眯 12~40 分钟（越累眯越久）。
+   *
+   * **深夜必须睡到 5 点、不能按时长算**：按「90 分钟一觉」算的话一夜要醒五六次，
+   * 每次醒都 _sync 一句台词，而本地台词是会用 TTS 真念出来的 —— 半夜念六遍
+   * 是真能把人吵醒的。绝对时间戳还顺带解决了合盖和重启。
+   */
+  _startRest(night) {
+    const now = Date.now();
+    this.restUntil = night ? this._nextFiveAM(now)
+      : now + clamp(12 + (50 - this.energy) * 0.5, 12, 40) * 60000;
+    this.save();
+    this.emit('act', { gesture: 'sleepy', why: 'rest' });
+    // 专注/勿扰期间闭嘴；40 分钟内不重复（这句是会被念出来的）
+    const line = (this.quiet || now - this._saidAt < 40 * 60000) ? null : pick(LINES.nap);
+    if (line) this._saidAt = now;
+    this._sync('rest', line);
+  }
+
+  /** 醒。自然醒**不吭声也不做动作**（真人自己醒也不会喊一嗓子），只有被叫醒才有反应 */
+  _endRest(gesture, line) {
+    this.restUntil = 0;
+    this._nextAt = Date.now() + this._gap();   // 刚醒别马上又动
+    this.save();
+    if (gesture) this.emit('act', { gesture, why: 'wake' });
+    this._sync('wake', line);
+  }
+
+  /**
+   * 【她自己的时间】没活干的时候她自己决定做什么 —— 找点事做，或者去睡。
+   *
+   * 挂在 tick 的**最末尾**（_milestone / _bondCheck 之后）：「flash 要盖过这一拍
+   * 的常规台词」是评审抓过两次的规矩，放前面会被同一拍的 _sync 当场冲掉。
+   *
+   * 全程用**绝对时间戳**比较，一个拍数累加都没有 —— tick 是 unref 的一分钟一拍，
+   * 合盖/休眠会整段跳过，按拍数算就会睡过头醒不来。
+   */
+  _ownTime() {
+    const now = Date.now();
+
+    if (this.restUntil) {                                    // 正歇着
+      // 来活了就起来（这也是 watching 判据修对之后最要紧的一条）
+      if (this.busy || this.watching > 0) { this._endRest('surprised', pick(LINES.wake)); return; }
+      if (now >= this.restUntil) this._endRest(null, null);   // 自然醒：不吭声、不动
+      return;
+    }
+
+    if (this.busy || this.watching > 0) return;              // 手上有活，别自作主张
+    if (now - this.lastInteract < 90000) return;             // 你刚碰过她，别抢戏
+    if (now < this._nextAt) return;
+    this._nextAt = now + this._gap();
+
+    const want = this._want();
+    const night = this.isLateNight();
+    const alone = now - this.lastInteract > 10 * 60000;
+
+    /**
+     * 【深夜没活就睡，**不看精力**】这条是整块的命门。
+     * 「有没有活」的判据修对之后（main.js 改成看 pulse 而不是「终端窗口开着没有」），
+     * 电脑不关机的人精力会常年顶在 100 —— 只按 want < -0.2 判的话她**一辈子不会睡**，
+     * 正好把「像真人一样自己休息」做反。所以深夜那一支不带精力条件。
+     */
+    if (alone && (night || want < -0.2)) { this._startRest(night); return; }
+
+    // 没到睡的份上，就自己找点事做。**不说话** —— 一天十几次，每次都说就是复读机
+    const pool = want > 0.25 ? ACTS.up : (want > -0.2 ? ACTS.flat : ACTS.low);
+    this.emit('act', { gesture: pick(pool), why: 'idle' });
+  }
+
   /** 羁绊升级了没有。升了就道喜（数值系统里唯一「只有好事」的口） */
   _bondCheck() {
     const b = this.bond();
@@ -492,6 +639,8 @@ class Mood extends EventEmitter {
       mood: Math.round(this.mood),
       // 今天过得怎么样：干成几个、砸了几个、吃了多少报错、一起干了多久
       day: { ...this.day, tone: Math.round(this._dayTone()) },
+      // 「困」和「真睡着」的区别只靠这一个布尔（渲染层据此闭眼、挂 z z z、停走神）
+      resting: this._resting(),
       affection: Math.round(this.closeness), // 面板的「亲近」条
       bond: { level: b.level, title: b.title, xp: b.xp, next: b.next },
     };
@@ -661,6 +810,17 @@ class Mood extends EventEmitter {
    * 台词库先甩一句「干嘛啦」，两秒后又冒出一句正经的，看着像两个人在说话。
    */
   onInteract(kind = 'pet', opts = {}) {
+    // 睡着时被戳 → 当场醒，不等下一拍。
+    // **只 emit act，不调 _sync** —— 下面 onInteract 自己会 emit change，
+    // 摸头那条旁路还带 3 秒 settle，两个都说话就成了「像两个人在说话」（老毛病）。
+    // 另外 onSeen() 里**绝不加唤醒**：人回到电脑前 ≠ 要吵醒她（把你的键鼠
+    // 当成她的判据，正是第二代病根）。
+    if (this.restUntil) {
+      this.restUntil = 0;
+      this._nextAt = Date.now() + this._gap();
+      this.save();
+      this.emit('act', { gesture: 'surprised', why: 'woken' });
+    }
     this.lastInteract = Date.now();
 
     if (kind === 'pet') {
@@ -877,12 +1037,15 @@ class Mood extends EventEmitter {
       this.flash(ms.state, ms.line, 5200);
       this.save();
       this.emit('milestone', { id: ms.id, text: ms.line });
-    } else if (!this.busy && !this.quiet) {
+    } else if (!this.busy && !this.quiet && !this._resting()) {
       // 羁绊升级的道喜。**必须排在 _sync 之后**（跟里程碑同一条规矩：
       // flash 要盖过这一拍的常规台词，放前面就被 _sync 当场冲掉，评审抓的）；
       // busy/quiet 时不发也不记级 —— 下一拍自然补发，不会吞
       this._bondCheck();
     }
+
+    // 她自己的时间。**必须放在最后**（见 _ownTime 的注释）
+    this._ownTime();
   }
 
   /**
@@ -937,7 +1100,7 @@ class Mood extends EventEmitter {
    * 同一天已经响过不响。响过的记进 hit，永不重复。
    */
   _milestone() {
-    if (this.busy || this.quiet) return null;
+    if (this.busy || this.quiet || this._resting()) return null;   // 睡着不打扰
     const today = dayKey();
     if (this.lastHitDay === today) return null;
 
@@ -1005,4 +1168,4 @@ class Mood extends EventEmitter {
   }
 }
 
-module.exports = { Mood, LINES, MILESTONES, dayKey };
+module.exports = { Mood, LINES, MILESTONES, ACTS, dayKey };

@@ -35,6 +35,20 @@
     text-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
     will-change: transform, opacity;
   }
+
+    /* 她睡着时头顶飘的 z z z（一分钱不花的「她真的睡了」）。
+       位置比 #mood-mark 靠左一点（0.62 vs 0.7），免得两个符号叠在一起 */
+    #zzz {
+      position: absolute; pointer-events: none; z-index: 30;
+      font-size: 24px; letter-spacing: 2px; color: #cfe3ff;
+      text-shadow: 0 1px 3px rgba(0,0,0,.55);
+      animation: zzz 3.2s ease-in-out infinite;
+    }
+    @keyframes zzz {
+      0%   { opacity: .25; transform: translateY(0) scale(.9); }
+      50%  { opacity: 1; }
+      100% { opacity: .25; transform: translateY(-12px) scale(1.05); }
+    }
   #mood-mark.pop { animation: mark-pop 1.8s ease-out forwards; }
   @keyframes mark-pop {
     0%   { opacity: 0; transform: translateY(6px)  scale(0.4); }

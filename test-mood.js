@@ -166,6 +166,16 @@ console.log('**电脑不关机，人走开，她也得能歇过来**（这条以
   // 然后 computeState() 永远返回 sleepy。
   const tmp3 = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-rest-'));
   const d = new Mood({ storeDir: tmp3 });
+  // 【把钟点冻在下午】这段把 lastInteract 设成 12 小时前 = 「没人理她」，
+  // 而她现在深夜没活就会自己去睡（睡着 computeState 恒为 sleepy）——
+  // 不冻的话这段只在半夜跑会红，是个只在深夜复现的 flaky。
+  // 这不是新 bug，是这套测试原来就依赖挂钟的不确定性被照出来了。
+  d._hour = () => 14;
+  // 【还要把「她自己的时间」隔离掉】这段用「一拍 = 一分钟」的拍数模型跑 720 拍
+  // 模拟 12 小时，而 restUntil 是**真实时间戳** —— 720 次同步 tick 之间真实时间
+  // 几乎没走，她一旦睡下就永远到不了点，computeState 恒为 sleepy。
+  // 这段测的是精力收支曲线，不是作息；作息由下面「她自己的时间」那一节专门测。
+  d._ownTime = () => {};
   d.energy = 0;                 // 就从用户存档里那个真实数字开始
   d.affection = 90; d.mood = 60;
   d.removeAllListeners();
@@ -493,6 +503,144 @@ console.log('【重构新增】老存档迁移：焊死的 100 压一档迁入�
   check('今天的账落盘读得回来（同一天）', back.day.workedMin, 40);
 
   fs.rmSync(t, { recursive: true, force: true });
+}
+
+// ── 她自己的时间：没活干时自己找事做 / 自己去睡 ────────────────────────────
+{
+  console.log('');
+  console.log('她自己的时间（没活干的时候）：');
+  const { ACTS } = require('./src/mood');
+  const { GESTURES } = require('./src/renderer/dance');
+
+  // 造一个「醒着、没活干、你很久没理她」的她。钟点一律冻住，否则半夜跑测试会飘
+  const mk = (hour) => {
+    const x = new Mood({ storeDir: fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-own-')) });
+    x.removeAllListeners();
+    x._hour = () => hour;
+    x.busy = false; x.watching = 0;
+    x.lastInteract = Date.now() - 20 * 60000;   // 二十分钟没理她
+    x.acts = [];
+    x.on('act', (e) => x.acts.push(e));
+    return x;
+  };
+
+  // ① 手上有活的时候绝不自作主张
+  {
+    const d = mk(14); d.busy = true;
+    for (let i = 0; i < 60; i++) d.tick();
+    const busyActs = d.acts.length, busyRest = d.restUntil;
+    d.busy = false; d.watching = 1; d.acts = [];
+    for (let i = 0; i < 60; i++) d.tick();
+    check('**手上有活时她不许自作主张**（自己干 / 盯着终端都算）',
+          busyActs === 0 && busyRest === 0 && d.acts.length === 0 && d.restUntil === 0, true);
+  }
+
+  // ② 深夜没活就会自己去睡 —— **不看精力**（这条是整块的命门）
+  {
+    const d = mk(2);
+    d.energy = 100; d.mood = 80;      // 故意满格：电脑不关机的人常年就是这样
+    let slept = false;
+    for (let i = 0; i < 30 && !slept; i++) { d.tick(); slept = d.restUntil > Date.now(); }
+    console.log('       深夜满精力也睡了吗: ' + (slept ? '睡了' : '没睡') +
+                '，状态 ' + d.computeState());
+    check('**深夜没活就该睡，不看精力**（只按精力判的话不关机的人她一辈子不会睡）',
+          slept && d.computeState() === 'sleepy' && d._stats().resting === true, true);
+    check('去睡时做了个犯困的动作', d.acts.some((a) => a.gesture === 'sleepy' && a.why === 'rest'), true);
+
+    // ③ 深夜那一觉睡到 5 点，中间不许一惊一乍地醒（每醒一次都会念一句 TTS）
+    // 断言「醒来那一刻是 5 点整」，不要断言「还要睡几小时」——
+    // 后者在真实时间恰好是 4:59 时只剩 1 分钟，是个只在凌晨复现的 flaky。
+    // 5 点整这个断言跟现在几点无关，而且白天那档（now + 12~40 分钟）绝不会正好落在整点
+    const wake = new Date(d.restUntil);
+    const n0 = d.acts.length;
+    for (let i = 0; i < 60; i++) d.tick();
+    console.log('       这一觉睡到 ' + wake.getHours() + ' 点 ' + wake.getMinutes() + ' 分');
+    check('**深夜那一觉是睡到早上 5 点整**（不是眯十几分钟）',
+          wake.getHours() === 5 && wake.getMinutes() === 0, true);
+    check('睡着期间不许再蹦动作（一夜醒五六次就会念五六遍）', d.acts.length === n0, true);
+  }
+
+  // ④ 一戳就醒，当场，不等下一拍
+  {
+    const d = mk(14);
+    d.restUntil = Date.now() + 10 * 60000;
+    d.onInteract('poke');
+    check('**戳一下当场就醒**（不用等下一拍）', d.restUntil === 0, true);
+    check('醒的时候「欸」地惊一下', d.acts.some((a) => a.gesture === 'surprised'), true);
+  }
+
+  // ⑤ 来活了就起来，而且同一拍 resting 就得是 false（不然 z z z 会挂着不掉）
+  {
+    const d = mk(2);
+    d.restUntil = Date.now() + 3 * 3600 * 1000;
+    d.watching = 1;
+    d.tick();
+    check('**来活了她自己起来**', d.restUntil === 0 && d._stats().resting === false, true);
+  }
+
+  // ⑥ 合盖/休眠不许穿帮 —— 证明用的是绝对时间戳，不是拍数累加
+  {
+    const d = mk(14);
+    d.restUntil = Date.now() - 1000;     // 已经到点了
+    d.tick();
+    check('**到点自己醒**（绝对时间戳，合盖跳过几百拍也不会睡过头）', d.restUntil === 0, true);
+    check('自然醒不吭声也不做动作（真人自己醒也不喊）', d.acts.length === 0, true);
+  }
+
+  // ⑦ 落盘：save 是手写枚举的，漏一个字段就是重启后她凭空醒过来
+  {
+    const t = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-own-save-'));
+    const a = new Mood({ storeDir: t });
+    a.restUntil = Date.now() + 30 * 60000;
+    a.save();
+    const b = new Mood({ storeDir: t });
+    check('**歇到什么时候落盘读得回来**（漏了就是重启凭空醒，还一声不吭）',
+          b.restUntil === a.restUntil, true);
+    fs.rmSync(t, { recursive: true, force: true });
+  }
+
+  // ⑧ 睡觉不许变成回血外挂
+  {
+    const d = mk(2);
+    d.energy = 50;
+    d.restUntil = Date.now() + 3 * 3600 * 1000;
+    const e0 = d.energy;
+    for (let i = 0; i < 60; i++) d.tick();
+    console.log('       睡着一小时回了 ' + Math.round(d.energy - e0) + ' 点精力');
+    check('**睡着不是回血外挂**（跟醒着闲坐一个速率，21/小时）', d.energy - e0 <= 21.5, true);
+  }
+
+  // ⑨ 动作名写错是静默失效 —— 源码对表
+  {
+    const bad = [...new Set([...ACTS.up, ...ACTS.flat, ...ACTS.low])].filter((n) => !GESTURES[n]);
+    check('**她自己做的动作名必须在 GESTURES 里真有**（认不出就静默不动，日志里一个字都没有）',
+          bad.length === 0 ? true : bad.join(','), true);
+  }
+
+  // ⑩ 判据不许改回去（用户痛点的靶心）
+  {
+    const main = fs.readFileSync(path.join(__dirname, 'src', 'main.js'), 'utf8');
+    check('**不许再拿「终端窗口开着没有」当判据**（那样不关机的人她永远休息不了）',
+          !main.includes('mood.watching = terminals.liveCount()'), true);
+    const pulse = main.slice(main.indexOf("terminals.on('pulse'"), main.indexOf("terminals.on('pulse'") + 900);
+    check('「有没有活」改从 pulse 来（done/closed/idle 都不算）',
+          pulse.includes('mood.watching'), true);
+  }
+
+  // ⑪ 别偷偷加状态名（加了就得给每个模型补一张同名表情，漏一个是静默失效）
+  {
+    const src = fs.readFileSync(path.join(__dirname, 'src', 'mood.js'), 'utf8');
+    const cs = src.slice(src.indexOf('computeState()'), src.indexOf('computeState()') + 1400);
+    check('**没偷偷加状态名**（睡着复用现成的 sleepy）',
+          !/return '(asleep|napping|resting|sleeping)'/.test(cs), true);
+  }
+
+  // ⑫ 睡着时不打扰：里程碑和羁绊道喜都得让路
+  {
+    const d = mk(14);
+    d.restUntil = Date.now() + 10 * 60000;
+    check('睡着时不弹里程碑', d._milestone() === null, true);
+  }
 }
 
 console.log(fail === 0 ? '全部通过' : (fail + ' 项没过'));

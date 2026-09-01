@@ -103,7 +103,8 @@ class Look {
     this.filter = null;
 
     // 精力低时眼皮往下压多少（0 = 一点不压）。由 setDroop() 从外面推进来。
-    this.droop = 0;      // 眼皮现在压到哪儿（跟着 droopWant 慢慢走）
+    this.droop = 0;          // 眼皮现在压到哪儿（跟着 droopWant 慢慢走）
+    this.droopFloor = 0.3;   // 压到底时还剩多少：0.3 = 一条缝（困），0 = 全闭（真睡着）
     this.droopWant = 0;  // 该压到哪儿
     this.droopAt = 0;    // 上一帧的时刻，用来算 dt
 
@@ -151,6 +152,21 @@ class Look {
    * 眨眼时当前值本来就掉到 0 了，min 不会打断它；睁着的时候才被上限压住。
    * 写成 `cur - droop` 的话，眨眼那一下会被减成负数，眼睛闭得比正常还死。
    */
+  /**
+   * 真闭眼（睡着）还是只眯一条缝（困）。
+   *
+   * **只改这一个 floor 就够，不用去停 eyeBlink。** 实测 pixi-live2d-display 的
+   * eyeBlink.updateParameters 跑在 beforeModelUpdate **之前**（cubism4.js:5426 vs 5434）——
+   * 也就是眨眼先写、我们的钩子后压，floor 设 0 之后 `if (cur > lid) set(0)`
+   * 每帧把眼睛压到全闭，眨眼自然就看不见了。省掉「存 eyeBlink 引用 + 换模型时清理」
+   * 那三处（以前的写法要动 internalModel，换模型不清理就串味）。
+   * 仍是 min 语义：醒来把 floor 还原成 0.3，droopWant 由同一拍的 applyBodyTone 负责。
+   */
+  setShut(on) {
+    this.droopFloor = on ? 0 : 0.3;
+    if (on) this.setDroop(1);
+  }
+
   setDroop(v) {
     const next = Math.max(0, Math.min(1, Number(v) || 0));
     if (Math.abs(next - this.droopWant) < 0.005) return;
@@ -211,7 +227,8 @@ class Look {
           if (!id) return;
           try {
             const open = this._maxOpen(core, id);
-            const lid = open - this.droop * (open - 0.3); // droop=1 时只剩一条缝
+            // droopFloor=0.3 → droop=1 时只剩一条缝（困）；=0 → 全闭（真睡着）
+    const lid = open - this.droop * (open - this.droopFloor);
             const cur = core.getParameterValueById(id);
             if (cur > lid) core.setParameterValueById(id, lid);
           } catch (_) { /* 没这个参数就算了 */ }

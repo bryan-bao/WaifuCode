@@ -204,7 +204,41 @@ let gazeNextWander = 0;
 // 她正在想事情的那一两秒，视线别被鼠标拽回来 —— 想事情的人不会一直盯着你
 let gazeLockUntil = 0;
 
+/**
+ * 【她真的睡着了】跟「困」（sleepy 表情 + 塌肩）的区别就在这三件事上：
+ * 眼睛**全闭**（不是眯一条缝）、头顶飘 z z z、不再东张西望也不跟着鼠标转头。
+ *
+ * 姿态一个字都不用改：computeState 睡着时返回的就是 'sleepy'，moodPosture 自动
+ * 挂上现成的 POSTURES.sleepy（塌肩下坠），呼吸也自动变慢变深（tuneBreath 认它）。
+ * 绝不去改 POSTURES.sleepy 的数值 —— test-posture 第 1、4 节把它卡死了。
+ */
+let napping = false;
+let zzzEl = null;
+function setResting(on) {
+  if (on === napping) return;
+  napping = on;
+  if (look && look.setShut) look.setShut(on);
+  if (on) {
+    if (!zzzEl) {
+      zzzEl = document.createElement('div');
+      zzzEl.id = 'zzz';
+      zzzEl.textContent = 'z z z';
+      document.body.appendChild(zzzEl);
+    }
+    // 位置照抄 mood-mark 那套几何（同一个外接框 + headRatio），只是往左错开一点。
+    // 睡着期间她基本不动（走神停了、动作也不做了），算一次就够，不做每秒跟随
+    const b = model.getBounds();
+    const ratio = (profile && profile.headRatio) || 0.28;
+    zzzEl.style.left = Math.round(b.x + b.width * 0.62) + 'px';
+    zzzEl.style.top = Math.round(b.y + b.height * ratio * 0.1) + 'px';
+    zzzEl.hidden = false;
+  } else if (zzzEl) {
+    zzzEl.hidden = true;
+  }
+}
+
 function gazeAt(x, y) {
+  if (napping) { gazeMovedAt = performance.now(); return; }   // 睡着的人不跟着鼠标转头
   gazeMovedAt = performance.now();
   if (!model) return;
   if (gazeMovedAt < gazeLockUntil) return;
@@ -226,6 +260,7 @@ function gazeAt(x, y) {
 
 setInterval(() => {
   if (!model) return;
+  if (napping) return;                               // 睡着的人不会东张西望
   const now = performance.now();
   if (now - gazeMovedAt < GAZE_IDLE_MS) return;      // 你还在动，她还看着你
   if (now - gazeWanderAt < gazeNextWander) return;
@@ -1157,6 +1192,10 @@ window.waifu.on('mood:change', (e) => {
   // 状态一变，整个人的「底噪」也跟着变：眼皮、呼吸的快慢深浅。
   // 这跟情绪动作不是一回事 —— 动作演两秒就收，这个是常驻的。
   applyBodyTone(e.state, e.stats);
+  // 「困」和「真睡着」的区别只看这一个字段。**排在 applyBodyTone 之后** ——
+  // 它要能盖掉 applyBodyTone 刚设的 droop；醒来那一拍反过来，applyBodyTone
+  // 已经按新状态设好了 droop，setShut(false) 只需把 floor 还原
+  setResting(Boolean(e.stats && e.stats.resting));
 
   // 骨架也跟着变：没精神就一直塌着肩、闹别扭就一直侧着身。
   // 以前心情从 25 跑到 85，身体是一模一样的 —— 数值全在肚子里，屏幕上看不出来

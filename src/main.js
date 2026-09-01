@@ -809,6 +809,15 @@ function wireEvents() {
   // 到日子了（认识满一个月、一起干完第一百个活…）。话和动作 mood 那边已经
   // 走 change 发出去了，这儿只管在流水上留一条印，面板「今天」那栏会显示。
   // **一分钱不花**：台词是预置的，不问 claude
+  // 她自己决定动一下（没活干时的小动作、去睡、被叫醒）。**不新开 IPC 频道** ——
+  // perform:gesture 是现成的（preload 白名单里已有），dancer.gesture 自己会给
+  // 跳舞让位，认不出的名字就不动
+  mood.on('act', (e) => {
+    if (!e || !e.gesture) return;
+    log('[mood] 她自己动了动: ' + e.gesture + '（' + e.why + '）');
+    send('perform:gesture', { name: e.gesture });
+  });
+
   mood.on('milestone', (e) => {
     log('[mood] 到日子了: ' + e.id + ' — ' + e.text);
     journal.add('milestone', { id: e.id, text: e.text });
@@ -862,7 +871,10 @@ function wireEvents() {
     // 一条都没有时她才真正在歇着（精力回血的判据，跟你的键鼠无关）。
     // 用 liveCount 不用 list()：change 事件每次工具调用都来一发，
     // list() 每次都顺手刷全量算钱，这儿只要个数（评审抓的）
-    try { if (mood) mood.watching = terminals.liveCount(); } catch (_) { /* 喂不上下拍再说 */ }
+    // 【别在这儿喂 mood.watching】liveCount 数的是「终端窗口开着没有」，
+    // 不是「终端真的在跑活没有」。电脑常年不关机、终端挂着不叉的话，
+    // 她整夜都在「盯梢」-0.15/分（86 → 0 大约九个半小时），永远休息不了 ——
+    // 而用户原话的判据是「任务栏里没有正在干活的任务」。改喂在 on('pulse') 里。
     send('term:change', { count: terminals.liveCount() });
     refreshTrayTip();
     if (mobileSrv) mobileSrv.pushState(); // 手机那头的长连接跟着动
@@ -1008,6 +1020,10 @@ function wireEvents() {
   // 一段活跑几分钟，中间要是每隔一会儿念一句进度，比不说还烦
   terminals.on('pulse', (e) => {
     send('work:pulse', e);
+    // 【「她手上有没有活」的唯一判据】pulse 的过滤规则才是用户说的「任务栏里
+    // 有没有正在干活的任务」：done/closed 跳过、idle 且没在报警也跳过。
+    // （alarm 那 25 秒会被算成有活，多扣 0.06 精力，不值得为它再分一条岔。）
+    try { if (mood) mood.watching = (e && e.state !== 'none') ? 1 : 0; } catch (_) { /* 喂不上下拍再说 */ }
     if (e && e.state !== 'none') {
       log('[term] 她现在的状态: ' + e.state + '（' + e.name + '，' +
           e.tools + ' 次工具 / ' + e.errors + ' 次报错）');
@@ -1689,7 +1705,12 @@ const GREET_COOLDOWN_MS = 25 * 1000;
 // 玩游戏 / 专注期间也一律不调：那会儿气泡上正摆着一道题等你点，
 // 她再冒一句现想的话出来，会把题目直接顶掉。
 function canGreet() {
-  if (quiet || (play && play.busy)) return false;
+  // 睡着时点她**不起 claude 进程**（省 $0.0151）—— onInteract 会把她叫醒并走
+  // 本地台词，再点一次（那时已经醒了）才可能花钱。顺序天然是对的：
+  // pet:interact 里 canGreet() 算在 mood.onInteract 之前。
+  // fsQuiet 那半是既有的洞：全屏看片时点她照样烧钱，跟这条是同一把闸，一起补。
+  if (quiet || fsQuiet || (play && play.busy)) return false;
+  if (mood && mood.restUntil > Date.now()) return false;
   return Boolean(greeter && mood) && Date.now() - lastGreetAt >= GREET_COOLDOWN_MS;
 }
 
