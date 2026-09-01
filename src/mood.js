@@ -154,6 +154,12 @@ class Mood extends EventEmitter {
     // 它现在是**会回落的**那一层温度，「只涨不跌」的部分挪去了羁绊（bond）
     this.energy = 80;
     this.mood = 62;
+    // 【今天这一天过得怎么样】心情不该只由「刚才发生了什么」决定 —— 真人是
+    // 「今天净出岔子」，于是干成一件也高兴不到哪去。这本账每天翻篇（_rollDay），
+    // 喂给 _dayTone() 当心情的重心。
+    this.day = { key: '', tasks: 0, ok: 0, fails: 0, errors: 0, troubles: 0, workedMin: 0 };
+    // 一起干活的总分钟数（只增）。进羁绊经验 —— 「合作时间」本身就是交情
+    this.workedMin = 0;
     this.closeness = 50;
     this.errorStreak = 0;
     // 面板上开着几条活线（main 喂）。她盯着别人干活也费一点神，
@@ -234,6 +240,11 @@ class Mood extends EventEmitter {
       const s = JSON.parse(fs.readFileSync(this.file, 'utf8').replace(/^﻿/, ''));
       this.energy = clamp(s.energy ?? this.energy);
       this.mood = clamp(s.mood ?? this.mood);
+      this.workedMin = Math.max(0, Number(s.workedMin) || 0);
+      // 昨天的账不许算到今天头上 —— 昨天再糟，今天也是新的一天
+      if (s.day && s.day.key === dayKey()) {
+        this.day = { ...this.day, ...s.day };
+      }
       // 老存档只有 affection。**不能原样搬**：老系统里它只涨不跌，
       // 存档十有八九焊死在 100 —— 直接搬过来，新系统的「维护出来的高位」
       // 就从天花板起步，回落显得像惩罚。压一档迁入（100 → 68），
@@ -335,6 +346,8 @@ class Mood extends EventEmitter {
             // 就是每次重启全部归零，而且一声不吭
             firstMet: this.firstMet,
             tasksDone: this.tasksDone,
+            day: this.day,
+            workedMin: this.workedMin,
             daysSeen: this.daysSeen,
             lastDay: this.lastDay,
             streak: this.streak,
@@ -410,6 +423,8 @@ class Mood extends EventEmitter {
     try { jt = this.getTotals ? this.getTotals() : null; } catch (_) { /* 账本坏了按 0 算 */ }
     const xp = Math.round(
       this.daysSeen * 8 + this.tasksDone * 4 + this.nights * 12 +
+      // 一起干活每满一小时 +3 —— 「合作时间」本身就是交情，跟聊了多少轮是两回事
+      Math.floor(this.workedMin / 60) * 3 +
       (jt ? Math.floor((jt.turns || 0) / 10) : 0));
     let level = 0;
     for (let i = 0; i < BOND_LEVELS.length; i++) if (xp >= BOND_LEVELS[i].xp) level = i;
@@ -424,6 +439,35 @@ class Mood extends EventEmitter {
     };
     this._bondCacheAt = now;
     return this._bondCache;
+  }
+
+  /**
+   * 今天这一天顺不顺 —— 心情重心的偏移量（-20 ~ +9）。
+   *
+   * 真人的一天是有基调的：一路顺风，收工时整个人是轻的；净出岔子，
+   * 就算最后干成一件，也高兴不到哪去。所以它不是「刚才发生了什么」的加减，
+   * 而是压在心情回归目标上的一个**当日底色**，一天里慢慢显出来、第二天翻篇。
+   *
+   * 砸了的活最重（-6），连着撞墙次之（-3），零星报错最轻（每次 -0.6，封顶 -6）——
+   * 报错在开发里太常见了，一个一个扣会让她天天愁眉苦脸。
+   */
+  _dayTone() {
+    const d = this.day;
+    const good = Math.min(9, d.ok * 3);
+    const rough = Math.min(20, d.fails * 6 + d.troubles * 3 + Math.min(6, d.errors * 0.6));
+    return good - rough;
+  }
+
+  /**
+   * 干劲（-1 ~ +1）：心情好干活不觉得累，心情差干一会儿就蔫。
+   *
+   * **幅度必须压住。** 它跟「累了心情就差」（心情回归目标里的 energy 项）
+   * 是一对正反馈：心情差 → 更容易累 → 精力低 → 心情更差。放大了会一路螺旋到底，
+   * 一天到晚一张死人脸。所以用它的地方一律 ±25% 以内，再加上 _rollDay 的
+   * 「睡醒重置精力」兜底 —— 每天都有重来一次的机会。
+   */
+  _spirit() {
+    return (clamp(this.mood) - 50) / 50;
   }
 
   /** 羁绊升级了没有。升了就道喜（数值系统里唯一「只有好事」的口） */
@@ -446,6 +490,8 @@ class Mood extends EventEmitter {
     return {
       energy: Math.round(this.energy),
       mood: Math.round(this.mood),
+      // 今天过得怎么样：干成几个、砸了几个、吃了多少报错、一起干了多久
+      day: { ...this.day, tone: Math.round(this._dayTone()) },
       affection: Math.round(this.closeness), // 面板的「亲近」条
       bond: { level: b.level, title: b.title, xp: b.xp, next: b.next },
     };
@@ -502,6 +548,7 @@ class Mood extends EventEmitter {
   }
 
   onTrouble(streak) {
+    this.day.troubles += 1;
     this.errorStreak = streak;
     this.mood = clamp(this.mood - 8);
     this.energy = clamp(this.energy - 3);
@@ -511,6 +558,11 @@ class Mood extends EventEmitter {
   onTaskDone({ ok, elapsedMs, errorCount }) {
     this.busy = false;
     this.lastTaskEnd = Date.now();
+    // 记today的账：它不影响这一下的加减，影响的是**今天剩下的时间**里
+    // 心情往哪儿收（_dayTone）—— 砸了一个活，接下来一整天都缓着点
+    this.day.tasks += 1;
+    if (ok) this.day.ok += 1; else this.day.fails += 1;
+    this.day.errors += Math.max(0, Number(errorCount) || 0);
     const mins = (elapsedMs || 0) / 60000;
     // 收尾小扣一笔就行 —— 干活过程每分钟都扣过了，这儿再来 20 就是重复计费
     this.energy = clamp(this.energy - Math.min(8, 2 + mins * 0.15));
@@ -543,6 +595,7 @@ class Mood extends EventEmitter {
    * 她的情绪会被你的编译结果带着上蹿下跳。
    */
   onPhaseDone({ errorCount } = {}) {
+    this.day.errors += Math.max(0, Number(errorCount) || 0);
     this.lastInteract = Date.now(); // 有活在跑，说明人还在
     this.mood = clamp(this.mood + (errorCount ? 1 : 4));
     this.energy = clamp(this.energy - 1);
@@ -754,13 +807,19 @@ class Mood extends EventEmitter {
     if (this.busy) {
       let drain = 0.4;
       if (this.isLateNight()) drain *= 1.5;
+      // 心情好有干劲、不容易累；心情差干一会儿就精疲力尽（±25%，见 _spirit）
+      drain *= 1 - this._spirit() * 0.25;
       this.energy = clamp(this.energy - drain);
+      this.day.workedMin += 1;
+      this.workedMin += 1;   // 一起干活的总时长，进羁绊经验
+      if (this.workedMin % 60 === 0) this._bondCache = null;
     } else if (this.watching > 0) {
       this.energy = clamp(this.energy - 0.15);
     } else {
       // REST_PER_MIN（21/时）：午休一个半小时回三分之一（不是回满 —— 那样
       // 下午永远精神）；一夜照样满血。离线补算用的同一个常数，作息不分叉
-      this.energy = clamp(this.energy + REST_PER_MIN);
+      // 心情好睡得香、回得快；心情差歇着也缓不过来（±20%）
+      this.energy = clamp(this.energy + REST_PER_MIN * (1 + this._spirit() * 0.2));
     }
 
     // 桌宠活着的最后时刻。_load() 靠它算「关掉的那段时间」补多少 ——
@@ -787,7 +846,10 @@ class Mood extends EventEmitter {
     // 加上干成一个活 +18，长期就黏在 80 以上（happy 的门槛），一年到头一张笑脸。
     // 振幅拉开（22~90）、回归放慢（0.05 → 0.03）：事件的冲击留得住，
     // 一天里看得出起伏 —— 原来不管出什么事都很快缩回窄带，一年到头一张脸
-    const base = clamp(48 + (this.energy - 50) * 0.22 + (this.closeness - 50) * 0.18, 22, 90);
+    // 今天的底色（_dayTone）压在这儿：出问题多的一天，回归目标本身就低 ——
+    // 干成一件活照样 +18，但收拢的方向是低位，「今天不太顺」这件事留得住
+    const base = clamp(48 + (this.energy - 50) * 0.22 + (this.closeness - 50) * 0.18 +
+                       this._dayTone(), 22, 90);
     this.mood += (base - this.mood) * 0.03;
     this.mood = clamp(this.mood);
 
@@ -857,6 +919,8 @@ class Mood extends EventEmitter {
     // · 亲近自然回落一点 —— 高位是**维护**出来的才有意义；地板由羁绊撑着，
     //   处得越深回落越有底
     this._bondCache = null; // 先失效：见面天数刚 +1，下面的地板要按今天的算（评审抓的顺序）
+    // 新的一天，工作账翻篇：昨天出多少岔子都过去了，今天重新开始
+    this.day = { key: today, tasks: 0, ok: 0, fails: 0, errors: 0, troubles: 0, workedMin: 0 };
     if (this.lastDay !== '') { // 第一次建档不算「新的一天」
       this.energy = clamp(Math.max(this.energy, 86));
       this._coolDown(1.5);

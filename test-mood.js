@@ -190,7 +190,10 @@ console.log('**电脑不关机，人走开，她也得能歇过来**（这条以
   for (let min = 1; min <= 3 * 60; min++) { d.tick(); }
   d.busy = false;
   console.log('       满格接一个三小时的活: 精力 ' + Math.round(d.energy));
-  check('有活干就绝不可能焊死在满格', d.energy < 30, true);
+  // 阈值从 30 放到 45：干活消耗现在跟着心情走（心情好更抗造，慢 25%），
+  // 30 是按固定 0.4/分算出来的边界值、一点余量都没有。这条要守的是
+  // 「有活干必然明显掉」，不是那个精确数字
+  check('有活干就绝不可能焊死在满格', d.energy < 45, true);
 
   fs.rmSync(tmp3, { recursive: true, force: true });
 }
@@ -428,6 +431,67 @@ console.log('【重构新增】老存档迁移：焊死的 100 压一档迁入�
   const tickBody=src.slice(src.indexOf('tick()'));
   check('羁绊道喜排在常规 _sync 之后（不被同拍冲掉）',
         tickBody.indexOf('_bondCheck') > tickBody.indexOf('_sync(tick'), true);
+  fs.rmSync(t, { recursive: true, force: true });
+}
+
+// ── 像个真的工作伙伴：今天顺不顺 → 心情，心情 → 精力，合作时长 → 交情 ──────
+{
+  console.log('');
+  console.log('今天净出岔子 vs 一路顺风：');
+  const t = fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-mood-work-'));
+
+  // 同一套起点，只有「今天干得怎么样」不同
+  const mk = () => { const x = new Mood({ storeDir: fs.mkdtempSync(path.join(os.tmpdir(), 'waifu-m-')) }); x.mood = 62; x.energy = 80; return x; };
+
+  const rough = mk();
+  rough.onTaskDone({ ok: false, elapsedMs: 600000, errorCount: 5 });   // 砸了一个
+  rough.onTrouble(3);                                                  // 还连着撞墙
+  const smooth = mk();
+  smooth.onTaskDone({ ok: true, elapsedMs: 600000, errorCount: 0 });   // 一遍就过
+
+  console.log('       出岔子的一天 tone=' + Math.round(rough._dayTone()) +
+              '，顺的一天 tone=' + Math.round(smooth._dayTone()));
+  check('出岔子的一天，底色是负的', rough._dayTone() < 0, true);
+  check('顺利的一天，底色是正的', smooth._dayTone() > 0, true);
+
+  // 底色压在心情的回归目标上：糟糕的一天，心情自己会往低处收
+  const settle = (x) => { x.busy = false; x.watching = 0; for (let i = 0; i < 120; i++) x.tick(); return Math.round(x.mood); };
+  const rm = settle(rough), sm = settle(smooth);
+  console.log('       两小时后心情：出岔子的 ' + rm + '，顺的 ' + sm);
+  check('**出问题多的一天，心情收在更低的位置**（不是干成一件就万事大吉）', rm < sm, true);
+
+  // 心情 → 精力：一样干两小时，心情差的累得更快
+  const tired = mk(); tired.mood = 20; tired.energy = 90; tired.busy = true;
+  const spry  = mk(); spry.mood = 90;  spry.energy = 90; spry.busy = true;
+  for (let i = 0; i < 120; i++) { tired.tick(); spry.tick(); }
+  console.log('       干两小时后：心情差的剩 ' + Math.round(tired.energy) +
+              '，心情好的剩 ' + Math.round(spry.energy));
+  check('**心情差的累得更快**（心情好有干劲，不容易累）', tired.energy < spry.energy, true);
+
+  // 合作时长进羁绊：一起干过的时间本身就是交情
+  const pal = mk();
+  const xp0 = pal.bond().xp;
+  pal.workedMin = 10 * 60;      // 一起干了十个钟头
+  pal._bondCache = null;
+  console.log('       一起干十小时，羁绊经验 ' + xp0 + ' → ' + pal.bond().xp);
+  check('**一起干活的时长也算交情**', pal.bond().xp > xp0, true);
+
+  // 昨天的账不许算到今天头上
+  const over = mk();
+  over.day = { key: '1999-01-01', tasks: 9, ok: 0, fails: 9, errors: 99, troubles: 9, workedMin: 600 };
+  over.lastDay = '1999-01-01';
+  over._rollDay();
+  check('**新的一天，昨天的糟心事翻篇**（账清零）', over.day.fails === 0 && over._dayTone() === 0, true);
+
+  // 新字段必须真的落盘（save 是手写枚举的，漏了就每次重启归零还不吭声）
+  const keep = new Mood({ storeDir: t });
+  keep.day = { key: require('./src/mood').dayKey ? require('./src/mood').dayKey() : keep.day.key, tasks: 2, ok: 1, fails: 1, errors: 3, troubles: 1, workedMin: 40 };
+  keep.workedMin = 123;
+  keep.save();
+  const back = new Mood({ storeDir: t });
+  check('一起干活的总时长落盘读得回来', back.workedMin, 123);
+  check('今天的账落盘读得回来（同一天）', back.day.workedMin, 40);
+
   fs.rmSync(t, { recursive: true, force: true });
 }
 
