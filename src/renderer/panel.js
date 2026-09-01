@@ -84,6 +84,20 @@ function startInstall(agent) {
 
 // --- 运行中的会话列表 -------------------------------------------------------
 
+// 「啥时候完的」—— 刚完的说「几分钟前」，久了直接报钟点，别让人自己算。
+// 跨天的把日期也带上，不然「15:32」看不出是哪天的
+function fmtAgo(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const min = Math.round((Date.now() - ts) / 60000);
+  if (min < 1) return '刚刚';
+  if (min < 60) return min + ' 分钟前';
+  const p2 = (n) => String(n).padStart(2, '0');
+  const hhmm = p2(d.getHours()) + ':' + p2(d.getMinutes());
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return ts >= today.getTime() ? hhmm : (d.getMonth() + 1) + '-' + d.getDate() + ' ' + hhmm;
+}
+
 function fmtDur(ms) {
   const s = Math.round((ms || 0) / 1000);
   if (s < 60) return s + ' 秒';
@@ -177,8 +191,11 @@ async function refreshTerms() {
     let st = TERM_STATUS[t.status] || TERM_STATUS.idle;
     // 干砸的不能装作「已完成」：非零退出 = 异常收场，这是排查
     // 「她怎么没汇报」时最先要知道的事
+    // 这里用宽松的 != null：它同时挡住 null 和 **undefined**。写 !== null 的话，
+    // 某个数据源忘了给 exitCode 就会显示「异常退出（code undefined）」——
+    // 把正常收工误判成砸了，她会没来由地低落（list() 已归一成 null，这是第二道）
     const crashed = (t.status === 'done' || t.status === 'closed') &&
-                    t.exitCode !== null && t.exitCode !== 0;
+                    t.exitCode != null && t.exitCode !== 0;
     if (crashed) st = { cls: st.cls + ' bad', text: '异常退出（code ' + t.exitCode + '）' };
 
     const el = document.createElement('div');
@@ -301,8 +318,15 @@ async function refreshTerms() {
     const meta = document.createElement('div');
     meta.className = 'meta';
     // 已完成的那条要把"干成什么样"摆出来 —— 窗口都没了，这是唯一的痕迹
+    // 【三种状态三种说法】干着呢 = 已经干了多久（涨）；在等你确认 = 等了多久（涨）；
+    // 完事了 / 已关 = 干了多久 + 啥时候完的（**都不涨**）
+    const when = t.status === 'waiting'
+      ? '等了 ' + fmtDur(t.waitedMs || 0)
+      : (t.status === 'running'
+        ? fmtDur(t.elapsedMs)
+        : '干了 ' + fmtDur(t.elapsedMs) + (t.endedAt ? ' · ' + fmtAgo(t.endedAt) + ' 完事' : ''));
     meta.textContent =
-      st.text + ' · ' + fmtDur(t.elapsedMs) +
+      st.text + ' · ' + when +
       (t.turns ? ' · 聊了 ' + t.turns + ' 轮' : '') +
       (t.toolCount ? ' · 动了 ' + t.toolCount + ' 次工具' : '') +
       (t.errorCount ? ' · 报错 ' + t.errorCount + ' 次' : '') +

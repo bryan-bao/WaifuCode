@@ -939,6 +939,84 @@ const specOf = (id, name) => ({
     tm.items.delete('w995');
   }
 
+  console.log(String.fromCharCode(10) + '[25] done 的僵尸线必须收得掉（pid 被顶号那种）');
+  {
+    /**
+     * 用户实拍：一条「这轮完事了」的线，窗口早关了，面板上挂了 912 分钟不消失、
+     * 不变暗，点一下还凭空弹出一个空 PowerShell。
+     * 病根两处：① _sweep 的心跳腿写了 rec.status !== 'done' 把 done 整个跳过，
+     * 而 pid 又被 Windows 顶号误报「活着」→ 三条腿全废；② focus 的闸写了
+     * !rec.pid 放行，wt -w 对不存在的窗口名不报错、是**新建一个空窗口**。
+     */
+    const tmZ = new TerminalManager({ storeDir: TMP, getConfig: () => ({}), log: () => {} });
+
+    // ① done + 心跳早断（窗口没了）+ pid 还「活着」（顶号）→ 90 秒后必须判死
+    tmZ.items.set('w970', tmZ._makeRecord(specOf('w970', '僵尸'), {
+      pid: process.pid, turns: 3, status: 'done', lastBeat: Date.now() - 15 * 60 * 60 * 1000,
+    }));
+    tmZ._sweep(); tmZ._sweep(); tmZ._sweep(); tmZ._sweep();
+    check(tmZ.items.get('w970') && tmZ.items.get('w970').status === 'closed',
+          '**done + 心跳断 15 小时 → 收掉**（pid 顶号骗不过心跳）');
+
+    // ② 但「还在看输出」那种（心跳刚断一会儿）不许误杀 —— done 的容忍是 90 秒
+    tmZ.items.set('w971', tmZ._makeRecord(specOf('w971', '还在看'), {
+      pid: process.pid, turns: 3, status: 'done', lastBeat: Date.now() - 60000,
+    }));
+    tmZ._sweep(); tmZ._sweep(); tmZ._sweep(); tmZ._sweep();
+    check(tmZ.items.get('w971').status === 'done',
+          'done 断 60 秒还不算死 —— 你可能正看着输出（[17] 那条反例照旧成立）');
+
+    // ③ focus 的闸：心跳早停的记录绝不许放进 wt（放进去 = 凭空一个空窗口）
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'terminals.js'), 'utf8');
+    const fo = src.slice(src.indexOf('async focus(id)'), src.indexOf('async focus(id)') + 1400);
+    check(!fo.includes('!rec.pid ||'),
+          '**不许再写 !rec.pid 放行** —— 「没 pid」是「不知道」，不是「活着」');
+    check(fo.includes('rec.lastBeat') || fo.includes('beating'),
+          'focus 的闸除了 pid 还要看心跳（pid 会被顶号骗过）');
+
+    tmZ.dispose();
+  }
+
+  console.log(String.fromCharCode(10) + '[26] 任务列表的时间：三种状态三种说法，完事的不许再涨');
+  {
+    /**
+     * 用户提的：一种是正在跑的时间，一种是干完了「啥时候结束的」，一种是等确认等了多久。
+     * 上一版三种全是「从开始到现在」，于是干完的那条一直涨（实拍 912 分 59 秒）。
+     */
+    const tmT = new TerminalManager({ storeDir: TMP, getConfig: () => ({}), log: () => {} });
+    const now = Date.now();
+
+    tmT.items.set('w960', tmT._makeRecord(specOf('w960', '干着'), { pid: process.pid, turns: 2 }));
+    const r960 = tmT.items.get('w960');
+    r960.status = 'running'; r960.startedAt = now - 200000;
+
+    tmT.items.set('w961', tmT._makeRecord(specOf('w961', '完事'), { pid: process.pid, turns: 3, status: 'done' }));
+    const r961 = tmT.items.get('w961');
+    r961.startedAt = now - 600000; r961.lastHookAt = now - 480000;  // 干了 2 分钟，8 分钟前完的
+
+    tmT.items.set('w962', tmT._makeRecord(specOf('w962', '等你'), { pid: process.pid, turns: 1 }));
+    const r962 = tmT.items.get('w962');
+    r962.status = 'waiting'; r962.startedAt = now - 300000; r962.lastHookAt = now - 45000;
+
+    const byId = (id) => tmT.list().find((t) => t.id === id);
+
+    // 完事的：时间 = 最后一次动静 - 开始，**跟「现在」无关** —— 这就是「不会一直涨」
+    check(byId('w961').elapsedMs === r961.lastHookAt - r961.startedAt,
+          '**完事的冻结在最后一次动静**，跟「现在」无关（所以不再涨）');
+    check(byId('w961').endedAt === r961.lastHookAt, '完事的给了「啥时候完的」那一刻');
+    check(byId('w961').waitedMs === 0, '完事的没有「等了多久」');
+
+    // 等确认的：单独给「等了多久」
+    check(Math.abs(byId('w962').waitedMs - 45000) < 3000,
+          '等确认的：等了多久单独算（' + Math.round(byId('w962').waitedMs / 1000) + ' 秒）');
+
+    // 干着呢的：跟着现在走
+    check(byId('w960').elapsedMs >= 200000 && byId('w960').endedAt === null,
+          '干着呢的还跟着现在走，也没有「完事时刻」');
+
+    tmT.dispose();
+  }
+
   tm.dispose();
   tm2.dispose();
   console.log('\n' + (bad ? '\x1b[31m有 ' + bad + ' 项没过\x1b[0m' : '\x1b[32m全过了\x1b[0m'));

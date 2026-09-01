@@ -319,6 +319,17 @@ console.log('\n[12] 模型下拉：刷多少遍都不许长出空组');
         '手机端：同一处同一个坑，也得连组一起删');
 }
 
+console.log('\n[13] 任务列表的时间：面板按状态换说法');
+{
+  const js = read('src/renderer/panel.js');
+  check(js.includes('function fmtAgo'), '有「啥时候完的」格式化（几分钟前 / 钟点 / 跨天带日期）');
+  check(js.includes("t.status === 'waiting'") && js.includes('waitedMs'),
+        '等确认那条用的是「等了多久」，不是「干了多久」');
+  check(js.includes('endedAt'), '完事的那条显示「啥时候完的」');
+  check(js.includes('t.exitCode != null'),
+        'exitCode 用宽松比较 —— undefined 不许被当成「异常退出」');
+}
+
 console.log('');
 console.log(bad === 0 ? '\x1b[32m全过了\x1b[0m' : '\x1b[31m' + bad + ' 项没过\x1b[0m');
 process.exit(bad === 0 ? 0 : 1);

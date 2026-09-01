@@ -1706,6 +1706,9 @@ class TerminalManager extends EventEmitter {
 
   list() {
     const now = Date.now();
+    // 「活干完了」的几种叫法：done = 窗口还开着，closed = 窗口也关了，
+    // idle 是老存档里的旧值。这三种的时间都该冻住，不能跟着现在走
+    const DONE_ISH = new Set(['done', 'idle', 'closed']);
     for (const rec of this.items.values()) this._refreshCost(rec);
     return Array.from(this.items.values())
       // 还在干的排前面，已完成的沉底。不排的话新派的活会被一堆历史埋掉
@@ -1721,7 +1724,17 @@ class TerminalManager extends EventEmitter {
         dir: t.dir,
         task: t.task,
         status: t.status,
-        elapsedMs: (t.closedAt || now) - t.startedAt,
+        // 【三种状态三种时间】上一版不管什么状态都是「从开始到现在」，于是一条
+        // 早就干完的线还在一直涨（用户实拍：涨到 912 分 59 秒）。现在：
+        //   · 干着呢     → 到此刻为止干了多久（活的，继续涨）
+        //   · 这轮完事了 → **冻结**在最后一次真动静（lastHookAt），不再涨
+        //   · 已关       → 冻结在关掉那一刻（closedAt）
+        elapsedMs: (t.closedAt ||
+                    (DONE_ISH.has(t.status) ? (t.lastHookAt || now) : now)) - t.startedAt,
+        // 「在等你确认」要的是**等了多久**，跟「干了多久」不是一回事，单独给一个
+        waitedMs: t.status === 'waiting' ? now - (t.lastHookAt || t.startedAt) : 0,
+        // 干完 / 关掉的那一刻，面板拿它显示「啥时候完的」（没完的给 null）
+        endedAt: t.closedAt || (DONE_ISH.has(t.status) ? (t.lastHookAt || null) : null),
         turns: t.turns,
         toolCount: t.toolCount,
         errorCount: t.errorCount,
@@ -1977,11 +1990,15 @@ class TerminalManager extends EventEmitter {
     const rec = this.items.get(id);
     if (!rec) return { ok: false, error: '没这个终端' };
 
-    // pid 都探不活了，窗口八成已经没了 —— 这时候还跑 `wt -w <名> focus-tab`，
-    // wt 对不存在的名字**不报错，是新建一个空终端窗口**，你点一次多一个。
-    // pid 有被顶号误报「活着」的可能，那只是让这道闸偶尔放行，
-    // 后面按标题那条会兜住「窗口其实没了」的结论
-    if (this.wt && rec.windowName && (!rec.pid || pidAlive(rec.pid))) {
+    // wt 对不存在的窗口名**不报错，是新建一个空终端窗口** —— 用户实拍：点一条
+    // 早关了的线，凭空弹出个空 PowerShell。所以这道闸要两把锁：
+    //   · pid 探活是必要不充分条件 —— Windows pid 回收复用，会误报「活着」；
+    //     上一版的 `!rec.pid` 更是把「不知道」当「活着」放行，正好放进僵尸记录。
+    //   · 再加心跳：term-shell 每 5 秒亲口打一次，进程一死必停，顶号骗不过去。
+    // 拦下来不损失什么：下面 _focusByTitle 照样把窗口调到前台，只是不切 wt 标签页。
+    const fresh = Date.now() - 20000;
+    const beating = (rec.lastBeat && rec.lastBeat > fresh) || (rec.startedAt && rec.startedAt > fresh);
+    if (this.wt && rec.windowName && rec.pid && pidAlive(rec.pid) && beating) {
       try {
         // 这一步很快（几百毫秒），先让窗口浮上来
         await run(this.wt, ['-w', rec.windowName, 'focus-tab'], 4000);
@@ -2356,8 +2373,18 @@ class TerminalManager extends EventEmitter {
        * （三个心跳都没来），并且**连着三拍**都是这样，才判窗口没了。
        * 「连着三拍」是给睡眠唤醒留的余量 —— 刚唤醒那一拍，上一次心跳
        * 停在入睡前很正常，真活着的话 5 秒内新心跳就到了。
+       *
+       * **done 不是免检，是放宽。** 上一版这儿写 `rec.status !== 'done'` 把 done 整个
+       * 跳过，后果是：done + pid 被顶号 → 三条腿全废，那条线**永远**挂在面板上
+       * （用户实拍：关了的线挂了 912 分钟，点一下还凭空弹出个空 PowerShell）。
+       * 当初免检的理由是「老版 term-shell 在『按回车关掉』那段不打心跳」—— 现在
+       * `hold()` 没停心跳（只有 SIGHUP 才 clearInterval），整个生命周期都在打，
+       * 前提已经不成立。但也不能直接按 16 秒算：桌宠重启过的话 `tell` 连不上，
+       * 心跳会假性中断，而那期间窗口好好开着、你正看输出。所以 done 给 90 秒的
+       * 宽容忍 —— 误杀不了「还在看输出」，也不让僵尸永远挂着。
        */
-      if (rec.status !== 'done' && rec.lastBeat && now - rec.lastBeat > 16000) {
+      const staleMs = rec.status === 'done' ? 90000 : 16000;
+      if (rec.lastBeat && now - rec.lastBeat > staleMs) {
         rec.staleBeats = (rec.staleBeats || 0) + 1;
         if (rec.staleBeats >= 3) {
           this._windowGone(rec, '心跳断了 ' + Math.round((now - rec.lastBeat) / 1000) + ' 秒');
